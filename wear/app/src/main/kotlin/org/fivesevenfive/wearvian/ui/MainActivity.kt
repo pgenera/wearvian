@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.fivesevenfive.wearvian.util.logi
 
 class MainActivity : ComponentActivity() {
 
@@ -18,10 +19,13 @@ class MainActivity : ComponentActivity() {
     )
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+            logi("permissions result: $grants")
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        logi("MainActivity: onCreate; requesting permissions")
         permissionLauncher.launch(requiredPermissions)
 
         setContent {

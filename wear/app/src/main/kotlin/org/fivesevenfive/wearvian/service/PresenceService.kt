@@ -16,6 +16,7 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.RivianBle
+import org.fivesevenfive.wearvian.util.logi
 
 /**
  * Foreground service that keeps the watch present to the vehicle so its BLE
@@ -38,6 +39,7 @@ class PresenceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        logi("PresenceService: onStartCommand")
         startAsForeground()
         connectToBondedVehicle()
         return START_STICKY
@@ -47,12 +49,15 @@ class PresenceService : Service() {
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
         val device = adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }
         if (device == null) {
+            logi("PresenceService: no bonded '${RivianBle.DEVICE_NAME}' found; stopping")
             stopSelf()
             return
         }
+        logi("PresenceService: connecting to bonded ${device.name} ${device.address} (autoConnect)")
         // autoConnect=true lets the stack transparently re-establish the link.
         gatt = device.connectGatt(this, true, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                logi("PresenceService: gatt state status=$status newState=$newState")
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     // With autoConnect the stack retries; nudge it just in case.
                     g.connect()
@@ -85,6 +90,7 @@ class PresenceService : Service() {
     }
 
     override fun onDestroy() {
+        logi("PresenceService: onDestroy")
         gatt?.close()
         gatt = null
         super.onDestroy()

@@ -12,6 +12,8 @@ import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.util.loge
+import org.fivesevenfive.wearvian.util.logi
 
 enum class Phase { LOADING, NEEDS_SETUP, AWAITING_COMPANION, ENROLLED, PAIRING, BONDED, ERROR }
 
@@ -33,6 +35,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         val e = store.load()
+        logi("refresh: enrolled=${e != null} bonded=${e?.bonded} vin=${e?.vin}")
         _state.value = when {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
             e.bonded -> SetupUiState(Phase.BONDED)
@@ -46,6 +49,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      * performs the Rivian cloud login + EnrollPhone and returns the VAS IDs.
      */
     fun startEnrollment() {
+        logi("startEnrollment: begin")
         viewModelScope.launch {
             runCatching {
                 _state.value = SetupUiState(
@@ -53,10 +57,12 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     detail = "Open wearvian companion on your phone and sign in to Rivian…",
                 )
                 val publicKeyHex = keyManager.ensureKey()
+                logi("startEnrollment: public key ready (len=${publicKeyHex.length}); contacting companion")
                 val result = companion.requestEnrollment(publicKeyHex, deviceName = "Pixel Watch 4")
                 if (!result.isOk) error(result.error ?: "Enrollment failed")
                 val vehicle = result.vehicles.firstOrNull()
                     ?: error("No vehicles on this Rivian account")
+                logi("startEnrollment: enrolled vin=${vehicle.vin} vasPhoneId=${vehicle.vasPhoneId} identityId=${vehicle.identityId}")
 
                 store.save(
                     Enrollment(
@@ -71,7 +77,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     ),
                 )
                 _state.value = SetupUiState(Phase.ENROLLED, detail = vehicle.vin)
+                logi("startEnrollment: stored enrollment; phase=ENROLLED")
             }.onFailure {
+                loge("startEnrollment failed", it)
                 _state.value = SetupUiState(Phase.ERROR, detail = it.message ?: "Enrollment failed")
             }
         }
@@ -80,29 +88,36 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     /** Local BLE pairing + bonding. Requires BLE permissions to be granted first. */
     fun startPairing() {
         val enrollment = store.load() ?: run {
+            logi("startPairing: not enrolled -> NEEDS_SETUP")
             _state.value = SetupUiState(Phase.NEEDS_SETUP); return
         }
+        logi("startPairing: begin for vin=${enrollment.vin}")
         viewModelScope.launch {
             val pm = PairingManager(getApplication(), keyManager)
             _state.value = SetupUiState(Phase.PAIRING, detail = "Starting…")
             pm.pair(enrollment) { progress ->
+                logi("pairing progress: $progress")
                 _state.value = SetupUiState(Phase.PAIRING, detail = progress.toString())
             }.onSuccess {
+                logi("startPairing: bonded; starting presence service")
                 store.setBonded(true)
                 PresenceService.start(getApplication())
                 _state.value = SetupUiState(Phase.BONDED, presenceRunning = true)
             }.onFailure {
+                loge("startPairing failed", it)
                 _state.value = SetupUiState(Phase.ERROR, detail = it.message ?: "Pairing failed")
             }
         }
     }
 
     fun setPresence(on: Boolean) {
+        logi("setPresence: $on")
         if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
         _state.value = _state.value.copy(presenceRunning = on)
     }
 
     fun reset() {
+        logi("reset: clearing enrollment + key, stopping presence")
         PresenceService.stop(getApplication())
         store.clear()
         keyManager.deleteKey()

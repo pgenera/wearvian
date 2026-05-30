@@ -3,6 +3,7 @@ package org.fivesevenfive.wearvian.crypto
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import org.fivesevenfive.wearvian.util.logi
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -35,8 +36,13 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
 
     /** Create the key pair if absent. Returns the public key as X9.62 hex. */
     fun ensureKey(): String {
-        if (!hasKey()) generate()
-        return publicKeyHex()
+        if (!hasKey()) {
+            logi("KeyManager: generating new secp256r1 key (alias=$alias)")
+            generate()
+        } else {
+            logi("KeyManager: reusing existing key (alias=$alias)")
+        }
+        return publicKeyHex().also { logi("KeyManager: publicKey=${it.take(16)}… len=${it.length}") }
     }
 
     private fun generate() {
@@ -51,7 +57,9 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
         try {
             kpg.initialize(spec(strongBox = true))
             kpg.generateKeyPair()
+            logi("KeyManager: key generated in StrongBox")
         } catch (_: StrongBoxUnavailableException) {
+            logi("KeyManager: StrongBox unavailable; generating in TEE")
             kpg.initialize(spec(strongBox = false))
             kpg.generateKeyPair()
         }
@@ -68,6 +76,7 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
 
     /** ECDH against the vehicle's public key (hex X9.62), performed in the Keystore. */
     fun sharedSecret(vehiclePublicKeyHex: String): ByteArray {
+        logi("KeyManager: ECDH against vehiclePublicKey=${vehiclePublicKeyHex.take(16)}…")
         val ka = KeyAgreement.getInstance("ECDH", PROVIDER)
         ka.init(privateKey())
         ka.doPhase(RivianKeys.decodePublicKeyHex(vehiclePublicKeyHex), true)

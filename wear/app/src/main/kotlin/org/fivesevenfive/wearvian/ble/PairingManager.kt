@@ -22,6 +22,9 @@ import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.store.Enrollment
+import org.fivesevenfive.wearvian.util.logi
+import org.fivesevenfive.wearvian.util.logw
+import org.fivesevenfive.wearvian.util.toHexString
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -67,26 +70,33 @@ class PairingManager(
         enrollment: Enrollment,
         onProgress: (Progress) -> Unit = {},
     ): Result<Unit> = runCatching {
+        logi("pair: start for vin=${enrollment.vin} vasPhoneId=${enrollment.vasPhoneId}")
         onProgress(Progress.Scanning)
         val device = scanForVehicle()
+        logi("pair: found device ${device.name} ${device.address} bondState=${device.bondState}")
 
         onProgress(Progress.Connecting)
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
             withTimeout(CONNECT_TIMEOUT_MS) { connected.await() }
+            logi("pair: GATT connected; discovering services")
             gatt.discoverServices()
             withTimeout(GATT_OP_TIMEOUT_MS) { servicesReady.await() }
+            logi("pair: services discovered: ${gatt.services.map { it.uuid }}")
 
             onProgress(Progress.Handshaking)
             val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             enableNotifications(gatt, phoneIdChar)
             enableNotifications(gatt, nonceChar)
+            logi("pair: notifications enabled on phoneId+nonce chars")
 
             // Step 1: announce our phone id and confirm we're talking to the right car.
             notifications[phoneIdChar.uuid] = CompletableDeferred()
             writeChar(gatt, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
+            logi("pair: wrote vasPhoneId; awaiting echoed vehicle id")
             val vehicleId = withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(phoneIdChar.uuid).await() }
+            logi("pair: vehicle echoed id=${vehicleId.toHexString()} (expect vasVehicleId=${enrollment.vasVehicleId})")
             require(PairingFrames.vehicleIdMatches(vehicleId, enrollment.vasVehicleId)) {
                 "Vehicle id mismatch — wrong vehicle or wrong enrollment"
             }
@@ -94,13 +104,16 @@ class PairingManager(
             // Step 2: prove possession of the enrolled key via HMAC over a fresh nonce.
             val nonce = ByteArray(PairingFrames.PHONE_NONCE_LEN).also { SecureRandom().nextBytes(it) }
             val hmac = keyManager.signNonce(enrollment.vehiclePublicKey, nonce)
+            logi("pair: nonce=${nonce.toHexString()} hmac=${hmac.toHexString()}; writing pairing frame")
             notifications[nonceChar.uuid] = CompletableDeferred()
             writeChar(gatt, nonceChar, PairingFrames.pairingWrite(nonce, hmac))
             withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(nonceChar.uuid).await() }
+            logi("pair: vehicle acked pairing frame")
 
             // Step 3: vehicle is authenticated — trigger OS-level bonding.
             onProgress(Progress.Bonding)
             bond(device)
+            logi("pair: bonded OK")
             onProgress(Progress.Bonded)
         } finally {
             // Keep the bond, but this transient setup connection can close;
@@ -118,12 +131,18 @@ class PairingManager(
         val found = CompletableDeferred<BluetoothDevice>()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
+                logi("scan: hit name=${result.device.name} addr=${result.device.address} rssi=${result.rssi}")
                 if (!found.isCompleted) found.complete(result.device)
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                logw("scan: failed errorCode=$errorCode")
             }
         }
         val filter = ScanFilter.Builder().setDeviceName(RivianBle.DEVICE_NAME).build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        logi("scan: starting for name='${RivianBle.DEVICE_NAME}' (timeout ${SCAN_TIMEOUT_MS}ms)")
         scanner.startScan(listOf(filter), settings, cb)
         return try {
             withTimeout(SCAN_TIMEOUT_MS) { found.await() }
@@ -164,11 +183,15 @@ class PairingManager(
     }
 
     private suspend fun bond(device: BluetoothDevice) {
-        if (device.bondState == BluetoothDevice.BOND_BONDED) return
+        if (device.bondState == BluetoothDevice.BOND_BONDED) {
+            logi("bond: already bonded")
+            return
+        }
         val bonded = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
                 val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                logi("bond: EXTRA_BOND_STATE=$state")
                 when (state) {
                     BluetoothDevice.BOND_BONDED -> bonded.complete(true)
                     BluetoothDevice.BOND_NONE -> bonded.complete(false)
@@ -177,6 +200,7 @@ class PairingManager(
         }
         context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
         try {
+            logi("bond: calling createBond()")
             require(device.createBond()) { "Failed to start bonding" }
             val ok = withTimeout(BOND_TIMEOUT_MS) { bonded.await() }
             require(ok) { "Bonding was rejected" }
@@ -187,6 +211,7 @@ class PairingManager(
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            logi("gatt: onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 if (!connected.isCompleted) connected.complete(true)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -195,14 +220,17 @@ class PairingManager(
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            logi("gatt: onServicesDiscovered status=$status")
             servicesReady.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            logi("gatt: onDescriptorWrite ${descriptor.characteristic.uuid} status=$status")
             descriptorWritten.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            logi("gatt: onCharacteristicWrite ${characteristic.uuid} status=$status")
             charWritten.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
@@ -212,6 +240,7 @@ class PairingManager(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            logi("gatt: onCharacteristicChanged ${characteristic.uuid} value=${value.toHexString()}")
             notifications[characteristic.uuid]?.complete(value)
         }
     }

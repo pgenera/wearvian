@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.fivesevenfive.wearvian.util.logi
 
 /** Everything (besides the Keystore private key) needed to be a phone key. */
 data class Enrollment(
@@ -40,6 +41,7 @@ class EnrollmentStore(context: Context) {
     fun isEnrolled(): Boolean = prefs.contains(KEY_VAS_PHONE_ID)
 
     fun save(e: Enrollment) {
+        logi("EnrollmentStore: save vin=${e.vin} vehicleId=${e.vehicleId} vasPhoneId=${e.vasPhoneId} bonded=${e.bonded}")
         prefs.edit()
             .putString(KEY_USER_ID, e.userId)
             .putString(KEY_VEHICLE_ID, e.vehicleId)
@@ -67,10 +69,14 @@ class EnrollmentStore(context: Context) {
     }
 
     fun setBonded(bonded: Boolean) {
+        logi("EnrollmentStore: setBonded=$bonded")
         prefs.edit().putBoolean(KEY_BONDED, bonded).apply()
     }
 
-    fun clear() = prefs.edit().clear().apply()
+    fun clear() {
+        logi("EnrollmentStore: clear")
+        prefs.edit().clear().apply()
+    }
 
     private companion object {
         const val KEY_USER_ID = "user_id"
