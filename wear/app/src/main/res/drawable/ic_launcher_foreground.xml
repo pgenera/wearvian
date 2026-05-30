@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple key glyph centred in the adaptive-icon safe zone. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,32a14,14 0 1,0 0.01,0zM54,40a6,6 0 1,1 -0.01,0zM52,58h4v18h-4zM56,64h8v4h-8zM56,70h6v4h-6z" />
+</vector>

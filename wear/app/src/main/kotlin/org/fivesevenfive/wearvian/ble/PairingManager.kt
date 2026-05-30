@@ -1,0 +1,225 @@
+package org.fivesevenfive.wearvian.ble
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.protocol.PairingFrames
+import org.fivesevenfive.wearvian.store.Enrollment
+import java.security.SecureRandom
+import java.util.UUID
+
+/**
+ * Performs the local BLE pairing handshake with the vehicle, mirroring
+ * `ble.pair_phone` from the reference client, then triggers Android bonding.
+ *
+ * Handshake (phone = central, vehicle "Rivian Phone Key" = peripheral):
+ *   scan by name -> connect -> discover -> enable notifications ->
+ *   write vasPhoneId -> verify echoed vasVehicleId -> write nonce‖HMAC ->
+ *   createBond().
+ *
+ * Once bonded + enrolled, the vehicle's proximity sensors handle passive unlock
+ * and drive enablement; there is no explicit "drive" command (see PROTOCOL.md).
+ *
+ * Permission note: callers must hold BLUETOOTH_SCAN + BLUETOOTH_CONNECT.
+ */
+@SuppressLint("MissingPermission")
+class PairingManager(
+    private val context: Context,
+    private val keyManager: KeyManager,
+) {
+    sealed interface Progress {
+        data object Scanning : Progress
+        data object Connecting : Progress
+        data object Handshaking : Progress
+        data object Bonding : Progress
+        data class Failed(val reason: String) : Progress
+        data object Bonded : Progress
+    }
+
+    private val adapter =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+
+    // Single-slot deferreds: the handshake is strictly sequential.
+    private var connected = CompletableDeferred<Boolean>()
+    private var servicesReady = CompletableDeferred<Boolean>()
+    private var descriptorWritten = CompletableDeferred<Boolean>()
+    private var charWritten = CompletableDeferred<Boolean>()
+    private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
+
+    suspend fun pair(
+        enrollment: Enrollment,
+        onProgress: (Progress) -> Unit = {},
+    ): Result<Unit> = runCatching {
+        onProgress(Progress.Scanning)
+        val device = scanForVehicle()
+
+        onProgress(Progress.Connecting)
+        val gatt = device.connectGatt(context, false, gattCallback)
+        try {
+            withTimeout(CONNECT_TIMEOUT_MS) { connected.await() }
+            gatt.discoverServices()
+            withTimeout(GATT_OP_TIMEOUT_MS) { servicesReady.await() }
+
+            onProgress(Progress.Handshaking)
+            val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
+            val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
+            enableNotifications(gatt, phoneIdChar)
+            enableNotifications(gatt, nonceChar)
+
+            // Step 1: announce our phone id and confirm we're talking to the right car.
+            notifications[phoneIdChar.uuid] = CompletableDeferred()
+            writeChar(gatt, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
+            val vehicleId = withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(phoneIdChar.uuid).await() }
+            require(PairingFrames.vehicleIdMatches(vehicleId, enrollment.vasVehicleId)) {
+                "Vehicle id mismatch — wrong vehicle or wrong enrollment"
+            }
+
+            // Step 2: prove possession of the enrolled key via HMAC over a fresh nonce.
+            val nonce = ByteArray(PairingFrames.PHONE_NONCE_LEN).also { SecureRandom().nextBytes(it) }
+            val hmac = keyManager.signNonce(enrollment.vehiclePublicKey, nonce)
+            notifications[nonceChar.uuid] = CompletableDeferred()
+            writeChar(gatt, nonceChar, PairingFrames.pairingWrite(nonce, hmac))
+            withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(nonceChar.uuid).await() }
+
+            // Step 3: vehicle is authenticated — trigger OS-level bonding.
+            onProgress(Progress.Bonding)
+            bond(device)
+            onProgress(Progress.Bonded)
+        } finally {
+            // Keep the bond, but this transient setup connection can close;
+            // PresenceService owns the long-lived connection afterwards.
+            gatt.disconnect()
+            gatt.close()
+        }
+    }.onFailure {
+        val reason = if (it is TimeoutCancellationException) "Timed out talking to the vehicle" else (it.message ?: "Pairing failed")
+        onProgress(Progress.Failed(reason))
+    }
+
+    private suspend fun scanForVehicle(): BluetoothDevice {
+        val scanner = adapter.bluetoothLeScanner ?: error("Bluetooth is off")
+        val found = CompletableDeferred<BluetoothDevice>()
+        val cb = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                if (!found.isCompleted) found.complete(result.device)
+            }
+        }
+        val filter = ScanFilter.Builder().setDeviceName(RivianBle.DEVICE_NAME).build()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        scanner.startScan(listOf(filter), settings, cb)
+        return try {
+            withTimeout(SCAN_TIMEOUT_MS) { found.await() }
+        } catch (e: TimeoutCancellationException) {
+            error("Couldn't find your vehicle. Make sure you selected \"Set Up\" for this key in the car.")
+        } finally {
+            scanner.stopScan(cb)
+        }
+    }
+
+    private fun requireChar(gatt: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic {
+        // The pairing characteristics aren't all under the Active Entry service,
+        // so search every discovered service.
+        for (service in gatt.services) {
+            service.getCharacteristic(uuid)?.let { return it }
+        }
+        error("Characteristic $uuid not found on vehicle")
+    }
+
+    private suspend fun enableNotifications(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
+        gatt.setCharacteristicNotification(char, true)
+        val cccd = char.getDescriptor(RivianBle.CCCD) ?: error("Missing CCCD on ${char.uuid}")
+        descriptorWritten = CompletableDeferred()
+        gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        withTimeout(GATT_OP_TIMEOUT_MS) { descriptorWritten.await() }
+    }
+
+    private suspend fun writeChar(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        value: ByteArray,
+    ) {
+        charWritten = CompletableDeferred()
+        gatt.writeCharacteristic(
+            char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
+        withTimeout(GATT_OP_TIMEOUT_MS) { charWritten.await() }
+    }
+
+    private suspend fun bond(device: BluetoothDevice) {
+        if (device.bondState == BluetoothDevice.BOND_BONDED) return
+        val bonded = CompletableDeferred<Boolean>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                when (state) {
+                    BluetoothDevice.BOND_BONDED -> bonded.complete(true)
+                    BluetoothDevice.BOND_NONE -> bonded.complete(false)
+                }
+            }
+        }
+        context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        try {
+            require(device.createBond()) { "Failed to start bonding" }
+            val ok = withTimeout(BOND_TIMEOUT_MS) { bonded.await() }
+            require(ok) { "Bonding was rejected" }
+        } finally {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+    }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                if (!connected.isCompleted) connected.complete(true)
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                if (!connected.isCompleted) connected.completeExceptionally(IllegalStateException("Disconnected"))
+            }
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            servicesReady.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            descriptorWritten.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            charWritten.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        // API 33+ value-carrying callback (minSdk is 33).
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            notifications[characteristic.uuid]?.complete(value)
+        }
+    }
+
+    private companion object {
+        const val SCAN_TIMEOUT_MS = 15_000L
+        const val CONNECT_TIMEOUT_MS = 10_000L
+        const val GATT_OP_TIMEOUT_MS = 5_000L
+        const val BOND_TIMEOUT_MS = 30_000L
+    }
+}

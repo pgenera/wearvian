@@ -1,3 +1,4 @@
+# Gradle / Android / IntelliJ
 .gradle/
 build/
 local.properties
@@ -5,3 +6,12 @@ local.properties
 *.iml
 .DS_Store
 .claude/
+.kotlin/
+
+# Python (auth-server / tooling)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/

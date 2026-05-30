@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">wearvian</string>
+    <string name="presence_channel_name">Phone key presence</string>
+    <string name="presence_notification_title">wearvian active</string>
+    <string name="presence_notification_text">Acting as your Rivian phone key</string>
+</resources>

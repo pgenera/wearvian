@@ -1,0 +1,23 @@
+# Google App Engine (standard) config for the wearvian auth broker.
+#
+# Deploy:  gcloud app deploy
+#
+# The in-memory nonce store requires that all requests for a pairing session hit
+# the same instance/worker, so scaling is capped at a single instance.
+runtime: python311
+entrypoint: gunicorn -b :$PORT -w 1 --threads 8 main:app
+
+instance_class: F1
+
+automatic_scaling:
+  min_instances: 0
+  max_instances: 1
+
+handlers:
+  - url: /.*
+    script: auto
+    secure: always  # force HTTPS at the platform edge
+
+env_variables:
+  # On App Engine, TLS is terminated at the edge; keep credentials off plain HTTP.
+  ALLOW_INSECURE_HTTP: "false"
