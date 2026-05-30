@@ -55,14 +55,18 @@ class CompanionEnrollmentClient(private val context: Context) {
         messageClient.addListener(listener).await()
         logi("result listener registered on $PATH_RESULT")
         try {
-            val node = findCompanionNode(capabilityClient) ?: run {
-                logw("no companion node advertising '${EnrollmentContract.CAP_PHONE}' — throwing NoCompanionException")
+            val targets = resolveTargetNodes(capabilityClient)
+            if (targets.isEmpty()) {
+                logw("no connected nodes at all — throwing NoCompanionException")
                 throw NoCompanionException()
             }
             val payload = EnrollmentContract.buildRequest(requestId, publicKeyHex, deviceName)
-            logi("sending request to node=$node path=${EnrollmentContract.PATH_REQUEST} bytes=${payload.size}")
-            messageClient.sendMessage(node, EnrollmentContract.PATH_REQUEST, payload).await()
-            logi("request sent; awaiting result (up to ${timeoutMs}ms)")
+            targets.forEach { node ->
+                logi("sending request to node=$node path=${EnrollmentContract.PATH_REQUEST} bytes=${payload.size}")
+                runCatching { messageClient.sendMessage(node, EnrollmentContract.PATH_REQUEST, payload).await() }
+                    .onFailure { logw("sendMessage to $node failed", it) }
+            }
+            logi("request sent to ${targets.size} node(s); awaiting result (up to ${timeoutMs}ms)")
             val result = withTimeout(timeoutMs) { deferred.await() }
             logi("enrollment result received: status=${result.status}")
             return result
@@ -70,6 +74,22 @@ class CompanionEnrollmentClient(private val context: Context) {
             messageClient.removeListener(listener)
             logi("result listener removed")
         }
+    }
+
+    /**
+     * Prefer a node that advertises the companion capability; if none does
+     * (capability sync is flaky right after sideloading, especially over the
+     * cloud relay), fall back to every connected node. The companion's listener
+     * service fires on whichever node has the app; others ignore the path.
+     */
+    private suspend fun resolveTargetNodes(cc: CapabilityClient): List<String> {
+        findCompanionNode(cc)?.let {
+            logi("using capability-advertised node=$it")
+            return listOf(it)
+        }
+        val nodes = Wearable.getNodeClient(context).connectedNodes.await().map { it.id }
+        logi("capability empty; falling back to all connected nodes=$nodes")
+        return nodes
     }
 
     private suspend fun findCompanionNode(cc: CapabilityClient): String? {
