@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Capability this watch app advertises so the companion phone app can
+         target it when returning enrollment results. -->
+    <string-array name="android_wear_capabilities">
+        <item>wearvian_watch</item>
+    </string-array>
+</resources>

@@ -1,12 +1,10 @@
 package org.fivesevenfive.wearvian.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -41,7 +39,7 @@ fun WearvianApp(
             verticalArrangement = Arrangement.Center,
         ) {
             when (state.phase) {
-                Phase.LOADING, Phase.ENROLLING, Phase.PAIRING -> Busy(state.detail)
+                Phase.LOADING, Phase.PAIRING -> Busy(state.detail)
 
                 Phase.NEEDS_SETUP -> {
                     Title("wearvian")
@@ -49,11 +47,10 @@ fun WearvianApp(
                     Button(onClick = onSetup) { Text("Set up") }
                 }
 
-                Phase.AWAITING_BROWSER -> {
-                    state.qr?.let {
-                        Image(bitmap = it, contentDescription = "Sign-in QR", modifier = Modifier.size(120.dp))
-                    }
-                    Caption(state.detail ?: "Scan to sign in")
+                Phase.AWAITING_COMPANION -> {
+                    Title("Check your phone")
+                    Caption(state.detail ?: "Open wearvian companion on your phone and sign in to Rivian.")
+                    CircularProgressIndicator()
                 }
 
                 Phase.ENROLLED -> {

@@ -3,26 +3,20 @@ package org.fivesevenfive.wearvian.ui
 import android.app.Application
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
-import org.fivesevenfive.wearvian.BuildConfig
 import org.fivesevenfive.wearvian.ble.PairingManager
+import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
-import org.fivesevenfive.wearvian.net.AuthBrokerClient
-import org.fivesevenfive.wearvian.net.RivianCloud
-import org.fivesevenfive.wearvian.protocol.RivianGql
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 
-enum class Phase { LOADING, NEEDS_SETUP, AWAITING_BROWSER, ENROLLING, ENROLLED, PAIRING, BONDED, ERROR }
+enum class Phase { LOADING, NEEDS_SETUP, AWAITING_COMPANION, ENROLLED, PAIRING, BONDED, ERROR }
 
 data class SetupUiState(
     val phase: Phase = Phase.LOADING,
-    val qr: ImageBitmap? = null,
-    val browserUrl: String? = null,
     val detail: String? = null,
     val presenceRunning: Boolean = false,
 )
@@ -32,8 +26,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = EnrollmentStore(app)
     private val keyManager = KeyManager()
-    private val broker = AuthBrokerClient()
-    private val cloud = RivianCloud()
+    private val companion = CompanionEnrollmentClient(app)
 
     private val _state = mutableStateOf(SetupUiState())
     val state: State<SetupUiState> get() = _state
@@ -47,47 +40,33 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** One-time cloud enrollment via the QR/browser handoff. */
+    /**
+     * One-time enrollment via the companion phone app over the Wear Data Layer.
+     * The watch generates its keypair and sends only the public key; the phone
+     * performs the Rivian cloud login + EnrollPhone and returns the VAS IDs.
+     */
     fun startEnrollment() {
         viewModelScope.launch {
             runCatching {
-                _state.value = SetupUiState(Phase.LOADING, detail = "Contacting auth server…")
-                val session = broker.createSession(BuildConfig.BROKER_URL)
                 _state.value = SetupUiState(
-                    Phase.AWAITING_BROWSER,
-                    qr = qrImageBitmap(session.browserUrl),
-                    browserUrl = session.browserUrl,
-                    detail = "Scan to sign in",
+                    Phase.AWAITING_COMPANION,
+                    detail = "Open wearvian companion on your phone and sign in to Rivian…",
                 )
-                val tokens = broker.awaitTokens(session.pollUrl)
-
-                _state.value = SetupUiState(Phase.ENROLLING, detail = "Reading vehicle…")
-                val (_, info) = cloud.getUserInfo(tokens)
-                val vehicle = info.vehicles.firstOrNull()
-                    ?: error("No vehicles on this Rivian account")
-
                 val publicKeyHex = keyManager.ensureKey()
-                val ok = cloud.enrollPhone(
-                    tokens, info.userId, vehicle.vehicleId, publicKeyHex,
-                    deviceType = "watch", deviceName = "wearvian",
-                )
-                require(ok) { "Rivian rejected enrollment" }
-
-                // Read back our VAS phone id + identity id for this key.
-                val (raw2, _) = cloud.getUserInfo(tokens)
-                val enrolled: RivianGql.EnrolledPhone =
-                    RivianGql.findEnrolledPhone(raw2, publicKeyHex)
-                        ?: error("Enrolled, but couldn't read back phone id")
+                val result = companion.requestEnrollment(publicKeyHex, deviceName = "Pixel Watch 4")
+                if (!result.isOk) error(result.error ?: "Enrollment failed")
+                val vehicle = result.vehicles.firstOrNull()
+                    ?: error("No vehicles on this Rivian account")
 
                 store.save(
                     Enrollment(
-                        userId = info.userId,
+                        userId = result.userId,
                         vehicleId = vehicle.vehicleId,
                         vin = vehicle.vin,
                         vasVehicleId = vehicle.vasVehicleId,
                         vehiclePublicKey = vehicle.vehiclePublicKey,
-                        vasPhoneId = enrolled.vasPhoneId,
-                        identityId = enrolled.identityId,
+                        vasPhoneId = vehicle.vasPhoneId,
+                        identityId = vehicle.identityId,
                         bonded = false,
                     ),
                 )

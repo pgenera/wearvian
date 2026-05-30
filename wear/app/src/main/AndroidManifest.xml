@@ -11,9 +11,6 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
-    <!-- One-time enrollment talks to the auth broker + Rivian over IP. -->
-    <uses-permission android:name="android.permission.INTERNET" />
-
     <!-- Keep BLE presence alive while the app is in use (foreground only). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

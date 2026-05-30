@@ -2,32 +2,31 @@
 
 > ## ⚠️ Update — 2026-05-30 (read first)
 >
-> Two things changed after the plan below was written:
+> The architecture below described a "standalone auth webapp + QR/nonce handoff" for enrollment.
+> **That has been replaced and removed.** Current state:
 >
-> 1. **Enrollment/auth is moving from a webapp to a companion Android phone app.** The
->    sections that describe a "standalone auth webapp + QR/nonce handoff" (the `auth-server/`
->    Flask component, the `AuthBrokerClient`/QR flow on the watch) are **superseded**. The new
->    approach is a **companion Android phone app**, written to be **open-source-friendly and
->    extractable into its own repository**. It performs the Rivian cloud login + MFA, calls
->    `getUserInfo` + `EnrollPhone`, and hands the watch its VAS IDs / `vehiclePublicKey` /
->    `identityId` — preferably over the **Wear OS Data Layer** (`MessageClient`/`DataClient`)
->    instead of QR + IP polling. The watch's EC **private key still never leaves the watch**:
->    the watch generates the keypair and exports only its public key to the companion app for
->    `EnrollPhone`. Day-to-day unlock/drive remains **fully offline on the watch** and survives
->    the phone being destroyed (the companion app is only needed for the ~monthly re-auth /
->    re-enrollment). The existing Python `auth-server/` is **kept as reference** — its
->    `rivian_auth.py` cloud-auth logic (CreateCSRFToken → Login → LoginWithOTP → getUserInfo →
->    EnrollPhone) ports directly into the companion app.
+> 1. **Enrollment is done by a companion Android phone app, over the Wear OS Data Layer.** The
+>    companion app lives in its **own repo**
+>    ([`wearvian-companion`](https://github.com/pgenera/wearvian-companion), Apache-2.0). It
+>    performs the Rivian cloud login + MFA, calls `getUserInfo` + `EnrollPhone`, and hands the
+>    watch its `vehicleId`/`vin`/VAS IDs / `vehiclePublicKey` / `identityId` over the Data Layer
+>    (`MessageClient`/`CapabilityClient`). The watch's EC **private key never leaves the watch**:
+>    it generates the keypair and sends only its public key to the companion for `EnrollPhone`.
+>    Day-to-day unlock/drive stays **fully offline on the watch** and survives the phone being
+>    destroyed (the companion is only needed for the ~monthly re-auth / re-enrollment). The
+>    message contract is the companion repo's `PROTOCOL.md`; the watch side is
+>    `comms/EnrollmentContract.kt` + `comms/CompanionEnrollmentClient.kt`.
 >
-> 2. **This commit is a transfer checkpoint, not a finished milestone.** It was committed from
->    an environment **without the Android SDK**, to be continued where the SDK is available.
->    - ✅ **Verified here:** `wear/core-crypto/` is a standalone Kotlin/JVM module and its tests
->      **pass** (`cd wear/core-crypto && gradle clean test`). This is the security-critical core
->      (secp256r1 keygen, ECDH, HKDF-SHA256, HMAC) with known-answer parity vs. the reference.
->    - ⚠️ **Not yet built/run:** the `wear/` Android app and `auth-server/` were authored but
->      **not compiled against the Android SDK / not run on a device** in this environment. Expect
->      to resolve SDK setup, dependency versions, and manifest/permission details when you build.
->    - 🔜 **Next:** build `wear/` with the SDK; then implement the companion Android app per (1).
+> 2. **Removed:** the `auth-server/` Flask broker, the watch's `net/AuthBrokerClient.kt`,
+>    `net/RivianCloud.kt`, `ui/QrCode.kt`, the QR enrollment phase, and the watch's `INTERNET`
+>    permission. The "Component A — auth-server/" section below is **historical** and no longer
+>    describes the build. The `rivian_auth.py` cloud-auth logic now lives (ported to Kotlin) in
+>    the companion repo as `RivianAuthClient.kt`.
+>
+> 3. **Build status:** ✅ `wear/core-crypto/` tests pass; ✅ `wear/` watch app builds to a debug
+>    APK; ✅ the companion app builds to a debug APK. Toolchain: JDK 21 + Android SDK 35 (the
+>    machine default JDK 25 is too new for Gradle/AGP — build with JDK 21). What remains is
+>    on-vehicle validation (enroll → bond → drive-by-proximity).
 >
 > ---
 

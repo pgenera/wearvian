@@ -14,11 +14,6 @@ android {
         targetSdk = 34       // foreground-service types are required at 34+
         versionCode = 1
         versionName = "0.1.0"
-
-        // Base URL of your auth-server (auth-server/). Set this to your Tailscale
-        // hostname (e.g. "http://wearvian.your-tailnet.ts.net:8080") or App Engine
-        // URL. Used only during one-time enrollment.
-        buildConfigField("String", "BROKER_URL", "\"http://wearvian.local:8080\"")
     }
 
     buildTypes {
@@ -66,12 +61,10 @@ dependencies {
     // Encrypted on-device storage for keys / enrollment data
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // QR code rendering for the auth handoff
-    implementation("com.google.zxing:core:3.5.3")
-
-    // Cloud calls during one-time enrollment only
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Wear OS Data Layer: receive enrollment from the companion phone app.
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     testImplementation("junit:junit:4.13.2")
 }
