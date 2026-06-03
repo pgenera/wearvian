@@ -84,7 +84,7 @@ class PresenceService : Service() {
         // PRIMARY phone-key (the bonded device).
         adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }?.let { primary ->
             started.add(primary.address)
-            scope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK").runForever(scope) }
+            scope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK", primary = true).runForever(scope) }
         } ?: DebugLog.add("presence: no bonded ${RivianBle.DEVICE_NAME}")
 
         // Location sensors: scan by the vehicle's VAS id and open a session per new device.
@@ -103,7 +103,7 @@ class PresenceService : Service() {
                         val label = sensorLabel(hit.name)
                         DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
                         val dev = adapter.getRemoteDevice(hit.address)
-                        scope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label).runForever(scope) }
+                        scope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(scope) }
                         // Stagger connects — Android BLE can't reliably do several
                         // concurrent connect/discover attempts at once.
                         delay(STAGGER_MS)
@@ -168,7 +168,7 @@ class PresenceService : Service() {
         private const val CHANNEL_ID = "wearvian_presence"
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
-        private const val STAGGER_MS = 4_000L
+        private const val STAGGER_MS = 1_500L
 
         @Volatile
         var isRunning = false

@@ -38,6 +38,12 @@ class VehicleSession(
     private val enrollment: Enrollment,
     private val sharedSecret: ByteArray,
     private val label: String,
+    /**
+     * The PRIMARY phone-key module does the full auth handshake + 37-byte heartbeat.
+     * The location sensors (decompile: `l60/i.I()` skips the heartbeat for non-PRIMARY)
+     * just need a held connection so the car can measure RSSI for localization.
+     */
+    private val primary: Boolean,
 ) {
     private var connected = CompletableDeferred<Boolean>()
     private var servicesReady = CompletableDeferred<Boolean>()
@@ -67,11 +73,19 @@ class VehicleSession(
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
             DebugLog.ble("·", label, "discovered (${g.services.size} svc)")
+            findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
+
+            // Sensors don't do the phone-key handshake/heartbeat (PRIMARY-only); they
+            // just hold a connection so the car can RSSI-localize the watch.
+            if (!primary) {
+                DebugLog.ble("·", label, "holding (sensor presence for RSSI)")
+                while (scope.isActive && sessionAlive) delay(HOLD_MS)
+                return
+            }
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(g, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             val readChar = requireChar(g, RivianBle.CHAR_RIVIAN_READ)
-            findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
             enableNotify(g, phoneIdChar)
             enableNotify(g, nonceChar)
             DebugLog.ble("·", label, "notify enabled; → phoneId")
@@ -173,6 +187,7 @@ class VehicleSession(
         private const val CONNECT_MS = 10_000L
         private const val OP_MS = 5_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
+        private const val HOLD_MS = 2_000L
         private const val HEARTBEAT_PERIOD_MS = 75L
         private const val HB_LOG_EVERY = 13
         private const val INBOUND_LOG_EVERY = 30
