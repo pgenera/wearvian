@@ -133,7 +133,11 @@ class VehicleSession(
             while (scope.isActive && sessionAlive) {
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
-                writeChar(g, readChar, hb)
+                // Write WITHOUT response (decompile l60/i0 uses write type 1 for the
+                // legacy path): a per-beat ATT round-trip throttled us to ~1 Hz and
+                // starved the sensor connections' GATT ops. No-response completes
+                // immediately, so cadence ≈ delay() and the radio stays free.
+                writeChar(g, readChar, hb, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
                 if (counter % HB_LOG_EVERY == 0) {
                     DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter rssi=$latestRssi", hb.size)
                 }
@@ -176,9 +180,14 @@ class VehicleSession(
         runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }
     }
 
-    private suspend fun writeChar(g: BluetoothGatt, char: BluetoothGattCharacteristic, value: ByteArray) {
+    private suspend fun writeChar(
+        g: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+    ) {
         charWritten = CompletableDeferred()
-        g.writeCharacteristic(char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        g.writeCharacteristic(char, value, writeType)
         withTimeout(OP_MS) { charWritten.await() }
     }
 
