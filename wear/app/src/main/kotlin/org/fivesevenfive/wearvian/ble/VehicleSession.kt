@@ -84,6 +84,10 @@ class VehicleSession(
             g.discoverServices()
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
+            // Request a fast connection interval — the default power-save interval
+            // (~1 s) throttled our heartbeats to ~0.9 Hz; the car wants multi-Hz
+            // presence for drive. HIGH ≈ 7.5–15 ms interval.
+            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
             DebugLog.ble("·", label, "discovered (${g.services.size} svc)")
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
@@ -134,9 +138,10 @@ class VehicleSession(
                     DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter rssi=$latestRssi", hb.size)
                 }
                 counter++
-                // Re-read RSSI sequentially (after the write completes) to avoid
-                // overlapping GATT ops; the result lands for the next cycle.
-                g.readRemoteRssi()
+                // Refresh RSSI periodically (not every beat) so the extra GATT
+                // round-trip doesn't throttle the heartbeat rate; it lands for a
+                // later cycle. RSSI doesn't change fast enough to need every beat.
+                if (counter % RSSI_EVERY == 0) g.readRemoteRssi()
                 delay(HEARTBEAT_PERIOD_MS)
             }
         } finally {
@@ -229,6 +234,8 @@ class VehicleSession(
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
         private const val HEARTBEAT_PERIOD_MS = 300L
         private const val HB_LOG_EVERY = 10
+        /** Re-read RSSI every Nth heartbeat (~every 1.2 s at 300 ms cadence). */
+        private const val RSSI_EVERY = 4
         private const val INBOUND_LOG_EVERY = 30
         /** Default RSSI before the first readRemoteRssi (l60/j0.h = −128 = 0x80). */
         private const val RSSI_DEFAULT = -128
