@@ -1,6 +1,8 @@
 package org.fivesevenfive.wearvian.crypto
 
+import javax.crypto.Cipher
 import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -27,6 +29,25 @@ object RivianCrypto {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))
         return mac.doFinal(message)
+    }
+
+    /**
+     * AES-GCM with a 128-bit (16-byte) tag, matching the Rivian app's
+     * `AES_128/GCM/NoPadding` (key length picks AES-128). [iv] is the 12-byte
+     * nonce; [aad] is the additional authenticated data. Returns ciphertext‖tag.
+     */
+    fun aesGcmEncrypt(key: ByteArray, iv: ByteArray, aad: ByteArray, plaintext: ByteArray): ByteArray =
+        aesGcm(Cipher.ENCRYPT_MODE, key, iv, aad, plaintext)
+
+    /** Inverse of [aesGcmEncrypt]; verifies the tag and returns the plaintext. */
+    fun aesGcmDecrypt(key: ByteArray, iv: ByteArray, aad: ByteArray, ciphertext: ByteArray): ByteArray =
+        aesGcm(Cipher.DECRYPT_MODE, key, iv, aad, ciphertext)
+
+    private fun aesGcm(mode: Int, key: ByteArray, iv: ByteArray, aad: ByteArray, data: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(mode, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+        if (aad.isNotEmpty()) cipher.updateAAD(aad)
+        return cipher.doFinal(data)
     }
 
     /**

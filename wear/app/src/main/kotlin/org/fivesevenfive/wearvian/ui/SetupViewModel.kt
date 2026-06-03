@@ -6,6 +6,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
@@ -14,6 +17,7 @@ import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.logi
+import org.fivesevenfive.wearvian.util.logw
 
 enum class Phase { LOADING, NEEDS_SETUP, AWAITING_COMPANION, ENROLLED, PAIRING, BONDED, ERROR }
 
@@ -35,7 +39,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         val e = store.load()
-        logi("refresh: enrolled=${e != null} bonded=${e?.bonded} vin=${e?.vin}")
+        // Log key presence on every launch so persistence across app updates is
+        // verifiable from logcat: enrolled+hasKey should stay true after an update.
+        logi("refresh: enrolled=${e != null} hasKey=${keyManager.hasKey()} bonded=${e?.bonded} vin=${e?.vin}")
         _state.value = when {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
             e.bonded -> SetupUiState(Phase.BONDED)
@@ -110,14 +116,45 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Send an authenticated active-entry command (e.g. lock/unlock) over BLE. */
+    fun sendCommand(commandCode: Int, label: String) {
+        val enrollment = store.load() ?: run { logw("sendCommand: not enrolled"); return }
+        logi("sendCommand: $label (0x%04x)".format(commandCode))
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
+            }
+        }
+    }
+
     fun setPresence(on: Boolean) {
         logi("setPresence: $on")
         if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
         _state.value = _state.value.copy(presenceRunning = on)
     }
 
+    /**
+     * Clears the local enrollment/pairing cache and stops presence, but **keeps the
+     * watch's non-exportable Keystore key**. Re-enrolling then reuses the same public
+     * key — which the vehicle already trusts — so this never forces a re-key (and
+     * never requires deleting/re-adding the key on the vehicle). Use [wipeIdentity]
+     * for the rare, deliberate full reset.
+     */
     fun reset() {
-        logi("reset: clearing enrollment + key, stopping presence")
+        logi("reset: clearing enrollment cache + stopping presence (KEEPING Keystore key)")
+        PresenceService.stop(getApplication())
+        store.clear()
+        _state.value = SetupUiState(Phase.NEEDS_SETUP)
+    }
+
+    /**
+     * Destructive: also deletes the non-exportable Keystore key, forcing generation
+     * of a brand-new key and a full re-enrollment (the old phone key must be removed
+     * on the vehicle). Not wired to a casual button — only call behind explicit
+     * confirmation.
+     */
+    fun wipeIdentity() {
+        logw("wipeIdentity: deleting Keystore key + enrollment — full re-key + re-enroll required")
         PresenceService.stop(getApplication())
         store.clear()
         keyManager.deleteKey()

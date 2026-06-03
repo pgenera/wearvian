@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -15,6 +19,7 @@ import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
+import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 
 /**
  * Single-screen Wear UI that reflects the current [SetupUiState]. Stateless and
@@ -28,6 +33,7 @@ fun WearvianApp(
     onSetup: () -> Unit,
     onPair: () -> Unit,
     onTogglePresence: (Boolean) -> Unit,
+    onCommand: (Int, String) -> Unit = { _, _ -> },
     onReset: () -> Unit,
 ) {
     LaunchedEffect(Unit) { onRefresh() }
@@ -71,7 +77,23 @@ fun WearvianApp(
                     ) {
                         Text(if (state.presenceRunning) "Deactivate" else "Activate phone key")
                     }
-                    Button(onClick = onReset, modifier = Modifier.padding(top = 8.dp)) { Text("Reset") }
+                    Button(
+                        onClick = { onCommand(ActiveCommandFrames.Cmd.UNLOCK_ALL, "UNLOCK") },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    ) { Text("Unlock") }
+                    Button(
+                        onClick = { onCommand(ActiveCommandFrames.Cmd.LOCK_ALL, "LOCK") },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    ) { Text("Lock") }
+                    // Two-tap confirm so an accidental tap can't clear enrollment.
+                    // Note: this keeps the watch's key; re-enrolling reuses it.
+                    var confirmReset by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = { if (confirmReset) onReset() else confirmReset = true },
+                        modifier = Modifier.padding(top = 8.dp),
+                    ) {
+                        Text(if (confirmReset) "Tap again to re-enroll" else "Reset enrollment")
+                    }
                 }
 
                 Phase.ERROR -> {

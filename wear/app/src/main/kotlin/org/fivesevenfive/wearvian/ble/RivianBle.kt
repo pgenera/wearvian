@@ -13,6 +13,16 @@ object RivianBle {
     val CHAR_PHONE_NONCE_VEHICLE_NONCE: UUID = UUID.fromString("E020A15D-E730-4B2C-908B-51DAF9D41E19")
     val CHAR_VEHICLE_STATUS: UUID = UUID.fromString("afb2e704-842b-4e6a-9bd2-b1b305828f24")
 
+    /**
+     * Encrypted active-command channel: the app writes 64-byte AES-128-GCM command
+     * frames here (NOT the legacy 0x18 [CHAR_ACTIVE_ENTRY]); the vehicle notifies
+     * status/ranging back. See docs/passive-entry-protocol.md.
+     */
+    val CHAR_ACTIVE_COMMAND: UUID = UUID.fromString("5ae32b92-eafb-471b-afe8-e88eec4a4774")
+
+    /** "RIVIAN READ CHAR" — the continuous drive presence-heartbeat channel. */
+    val CHAR_RIVIAN_READ: UUID = UUID.fromString("52495649-414e-2052-4541-442043484152")
+
     /** Standard Client Characteristic Configuration Descriptor. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
