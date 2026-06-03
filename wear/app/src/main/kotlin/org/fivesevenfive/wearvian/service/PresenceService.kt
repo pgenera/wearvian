@@ -96,7 +96,9 @@ class PresenceService : Service() {
         while (scope.isActive) {
             runCatching {
                 val hits = SensorScanner(this).discover(svc)
-                hits.forEach { hit ->
+                // Connect strongest-RSSI (closest) sensors first — they matter most for
+                // inside-cabin localization and are the most reliable to bring up.
+                hits.sortedByDescending { it.rssi }.forEach { hit ->
                     if (started.add(hit.address)) {
                         val label = sensorLabel(hit.name)
                         DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
