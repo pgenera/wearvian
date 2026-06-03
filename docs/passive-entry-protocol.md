@@ -277,6 +277,32 @@ before GATT I/O. Open question this tests: whether the sensors accept a direct b
 car-mediated provisioning (in the app, `createBond` is triggered mid-handshake off the `Q`-char
 `SIGNED_PARAMS_SENT` step, which our simplified PK handshake doesn't replicate).
 
+## RE update 2026-06-03 (3) — sensor bonding is gated on a key-derived "signed params" auth
+
+On-vehicle `1344` (full `-b all` OS log) + decompile pinned why `createBond()` on a sensor fails:
+
+- OS stack: `createBond` starts real SMP (`BOND_NONE→BONDING`) but the pairing link dies at
+  establishment — `btm_ble_read_remote_features_complete: HCI_ERR_CONN_FAILED_ESTABLISHMENT`,
+  then `smp_proc_pairing_cmpl: SMP_FAIL`, **no SMP Pairing-Request/Failed PDUs**. So the sensor
+  isn't completing SMP — it isn't *receptive* to bonding from us.
+- Decompile: the auth state machine is `INIT → PID_PNONCE_SENT → SIGNED_PARAMS_SENT →
+  AUTHENTICATED` (`l60/z`), and `createBond()` (`l60/i.r()`) only fires **in SIGNED_PARAMS_SENT**,
+  after the vehicle answers. The `SIGNED_PARAMS_SENT` step (`l60/h` case 1) computes a "signed
+  params" message via **`s60/b0.c(context, tVar, …)`** and writes it to the **`Q` char
+  `0823DA14` (PLAIN_DATA_IN)**; there's a `s60.u.PSEUDO_PAIRING` / `PSEUDO_PAIRING_NOT_ALLOWED`
+  capability flag (the snoop's `10 a8` PhoneProfile write — `0xa8` encodes it).
+
+**Conclusion:** the sensor SMP bond is *authorized* by a cryptographic proof derived from the
+enrollment/session key (the signed params on `Q`). The phone proves it holds the key, the sensor
+then becomes receptive, and only then does SMP pairing succeed. Our simplified handshake stops at
+PID/pNonce and never sends signed params → sensors never become receptive → SMP fails (contention
+was only a secondary effect of 4 concurrent attempts). The PRIMARY works because it was bonded
+during initial provisioning (add-key mode) and persists.
+
+**Gating RE target:** `s60/b0.c` (the signed-params builder) — **did not decompile to clean Java**
+(jadx: "Method not decompiled", 399 instr). Needs a smali/baksmali pass + the `n1`/`l60.x`
+protobuf shape. This is the prerequisite for sensor bonding, hence for drive localization.
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,
