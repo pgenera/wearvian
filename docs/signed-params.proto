@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+// Rivian BLE phone-key "signed params" bond-authorization message tree.
+// Reverse-engineered from com.rivian.android.consumer (classes4.dex protobuf-lite
+// `newMessageInfo` strings), 2026-06-03. Field NUMBERS + WIRE TYPES are authoritative;
+// FIELD names are the real recovered ones; MESSAGE type names are descriptive (the
+// originals are obfuscated to single letters, noted as `// <letter>`). oneof sibling
+// cases we don't traverse are listed as unknown.
+//
+// Built by s60/b0.c, signed by s60/b0.e. The `SignedBundle` is written to the
+// "Q" characteristic 0823DA14-040B-4914-BF7C-450AFA2850DA to authorize a sensor bond.
+// Raw smali + decode notes: docs/signed-params-protobuf-smali.txt
+
+// ===== signing envelope =====
+
+message SignedBundle {              // n1  — written to the Q char
+  SignedMessage signed_msg_list   = 1;   // (singular on the wire; one SignedMessage)
+  // field 2 = unsigned_msg_list (SignedMessage) — unused by the bond handshake
+}
+
+message SignedMessage {             // e2  — built by s60/b0.e
+  bytes     msg_list_data          = 1;  // = PayloadList serialized (the HMAC'd bytes)
+  uint32    sequence_num           = 2;
+  bool      excludes_device_nonce  = 3;  // (pNonce == null) — false for us, so omitted
+  bool      excludes_vehicle_nonce = 4;  // (vNonce == null) — false for us, so omitted
+  Signature signature              = 5;
+}
+
+message Signature {                 // c2
+  Algorithm type = 1;
+  bytes     data = 2;  // HMAC-SHA256(sessionSecret,
+                       //   msg_list_data ‖ sequence_num(4,LE) ‖ phoneId(16,BE) ‖ pNonce(16) ‖ vNonce(16))
+}
+
+enum Algorithm {                    // b2
+  ALGORITHM_NONE = 0;
+  HMAC_SHA256    = 1;
+}
+
+// ===== payload (serialized into SignedMessage.msg_list_data) =====
+
+message PayloadList {               // p1
+  repeated Payload msgs = 1;
+}
+
+message Payload {                   // l1
+  uint32 transaction_id = 1;        // = l60.x.c() : starts 1, += 2 per call (1, 3, 5, …)
+  oneof content {                   // fields 2..11; only these two are emitted by s60/b0.c:
+    RangingMsg    ranging = 5;      // l1.C  (r)
+    PhoneProfile  profile = 9;      // l1.D  (f0)
+    // cases 2,3,4,6,7,8,10,11 = other (unknown) message types
+  }
+}
+
+message RangingMsg {                // r
+  oneof message {                   // fields 1..2
+    IdNonce id_nonce = 1;           // r.C  (x) — emitted EMPTY in the signed-params path
+    // case 2 = unknown
+  }
+}
+
+message IdNonce {                   // x  (sent empty here)
+  bytes id    = 1;
+  bytes nonce = 2;
+}
+
+message PhoneProfile {              // f0
+  oneof message {                   // fields 1..4
+    DeviceModel model = 1;          // f0.C  (s1)
+    // cases 2,3,4 = unknown
+  }
+}
+
+message DeviceModel {               // s1
+  Model  model     = 1;             // DEFAULT(0) for non-iOS → omitted
+  string model_raw = 2;             // sw-version string (s60.h.e())
+}
+
+enum Model {                        // r1  (abridged; the enum is iOS-centric)
+  DEFAULT           = 0;
+  IPHONE_12_PRO     = 4;
+  IPHONE_12_PRO_MAX = 6;
+  IPHONE_12         = 7;
+  IPHONE_11         = 8;
+  IPHONE_11_PRO     = 9;
+  IPHONE_11_PRO_MAX = 10;
+  IPHONE_12_MINI    = 12;
+  IPHONE_13_MINI    = 13;
+  // … more iPhone models …
+}
