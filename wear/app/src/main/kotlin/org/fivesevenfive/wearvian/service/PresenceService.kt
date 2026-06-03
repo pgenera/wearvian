@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.RivianBle
+import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
@@ -99,10 +100,20 @@ class PresenceService : Service() {
 
     private suspend fun presenceLoop(enrollment: Enrollment) {
         DebugLog.add("presence: loop start for ${enrollment.vin}")
-        // NOTE: open scanning for sensors (SensorScanner) returns 0 — the vehicle's
-        // sensors are matched by advertised vehicleId/nodeId, not a generic service
-        // UUID, and need VehicleSensorInfo (address/location). That's the next drive
-        // milestone; kept out of this hot path so it can't delay the working heartbeat.
+        // Discover the vehicle's sensors IN PARALLEL (the sensors advertise the vehicle's
+        // VAS id as their service UUID — see SensorScanner). Non-blocking so it can't delay
+        // the working phone-key heartbeat; logs which sensors are reachable + RSSI.
+        vehicleServiceUuid(enrollment.vasVehicleId)?.let { svc ->
+            scope.launch {
+                delay(2_000) // let the phone-key handshake settle first
+                runCatching {
+                    DebugLog.add("presence: scanning sensors (svc=${svc.toString().take(8)}…)")
+                    val hits = SensorScanner(this@PresenceService).discover(svc)
+                    DebugLog.add("presence: found ${hits.size} sensor(s)")
+                    hits.forEach { DebugLog.ble("·", "sensor", "${it.name ?: "?"} ${it.address} rssi=${it.rssi}") }
+                }
+            }
+        } ?: DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}', skipping sensor scan")
         while (scope.isActive) {
             runCatching { runSession(enrollment) }
                 .onFailure { DebugLog.add("presence: session ended — ${it.message}") }
@@ -237,6 +248,18 @@ class PresenceService : Service() {
             }
         }
     }
+
+    /** Parse the vasVehicleId (dashed or 32-hex) into the service UUID the sensors advertise. */
+    private fun vehicleServiceUuid(vasVehicleId: String): UUID? = runCatching {
+        val s = vasVehicleId.trim()
+        if (s.contains("-")) {
+            UUID.fromString(s)
+        } else {
+            val h = s.lowercase().removePrefix("0x")
+            require(h.length == 32) { "not 32 hex chars" }
+            UUID.fromString("${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}")
+        }
+    }.getOrNull()
 
     private fun shortId(uuid: UUID): String = when (uuid) {
         RivianBle.CHAR_ACTIVE_COMMAND -> "0x20"

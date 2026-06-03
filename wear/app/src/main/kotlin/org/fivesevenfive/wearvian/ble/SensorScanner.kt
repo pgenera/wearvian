@@ -12,11 +12,11 @@ import kotlinx.coroutines.delay
 import org.fivesevenfive.wearvian.util.logw
 
 /**
- * Discovers the vehicle's BLE sensors for drive localization. They advertise the
- * `RIVSENSORSERVICE` service ([RivianBle.SERVICE_ACTIVE_ENTRY]) — the PRIMARY module
- * ("Rivian Phone Key") plus the interior/exterior location sensors ("Rivian Sensor N").
- * Drive (passive entry) needs the car to triangulate the watch across these by RSSI;
- * this is the discovery step toward connecting to them (see docs/passive-entry-protocol.md).
+ * Discovers the vehicle's BLE sensors for drive localization. Per the decompiled app
+ * (`l60/y0`), the sensors advertise the **vehicle's VAS id as their service UUID**, and
+ * each scan result yields a sensor (address, interior/exterior location, RSSI). The car
+ * triangulates the watch across these by RSSI to enable drive (inside) vs unlock (door).
+ * See docs/passive-entry-protocol.md.
  */
 @SuppressLint("MissingPermission")
 class SensorScanner(context: Context) {
@@ -26,8 +26,11 @@ class SensorScanner(context: Context) {
     private val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
-    /** Scan for sensor-service devices for [durationMs]; returns the strongest RSSI per device. */
-    suspend fun discover(durationMs: Long = 6_000L): List<Hit> {
+    /**
+     * Scan for the vehicle's sensors — devices advertising [serviceUuid] (the vehicle's
+     * VAS id). Returns the strongest RSSI per device over [durationMs].
+     */
+    suspend fun discover(serviceUuid: java.util.UUID, durationMs: Long = 6_000L): List<Hit> {
         val scanner = adapter.bluetoothLeScanner ?: run {
             logw("SensorScanner: Bluetooth off / no scanner")
             return emptyList()
@@ -42,7 +45,7 @@ class SensorScanner(context: Context) {
             }
         }
         val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(RivianBle.SERVICE_ACTIVE_ENTRY))
+            .setServiceUuid(ParcelUuid(serviceUuid))
             .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
