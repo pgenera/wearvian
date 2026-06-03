@@ -128,16 +128,26 @@ class VehicleSession(
             }
             g.readRemoteRssi()
 
+            // Heartbeat write type, exactly as the decompile chooses it: the app sets
+            // `qVar.o = (0x1b.properties & PROPERTY_WRITE) != 0` (l60/p) and writes with
+            // `(qVar.o || preCcc) ? WRITE_TYPE_DEFAULT(2) : WRITE_TYPE_NO_RESPONSE(1)`
+            // (l60/i0). So: with-response only if 0x1b advertises it, else no-response.
+            // A per-beat with-response round-trip is also what throttled us to ~1 Hz and
+            // starved the sensor handshakes, so a no-response char is the good case.
+            val supportsWriteWithResponse =
+                (readChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+            val hbWriteType =
+                if (supportsWriteWithResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            DebugLog.ble("·", label, "0x1b props=0x%02x → %s".format(
+                readChar.properties, if (supportsWriteWithResponse) "WITH_RESPONSE" else "NO_RESPONSE"))
+
             // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
             while (scope.isActive && sessionAlive) {
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
-                // Write WITHOUT response (decompile l60/i0 uses write type 1 for the
-                // legacy path): a per-beat ATT round-trip throttled us to ~1 Hz and
-                // starved the sensor connections' GATT ops. No-response completes
-                // immediately, so cadence ≈ delay() and the radio stays free.
-                writeChar(g, readChar, hb, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                writeChar(g, readChar, hb, hbWriteType)
                 if (counter % HB_LOG_EVERY == 0) {
                     DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter rssi=$latestRssi", hb.size)
                 }
