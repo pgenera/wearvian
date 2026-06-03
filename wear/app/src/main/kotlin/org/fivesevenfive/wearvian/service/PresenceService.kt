@@ -29,7 +29,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.RivianBle
-import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
@@ -100,14 +99,10 @@ class PresenceService : Service() {
 
     private suspend fun presenceLoop(enrollment: Enrollment) {
         DebugLog.add("presence: loop start for ${enrollment.vin}")
-        // One-shot discovery of the vehicle's sensor-service devices (PRIMARY +
-        // location sensors) for visibility — drive localization will connect to these.
-        runCatching {
-            DebugLog.add("presence: scanning for sensors…")
-            val hits = SensorScanner(this).discover()
-            DebugLog.add("presence: found ${hits.size} sensor-service device(s)")
-            hits.forEach { DebugLog.ble("·", "scan", "${it.name ?: "?"} ${it.address} rssi=${it.rssi}") }
-        }
+        // NOTE: open scanning for sensors (SensorScanner) returns 0 — the vehicle's
+        // sensors are matched by advertised vehicleId/nodeId, not a generic service
+        // UUID, and need VehicleSensorInfo (address/location). That's the next drive
+        // milestone; kept out of this hot path so it can't delay the working heartbeat.
         while (scope.isActive) {
             runCatching { runSession(enrollment) }
                 .onFailure { DebugLog.add("presence: session ended — ${it.message}") }

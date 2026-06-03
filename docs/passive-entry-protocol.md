@@ -196,10 +196,19 @@ on-vehicle. **Drive does NOT**, because passive entry is **localization-based**,
   `velocity`). So the motion flag is not the blocker; the missing piece is the sensor connections.
 
 **Implication for our app:** a single "Rivian Phone Key" connection + heartbeat gives auth + presence
-but **not localization**, so drive can't be granted. Drive requires a new component that scans for the
-sensors and runs the session across all of them. Open implementation questions: the source of
-`VehicleSensorInfo` (sensor node IDs/locations — from enrollment data we don't yet capture, vs.
-discovered live), and whether each sensor needs the full handshake or just RSSI presence.
+but **not localization**, so drive can't be granted. Drive requires a new component that connects to
+the sensors and runs the session across all of them.
+
+**On-vehicle (2026-06-03):** wake-lock fix confirmed — heartbeat streams continuously (ctr 0,13,26,…).
+An open BLE scan filtered by `SERVICE_ACTIVE_ENTRY` found **0** devices (driver's seat and outside),
+so that's the wrong discovery mechanism. From the decompile: the sensors are matched by their
+**advertised vehicleId/nodeId** (`VehicleSensorInfo.a` = NODE_ID/VEHICLE_ID/ADDRESS adv fields), and
+**`VehicleSensorInfo` carries `address` (MAC), `sensorLocation` (INTERIOR/EXTERIOR), `sensorNodeId`,
+`vehicleId`, `rssi`, `isCache`** (`com.rivian.android.vehicle.session.definition.VehicleSensorInfo`).
+Also: the `0x1c` status byte differs by position (`…10 07…` driver vs `…10 0f…` outside) — encodes
+location. **Milestone-2 unknowns:** the real scan service-UUID + advertised-data layout (in `l60/y0`/
+`l60/i`, archive at `/home/pgenera/rivian-re`), and the source of `VehicleSensorInfo` (enrollment/cloud
+vs. primary-reported — the network code is in classes2, not yet decompiled to clean Java).
 
 ## What this means for the app
 
