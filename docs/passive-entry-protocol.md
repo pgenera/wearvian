@@ -303,6 +303,30 @@ during initial provisioning (add-key mode) and persists.
 (jadx: "Method not decompiled", 399 instr). Needs a smali/baksmali pass + the `n1`/`l60.x`
 protobuf shape. This is the prerequisite for sensor bonding, hence for drive localization.
 
+### Signed-params — smali RE (2026-06-03, baksmali of classes3.dex)
+
+`s60/b0.c` builds a protobuf `n1` and signs it via **`s60/b0.e(List<l1>, l60.x)`** (the same signer
+the PRE-CCC ranging path uses). The signing is **HMAC-SHA256 with the session key — no new crypto**:
+```
+payload   = p1{ repeated l1 msgs }.toByteArray()        // the two built l1 messages, serialized
+counter   = xVar.r (++ per signed msg)                  // l60.x/l60.t session packet counter
+signature = q60.a.b( payload ‖ s60.h.n(counter) ‖ s60.h.p(xVar.b) ‖ pNonce ‖ vNonce )
+          = HMAC-SHA256( sessionSecret, payload ‖ counter(4,LE) ‖ phoneId(16,BE) ‖ pNonce(16) ‖ vNonce(16) )
+```
+- `xVar.b = phoneId UUID`; `s60.h.p = o(uuid, BIG_ENDIAN)` (16B BE). `s60.h.n = int → 4B LE`.
+- `xVar.d = pNonce`, `xVar.e = vNonce`. `q60.a.b(x) = HMAC-SHA256(sessionSecret, x)` (already reproduced).
+- Envelope `e2` (built by `e()`): `{ data=payload(ByteString), seq=counter, vNonceNull=bool, pNonceNull=bool,
+  sig=c2{ algo=HMAC_SHA256, mac=ByteString } }`. Written to `Q` (`0823DA14`, PLAIN_DATA_IN).
+
+The `n1` payload carries: l1#1 = `{ counter, r{ x{} } }`; l1#2 = `{ PhoneProfile f0{ s1{ model(r1 enum),
+swVersion(s60.h.e()) } } }`. Capability byte = `s60.h.f(ctx) | PSEUDO_PAIRING`.
+
+**Crypto is solved; the remaining work is byte-exact protobuf reconstruction** of the ~10 message
+types (`n1,l1,r,x,f0,s1,p1,e2,c2,d2` + enums `r1` model, `b2`=HMAC_SHA256) — field numbers/wire types
+recoverable from the generated protobuf classes in `smali/classes3` — then: build+sign signed-params →
+write to `Q` → await `Q` response → `createBond` → subscribe encrypted chars → heartbeat. No unknown
+key or unrecoverable secret remains.
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,
