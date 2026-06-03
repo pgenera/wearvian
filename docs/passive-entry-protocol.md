@@ -248,6 +248,35 @@ Handshake chars confirmed identical to ours: `m60/c.f = aa49565a…` (0x12 phone
 `72CDDCA3…`, chars `R/S/T`) is a newer encrypted path our Gen-1 car does **not** use — the snoop is
 the LEGACY path, which is exactly our working active-command handshake.
 
+## RE update 2026-06-03 (2) — on-vehicle: write type, cadence, and the sensor bond wall
+
+On-vehicle log `1240a` with submit-code + disconnect-status logging resolved the open items:
+
+- **0x1b write type — WITH_RESPONSE.** The heartbeat char advertises `props=0x0c` =
+  `PROPERTY_WRITE(0x08) | PROPERTY_WRITE_NO_RESPONSE(0x04)`. Since `0x08` is set,
+  `qVar.o=true`, so the app writes with `WRITE_TYPE_DEFAULT` (with response). Our adaptive
+  picker chose WITH_RESPONSE — correct. (Earlier hardcoded NO_RESPONSE was wrong-vs-app.)
+- **Heartbeat cadence ~1 Hz is correct, not a bug.** `l60/j0.e` reschedules at
+  `(qVar.o || preCcc) ? 1000 : 300` ms. With `qVar.o=true` (0x1b has PROPERTY_WRITE) the app's
+  own cadence is **1000 ms**. Our measured ~1.1 s matches; the 300 ms value only applies to a
+  no-response heartbeat char. `requestConnectionPriority(HIGH)` is accepted (`connPriReq=true`)
+  but doesn't materially change this.
+- **Congestion was NOT the sensor blocker.** The submit-code logging showed the real failure:
+  each sensor `connected → discovered → disconnected status=0x05` ~200 ms after discovery,
+  *before any write*. `0x05` = HCI **Authentication Failure**. The later `SERVICE_NOT_BOUND` /
+  CCCD timeouts are just downstream of operating on the dead link.
+- **Root cause: sensors require link-layer bonding/encryption, and we only bonded the PRIMARY.**
+  The sensors are separate BLE devices (`74:B8:39:…`); the first CCCD write to an encrypted char
+  (we hit `0x1c` first) forces encryption, there's no bond → `0x05`. Confirmed in the decompile:
+  `l60/i.r()` calls `createBond()` for any device with `getBondState()!=BONDED`, and `l60/b0.e`
+  only advances a **sensor** to `AUTHENTICATED` when `getBondState()==BONDED`. The app also
+  subscribes only the unencrypted handshake chars (`0x12`/`0x15`) pre-auth — never `0x1c` first.
+
+**Implication / current step:** bond each sensor (`createBond` + await `ACTION_BOND_STATE_CHANGED`)
+before GATT I/O. Open question this tests: whether the sensors accept a direct bond, or require
+car-mediated provisioning (in the app, `createBond` is triggered mid-handshake off the `Q`-char
+`SIGNED_PARAMS_SENT` step, which our simplified PK handshake doesn't replicate).
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,

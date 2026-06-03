@@ -8,7 +8,10 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -78,6 +81,16 @@ class VehicleSession(
 
     private suspend fun runOnce(scope: CoroutineScope) {
         reset()
+        // Sensors are separate, unbonded BLE devices; their characteristics require
+        // an encrypted link, so the first CCCD write to an unbonded sensor is dropped
+        // with HCI 0x05 (auth failure). The official app bonds each device
+        // (decompile l60/i.r() → createBond; b0.e gates a sensor's AUTHENTICATED state
+        // on bondState==BONDED). Bond first, then connect with encryption available.
+        if (!primary && device.bondState != BluetoothDevice.BOND_BONDED) {
+            val ok = ensureBonded()
+            DebugLog.ble("·", label, "bond after createBond: state=${bondName(device.bondState)} ok=$ok")
+            if (!ok) error("bonding failed (state=${bondName(device.bondState)})")
+        }
         DebugLog.ble("·", label, "connecting ${device.address}")
         val g = device.connectGatt(context, false, gattCallback)
         try {
@@ -177,6 +190,41 @@ class VehicleSession(
         charWritten = CompletableDeferred()
         notifications.clear()
         latestRssi = RSSI_DEFAULT
+    }
+
+    /** Initiate + await link-layer bonding with this device (for unbonded sensors). */
+    private suspend fun ensureBonded(): Boolean {
+        if (device.bondState == BluetoothDevice.BOND_BONDED) return true
+        val bonded = CompletableDeferred<Boolean>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                @Suppress("DEPRECATION")
+                val dev = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                if (dev?.address != device.address) return
+                when (i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)) {
+                    BluetoothDevice.BOND_BONDED -> if (!bonded.isCompleted) bonded.complete(true)
+                    BluetoothDevice.BOND_NONE -> if (!bonded.isCompleted) bonded.complete(false)
+                }
+            }
+        }
+        context.registerReceiver(
+            receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_NOT_EXPORTED,
+        )
+        return try {
+            val started = device.createBond()
+            DebugLog.ble("·", label, "createBond()=$started state=${bondName(device.bondState)}")
+            if (!started && device.bondState != BluetoothDevice.BOND_BONDED) false
+            else runCatching { withTimeout(BOND_MS) { bonded.await() } }.getOrDefault(false)
+        } finally {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
+    }
+
+    private fun bondName(s: Int): String = when (s) {
+        BluetoothDevice.BOND_BONDED -> "BONDED"
+        BluetoothDevice.BOND_BONDING -> "BONDING"
+        BluetoothDevice.BOND_NONE -> "NONE"
+        else -> "?$s"
     }
 
     private fun requireChar(g: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
@@ -299,6 +347,7 @@ class VehicleSession(
     companion object {
         private const val CONNECT_MS = 10_000L
         private const val OP_MS = 5_000L
+        private const val BOND_MS = 20_000L
         private const val PHONEID_ECHO_MS = 3_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
