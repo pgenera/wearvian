@@ -37,6 +37,7 @@ import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
+import org.fivesevenfive.wearvian.util.toHexString
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -221,8 +222,14 @@ class PresenceService : Service() {
             val waiter = notifications[characteristic.uuid]
             if (waiter != null && !waiter.isCompleted) {
                 waiter.complete(value)
+                return
+            }
+            // Vehicle status (0x1c) is the meaningful "did it take effect" signal — log it
+            // fully with bytes. The high-rate ranging stream (0x20/0x1b) is rate-limited.
+            if (characteristic.uuid == RivianBle.CHAR_VEHICLE_STATUS) {
+                DebugLog.ble("←", "0x1c", "status ${value.toHexString()}", value.size)
             } else if (inbound++ % INBOUND_LOG_EVERY == 0) {
-                DebugLog.ble("←", shortId(characteristic.uuid), "notify", value.size)
+                DebugLog.ble("←", shortId(characteristic.uuid), "notify ${value.toHexString().take(16)}…", value.size)
             }
         }
     }
