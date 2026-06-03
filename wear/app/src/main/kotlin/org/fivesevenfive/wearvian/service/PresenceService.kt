@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -57,6 +58,7 @@ class PresenceService : Service() {
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     private var gatt: BluetoothGatt? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var loopJob: Job? = null
 
     private var connected = CompletableDeferred<Boolean>()
     private var servicesReady = CompletableDeferred<Boolean>()
@@ -85,7 +87,14 @@ class PresenceService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        scope.launch { presenceLoop(enrollment) }
+        // Guard against duplicate starts (e.g. a re-tap after the UI desynced) —
+        // a second presence loop would fight the first and kill the connection.
+        if (loopJob?.isActive == true) {
+            DebugLog.add("presence: already running; ignoring duplicate start")
+            return START_STICKY
+        }
+        isRunning = true
+        loopJob = scope.launch { presenceLoop(enrollment) }
         return START_STICKY
     }
 
@@ -266,6 +275,7 @@ class PresenceService : Service() {
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping")
+        isRunning = false
         sessionAlive = false
         runCatching { gatt?.disconnect(); gatt?.close() }
         gatt = null
@@ -286,6 +296,12 @@ class PresenceService : Service() {
         private const val INBOUND_LOG_EVERY = 30
         /** Starting value for the 1-byte phone status/motion flag (TBD on-vehicle). */
         private val HEARTBEAT_FLAG = 0x80.toByte()
+
+        /** True while the service is running — the UI reads this so the toggle stays
+         *  in sync across screen/navigation changes (it's a foreground service that
+         *  outlives any single composition). */
+        @Volatile
+        var isRunning = false
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, PresenceService::class.java))

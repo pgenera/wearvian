@@ -44,7 +44,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         logi("refresh: enrolled=${e != null} hasKey=${keyManager.hasKey()} bonded=${e?.bonded} vin=${e?.vin}")
         _state.value = when {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
-            e.bonded -> SetupUiState(Phase.BONDED)
+            // Reflect the real foreground-service state so the toggle doesn't desync
+            // when the UI recomposes (e.g. returning from the debug console).
+            e.bonded -> SetupUiState(Phase.BONDED, presenceRunning = PresenceService.isRunning)
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
         }
     }
