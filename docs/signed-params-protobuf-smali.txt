@@ -1,0 +1,101 @@
+# Raw protobuf-lite schema material for the signed-params (s60/b0) message tree
+# Extracted via baksmali of classes4.dex, 2026-06-03. Authoritative field numbers/wire types.
+# Decode: info-string per-field = [fieldNumber char][wireType char(&0x3f)]; 0x09=MESSAGE 0x1b=MSG_LIST
+#   0x0c=ENUM 0x0a=BYTES 0x08=STRING 0x07=BOOL 0x04=INT32 0x0b=UINT32 ; 0x3c=oneof-message
+
+===================== n1 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"bitField0_" "signedMsgList_" "unsignedMsgList_" 
+-- info string --
+
+===================== e2 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"bitField0_" "excludesDeviceNonce_" "excludesVehicleNonce_" "msgListData_" "sequenceNum_" "signature_" 
+-- info string --
+
+===================== c2 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"data_" "type_" 
+-- info string --
+
+===================== l1 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"content_" "contentCase_" "transactionId_" 
+-- info string --
+
+===================== r (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"message_" "messageCase_" 
+-- info string --
+
+===================== x (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"id_" "nonce_" 
+-- info string --
+
+===================== f0 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"message_" "messageCase_" 
+-- info string --
+
+===================== s1 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"model_" "modelRaw_" 
+-- info string --
+
+===================== p1 (.super Lcom/google/protobuf/e0;) =====================
+-- field names --
+"msgs_" 
+-- info string --
+
+
+######## complete info-strings (raw, authoritative wire schema) ########
+n1   "\u0000\u0002\u0000\u0001\u0001\u0002\u0002\u0000\u0000\u0000\u0001\u1009\u0000\u0002\u1009\u0001"
+e2   "\u0000\u0005\u0000\u0001\u0001\u0005\u0005\u0000\u0000\u0000\u0001\n\u0002\u000b\u0003\u0007\u0004\u0007\u0005\u1009\u0000"
+c2   "\u0000\u0002\u0000\u0000\u0001\u0002\u0002\u0000\u0000\u0000\u0001\u000c\u0002\n"
+l1   "\u0000\u000b\u0001\u0000\u0001\u000b\u000b\u0000\u0000\u0000\u0001\u000b\u0002<\u0000\u0003<\u0000\u0004<\u0000\u0005<\u0000\u0006<\u0000\u0007<\u0000\u0008<\u0000\t<\u0000\n<\u0000\u000b<\u0000"
+r    "\u0000\u0002\u0001\u0000\u0001\u0002\u0002\u0000\u0000\u0000\u0001<\u0000\u0002<\u0000"
+x    "\u0000\u0002\u0000\u0000\u0001\u0002\u0002\u0000\u0000\u0000\u0001\n\u0002\n"
+f0   "\u0000\u0004\u0001\u0000\u0001\u0004\u0004\u0000\u0000\u0000\u0001<\u0000\u0002<\u0000\u0003<\u0000\u0004<\u0000"
+s1   "\u0000\u0002\u0000\u0000\u0001\u0002\u0002\u0000\u0000\u0000\u0001\u000c\u0002\u0208"
+p1   "\u0000\u0001\u0000\u0000\u0001\u0001\u0001\u0000\u0001\u0000\u0001\u001b"
+
+######## RECONSTRUCTED SCHEMA (decoded from the info-strings above) ########
+# Field numbers + wire types are AUTHORITATIVE (from protobuf-lite newMessageInfo header[10] + entries).
+# Header = 10 chars: flags,fieldCount,oneofCount,hasBits,minF,maxF,numEntries,mapCount,repeatedCount,checkInit
+# (CONFIRM) = lock against a reprovision btsnoop (protoc --decode_raw) or builder-setter field#.
+
+message N1 {              # n1 — signed bundle, written to Q char 0823DA14 (PLAIN_DATA_IN)
+  E2 signed_msg   = 1;    # signedMsgList_  (singular MESSAGE 0x09, obj idx0)
+  ?? unsigned_msg = 2;    # unsignedMsgList_ (unused in our handshake path)
+}
+message E2 {              # e2 — signed envelope (built by s60/b0.e)
+  bytes  msg_list_data         = 1;  # 0x0a BYTES  = P1{repeated L1}.toByteArray()  (the HMAC'd payload)
+  uint32 sequence_num          = 2;  # 0x0b UINT32 = counter (xVar.r++)
+  bool   excludes_device_nonce = 3;  # 0x07 BOOL   = (pNonce==null) -> false for us (omitted)
+  bool   excludes_vehicle_nonce= 4;  # 0x07 BOOL   = (vNonce==null) -> false for us (omitted)
+  C2     signature             = 5;  # 0x09 MESSAGE
+}
+message C2 {              # c2 — the MAC
+  Algorithm type = 1;     # 0x0c ENUM b2 ; HMAC_SHA256 = 1
+  bytes     data = 2;     # 0x0a BYTES = HMAC-SHA256(sessionSecret,
+                          #   payload ‖ counter(4,LE) ‖ phoneId(16,BE) ‖ pNonce(16) ‖ vNonce(16))
+}
+enum Algorithm { NONE=0; HMAC_SHA256=1; }       # b2
+
+message P1 { repeated L1 msgs = 1; }            # p1 (0x1b MESSAGE_LIST) -> serialized into e2.msg_list_data
+message L1 {              # l1
+  uint32 transaction_id = 1;        # 0x0b UINT32 = tVar.c() counter
+  oneof content {                   # fields 2..11 (10 oneof MESSAGE cases 0x3c)
+    R  r  = ?;   # (CONFIRM case#) l1.C(r)  -> wraps R
+    F0 f0 = ?;   # (CONFIRM case#) l1.D(f0) -> wraps F0 (phone profile)
+  }
+}
+message R  { oneof message { X x = ?; } }                 # r — 2 oneof cases (CONFIRM)
+message X  { bytes id = 1; bytes nonce = 2; }             # x — appears built EMPTY in our path (CONFIRM)
+message F0 { oneof message { S1 s1 = ?; } }               # f0 — 4 oneof cases (CONFIRM)
+message S1 { Model model = 1; string model_raw = 2; }     # s1 — phone profile (model enum r1 + sw-version string s60.h.e())
+
+# STATUS: structure + the signing preimage are solved offline. Remaining to lock (snoop or oracle):
+#   the 4 (CONFIRM) oneof case numbers, whether X carries id/nonce, and the Model(r1) value.
+# These don't affect the HMAC math (HMAC is over our own serialized payload), only car-side parseability.
