@@ -64,6 +64,7 @@ class VehicleSession(
     /** Live phone→device RSSI, fed into the heartbeat. −128 (=0x80) until the first read. */
     @Volatile private var latestRssi: Int = RSSI_DEFAULT
     private var inbound = 0
+    private var cmdInbound = 0
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
@@ -87,35 +88,38 @@ class VehicleSession(
             // Request a fast connection interval — the default power-save interval
             // (~1 s) throttled our heartbeats to ~0.9 Hz; the car wants multi-Hz
             // presence for drive. HIGH ≈ 7.5–15 ms interval.
-            g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-            DebugLog.ble("·", label, "discovered (${g.services.size} svc)")
+            val connPri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            DebugLog.ble("·", label, "discovered (${g.services.size} svc) connPriReq=$connPri")
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(g, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             val readChar = requireChar(g, RivianBle.CHAR_RIVIAN_READ)
-            findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
-            findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { enableNotify(g, it) }
-            enableNotify(g, phoneIdChar)
-            enableNotify(g, nonceChar)
-            DebugLog.ble("·", label, "notify enabled; → phoneId")
+            val n1c = findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
+            val n20 = findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { enableNotify(g, it) }
+            val n12 = enableNotify(g, phoneIdChar)
+            val n15 = enableNotify(g, nonceChar)
+            DebugLog.ble("·", label, "notify 0x1c=$n1c 0x20=$n20 0x12=$n12 0x15=$n15; → phoneId")
 
             // phoneId write; the PRIMARY echoes the vehicle-id back. Sensors may not
             // echo — tolerate a missing echo, but reject a real mismatch.
             notifications[phoneIdChar.uuid] = CompletableDeferred()
             writeChar(g, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
+            DebugLog.ble("→", "$label/0x12", "phoneId written; awaiting echo")
             val vid = runCatching { withTimeout(PHONEID_ECHO_MS) { notifications.getValue(phoneIdChar.uuid).await() } }
                 .getOrNull()
             when {
                 vid == null -> DebugLog.ble("·", label, "no phoneId echo (sensor); continuing")
                 !PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId) -> error("vehicle id mismatch")
-                else -> DebugLog.ble("·", label, "phoneId echo ok")
+                else -> DebugLog.ble("·", label, "phoneId echo ok ${vid.toHexString().take(12)}…")
             }
 
             // pNonce/vNonce auth — required: the heartbeat HMAC needs vNonce.
             val pNonce = ByteArray(16).also { SecureRandom().nextBytes(it) }
             notifications[nonceChar.uuid] = CompletableDeferred()
             writeChar(g, nonceChar, ActiveCommandFrames.authNonce(sharedSecret, pNonce))
-            val vResp = withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() }
+            DebugLog.ble("→", "$label/0x15", "pNonce written; awaiting vNonce")
+            val vResp = runCatching { withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() } }
+                .getOrElse { DebugLog.ble("·", label, "vNonce TIMEOUT — auth failed"); throw it }
             val vNonce = vResp.copyOf(16)
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
@@ -182,12 +186,28 @@ class VehicleSession(
         return null
     }
 
-    private suspend fun enableNotify(g: BluetoothGatt, char: BluetoothGattCharacteristic) {
+    /** Enable notifications; returns true iff the CCCD write was acked in time. */
+    private suspend fun enableNotify(g: BluetoothGatt, char: BluetoothGattCharacteristic): Boolean {
         g.setCharacteristicNotification(char, true)
-        val cccd = char.getDescriptor(RivianBle.CCCD) ?: return
+        val cccd = char.getDescriptor(RivianBle.CCCD) ?: run {
+            DebugLog.ble("·", label, "no CCCD on ${tag(char.uuid)}")
+            return false
+        }
         descriptorWritten = CompletableDeferred()
         g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }
+        val ok = runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }.getOrNull()
+        if (ok != true) DebugLog.ble("·", label, "notify CCCD timeout/fail on ${tag(char.uuid)}")
+        return ok == true
+    }
+
+    /** Short tag for a known characteristic UUID, for readable logs. */
+    private fun tag(uuid: UUID): String = when (uuid) {
+        RivianBle.CHAR_PHONE_ID_VEHICLE_ID -> "0x12"
+        RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE -> "0x15"
+        RivianBle.CHAR_RIVIAN_READ -> "0x1b"
+        RivianBle.CHAR_VEHICLE_STATUS -> "0x1c"
+        RivianBle.CHAR_ACTIVE_COMMAND -> "0x20"
+        else -> uuid.toString().take(8)
     }
 
     private suspend fun writeChar(
@@ -206,8 +226,15 @@ class VehicleSession(
             if (newState == BluetoothProfile.STATE_CONNECTED && !connected.isCompleted) {
                 connected.complete(true)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                val wasAlive = sessionAlive
                 sessionAlive = false
-                if (!connected.isCompleted) connected.completeExceptionally(IllegalStateException("disconnected status=$status"))
+                // status 0x13=remote-terminated, 0x08=link timeout, 0x16=local close,
+                // 0x3e=failed-to-establish, 0x85=gatt error.
+                if (!connected.isCompleted) {
+                    connected.completeExceptionally(IllegalStateException("disconnected status=$status"))
+                } else if (wasAlive) {
+                    DebugLog.ble("·", label, "disconnected status=0x%02x".format(status))
+                }
             }
         }
 
@@ -236,11 +263,14 @@ class VehicleSession(
             if (characteristic.uuid == RivianBle.CHAR_VEHICLE_STATUS) {
                 DebugLog.ble("←", "$label/0x1c", "status ${value.toHexString()}", value.size)
             } else if (characteristic.uuid == RivianBle.CHAR_ACTIVE_COMMAND) {
-                if (inbound++ % INBOUND_LOG_EVERY == 0) {
-                    DebugLog.ble("←", "$label/0x20", "msg ${value.toHexString().take(16)}…", value.size)
+                // 0x20 carries the vehicle's ranging/drive-state messages — the channel
+                // we least understand. Log the first few in full, then throttle, full hex.
+                if (cmdInbound < CMD_LOG_FIRST || cmdInbound % CMD_LOG_EVERY == 0) {
+                    DebugLog.ble("←", "$label/0x20", "msg ${value.toHexString()}", value.size)
                 }
+                cmdInbound++
             } else if (inbound++ % INBOUND_LOG_EVERY == 0) {
-                DebugLog.ble("←", "$label", "notify ${value.toHexString().take(12)}…", value.size)
+                DebugLog.ble("←", "$label/${tag(characteristic.uuid)}", "notify ${value.toHexString().take(12)}…", value.size)
             }
         }
     }
@@ -256,6 +286,9 @@ class VehicleSession(
         /** Re-read RSSI every Nth heartbeat (~every 1.2 s at 300 ms cadence). */
         private const val RSSI_EVERY = 4
         private const val INBOUND_LOG_EVERY = 30
+        /** 0x20 ranging-message logging: full hex for the first few, then every Nth. */
+        private const val CMD_LOG_FIRST = 6
+        private const val CMD_LOG_EVERY = 8
         /** Default RSSI before the first readRemoteRssi (l60/j0.h = −128 = 0x80). */
         private const val RSSI_DEFAULT = -128
         /** s60/i0.SensorInformation.getId() = 1 — first write to 0x20 to start ranging. */
