@@ -16,6 +16,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.PowerManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,7 @@ class PresenceService : Service() {
     private val keyManager = KeyManager()
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     private var gatt: BluetoothGatt? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private var connected = CompletableDeferred<Boolean>()
     private var servicesReady = CompletableDeferred<Boolean>()
@@ -67,6 +69,14 @@ class PresenceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         logi("PresenceService: onStartCommand")
         startAsForeground()
+        // Hold the CPU on so the ~12 Hz heartbeat loop and BLE writes keep running
+        // when the watch screen sleeps (otherwise doze freezes the coroutine).
+        if (wakeLock == null) {
+            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wearvian:presence")
+                .apply { acquire() }
+            DebugLog.add("presence: wake lock acquired")
+        }
         val enrollment = EnrollmentStore(this).load()
         if (enrollment == null) {
             DebugLog.add("presence: not enrolled; stopping")
@@ -243,6 +253,8 @@ class PresenceService : Service() {
         sessionAlive = false
         runCatching { gatt?.disconnect(); gatt?.close() }
         gatt = null
+        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+        wakeLock = null
         scope.cancel()
         super.onDestroy()
     }
@@ -254,7 +266,7 @@ class PresenceService : Service() {
         private const val OP_MS = 5_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
         private const val HEARTBEAT_PERIOD_MS = 75L          // ~13 Hz
-        private const val HB_LOG_EVERY = 26                  // log ~every 2 s
+        private const val HB_LOG_EVERY = 13                  // log ~every 1 s
         private const val INBOUND_LOG_EVERY = 30
         /** Starting value for the 1-byte phone status/motion flag (TBD on-vehicle). */
         private val HEARTBEAT_FLAG = 0x80.toByte()

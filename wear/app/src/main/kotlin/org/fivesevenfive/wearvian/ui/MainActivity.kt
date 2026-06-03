@@ -6,6 +6,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,8 +16,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.foundation.SwipeToDismissValue
+import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
+import androidx.wear.compose.material.SwipeToDismissBox
 import org.fivesevenfive.wearvian.util.logi
 
 class MainActivity : ComponentActivity() {
@@ -57,25 +62,33 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            // Swipe left → BLE debug console; swipe right → back to the app.
+            // Swipe left → BLE debug console; native Wear swipe-right → back.
             var showDebug by remember { mutableStateOf(false) }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        var dx = 0f
-                        detectHorizontalDragGestures(
-                            onDragStart = { dx = 0f },
-                            onDragEnd = {
-                                if (dx < -60f) showDebug = true
-                                else if (dx > 60f) showDebug = false
-                            },
-                        ) { _, amount -> dx += amount }
-                    },
-            ) {
-                if (showDebug) {
-                    DebugScreen()
-                } else {
+            if (showDebug) {
+                val dismiss = rememberSwipeToDismissBoxState()
+                LaunchedEffect(dismiss.currentValue) {
+                    if (dismiss.currentValue == SwipeToDismissValue.Dismissed) {
+                        showDebug = false
+                        dismiss.snapTo(SwipeToDismissValue.Default)
+                    }
+                }
+                SwipeToDismissBox(state = dismiss) { isBackground ->
+                    Box(Modifier.fillMaxSize().background(Color.Black)) {
+                        if (!isBackground) DebugScreen()
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            var dx = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { dx = 0f },
+                                onDragEnd = { if (dx < -60f) showDebug = true },
+                            ) { _, amount -> dx += amount }
+                        },
+                ) {
                     WearvianApp(
                         state = state,
                         onRefresh = vm::refresh,

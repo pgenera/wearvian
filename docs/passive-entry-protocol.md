@@ -175,9 +175,31 @@ heartbeat(37B) = counter(4,LE, ++ per msg) ‖ flag(1) ‖ HMAC-SHA256(sessionSe
 - This explains the snoop exactly: 37B = 4+1+32; LE counter; and same-counter→different-HMAC across
   sessions (because pNonce/vNonce differ per session) = the "per-session keyed" behavior we measured.
 
-**Both active commands AND drive are now fully specified.** Everything maps onto our existing crypto
-core; only the initial session counter and the 1-byte motion flag are minor on-vehicle confirmations.
-Decompile/tools/`mini-java` persist at `/home/pgenera/.claude/jobs/1a773a26/tmp/`.
+**Both active commands AND drive heartbeat are fully specified.** The crypto/frames map onto our
+existing core. Decompile/tools persist at `/home/pgenera/.claude/jobs/1a773a26/tmp/` (`jx3/` = clean
+Java of classes3.dex).
+
+## Drive needs multi-sensor localization (confirmed in the Android app)
+
+Active *commands* (unlock/lock/frunk) work with a single connection to "Rivian Phone Key" — verified
+on-vehicle. **Drive does NOT**, because passive entry is **localization-based**, handled by a separate
+`l60/j0` "BLEPath_SensorPassiveEntryManager":
+
+- The app scans (by service UUID — the `RIVSENSORSERVICE` / `SERVICE_ACTIVE_ENTRY` UUID the sensors
+  advertise) and opens a `l60.q0` connection to **each vehicle sensor**: a `PRIMARY` (the main module)
+  plus location sensors, identified via `VehicleSensorInfo {sensorType (s60.g0), sensorLocation,
+  sensorNodeId, rssi, isPreCCC, isCache}` (`com.rivian.android.vehicle.session.definition`).
+- It runs the presence/heartbeat session across them and gates on **RSSI** (e.g. `rssi <= -85` checks)
+  so the car can triangulate the phone: inside cabin → enable drive; near a door → unlock that door.
+- The heartbeat is a **PhoneStatusMotion** message (`p60/b`); its 1-byte flag is the phone's motion/
+  velocity state (HMAC-covered, so any value authenticates — `b60` `SensorConnectionState` even tracks
+  `velocity`). So the motion flag is not the blocker; the missing piece is the sensor connections.
+
+**Implication for our app:** a single "Rivian Phone Key" connection + heartbeat gives auth + presence
+but **not localization**, so drive can't be granted. Drive requires a new component that scans for the
+sensors and runs the session across all of them. Open implementation questions: the source of
+`VehicleSensorInfo` (sensor node IDs/locations — from enrollment data we don't yet capture, vs.
+discovered live), and whether each sensor needs the full handshake or just RSSI presence.
 
 ## What this means for the app
 
