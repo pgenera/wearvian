@@ -62,9 +62,11 @@ class VehicleSession(
         val g = device.connectGatt(context, false, gattCallback)
         try {
             withTimeout(CONNECT_MS) { connected.await() }
+            DebugLog.ble("·", label, "connected")
             g.discoverServices()
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
+            DebugLog.ble("·", label, "discovered (${g.services.size} svc)")
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(g, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
@@ -72,6 +74,7 @@ class VehicleSession(
             findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
             enableNotify(g, phoneIdChar)
             enableNotify(g, nonceChar)
+            DebugLog.ble("·", label, "notify enabled; → phoneId")
 
             notifications[phoneIdChar.uuid] = CompletableDeferred()
             writeChar(g, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))

@@ -102,6 +102,9 @@ class PresenceService : Service() {
                         DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
                         val dev = adapter.getRemoteDevice(hit.address)
                         scope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label).runForever(scope) }
+                        // Stagger connects — Android BLE can't reliably do several
+                        // concurrent connect/discover attempts at once.
+                        delay(STAGGER_MS)
                     }
                 }
             }.onFailure { DebugLog.add("presence: sensor scan failed — ${it.message}") }
@@ -163,6 +166,7 @@ class PresenceService : Service() {
         private const val CHANNEL_ID = "wearvian_presence"
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
+        private const val STAGGER_MS = 4_000L
 
         @Volatile
         var isRunning = false
