@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -194,9 +195,16 @@ class VehicleSession(
             return false
         }
         descriptorWritten = CompletableDeferred()
-        g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        // The submit return code is the only in-process congestion signal Android
+        // gives (e.g. WRITE_REQUEST_BUSY); a rejected submit never calls back, so
+        // surface it instead of letting it decay into a silent await timeout.
+        val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        if (rc != BluetoothStatusCodes.SUCCESS) {
+            DebugLog.ble("·", label, "notify CCCD ${tag(char.uuid)} submit rejected rc=${rcName(rc)}")
+            return false
+        }
         val ok = runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }.getOrNull()
-        if (ok != true) DebugLog.ble("·", label, "notify CCCD timeout/fail on ${tag(char.uuid)}")
+        if (ok != true) DebugLog.ble("·", label, "notify CCCD ${tag(char.uuid)} acked=false (timeout)")
         return ok == true
     }
 
@@ -217,8 +225,21 @@ class VehicleSession(
         writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
     ) {
         charWritten = CompletableDeferred()
-        g.writeCharacteristic(char, value, writeType)
+        // Distinguish "the stack rejected the write" (in-process congestion, e.g.
+        // WRITE_REQUEST_BUSY — a real signal) from "write accepted but no response"
+        // (airtime starvation or remote silence). A rejected submit never calls back.
+        val rc = g.writeCharacteristic(char, value, writeType)
+        if (rc != BluetoothStatusCodes.SUCCESS) error("write ${tag(char.uuid)} rejected rc=${rcName(rc)}")
         withTimeout(OP_MS) { charWritten.await() }
+    }
+
+    /** Decode the common BluetoothStatusCodes returned by GATT submit calls. */
+    private fun rcName(rc: Int): String = when (rc) {
+        BluetoothStatusCodes.SUCCESS -> "SUCCESS"
+        BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY -> "WRITE_REQUEST_BUSY(201)"
+        BluetoothStatusCodes.ERROR_GATT_WRITE_NOT_ALLOWED -> "WRITE_NOT_ALLOWED(200)"
+        BluetoothStatusCodes.ERROR_PROFILE_SERVICE_NOT_BOUND -> "SERVICE_NOT_BOUND"
+        else -> "rc=$rc"
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
