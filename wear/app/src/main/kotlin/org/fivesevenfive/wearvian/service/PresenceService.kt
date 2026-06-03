@@ -36,9 +36,10 @@ import java.util.UUID
  * Foreground service that maintains the drive-presence sessions. It runs one
  * [VehicleSession] to the bonded phone-key PRIMARY module AND one to each location
  * sensor it discovers (sensors advertise the vehicle's VAS id as their service UUID),
- * concurrently, so the car can triangulate the watch across them (inside → drive,
- * door → unlock). Holds a wake lock so the heartbeats keep streaming with the screen
- * off. All steps mirror to [DebugLog] → logcat. See docs/passive-entry-protocol.md.
+ * concurrently. Every session authenticates and streams an RSSI-carrying heartbeat,
+ * so the car can triangulate the watch across them (inside → drive, door → unlock).
+ * Holds a wake lock so the heartbeats keep streaming with the screen off. All steps
+ * mirror to [DebugLog] → logcat. See docs/passive-entry-protocol.md.
  */
 @SuppressLint("MissingPermission")
 class PresenceService : Service() {

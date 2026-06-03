@@ -210,6 +210,44 @@ location. **Milestone-2 unknowns:** the real scan service-UUID + advertised-data
 `l60/i`, archive at `/home/pgenera/rivian-re`), and the source of `VehicleSensorInfo` (enrollment/cloud
 vs. primary-reported — the network code is in classes2, not yet decompiled to clean Java).
 
+## RE update 2026-06-03 — heartbeat flag = RSSI; sensors authenticate; 0x20 kickoff (confirmed in decompile)
+
+Read the per-connection session class `l60/i` and the ranging manager `l60/j0` (clean Java in
+`/home/pgenera/rivian-re/java-classes3`). Three of our drive assumptions were wrong; corrected:
+
+1. **The heartbeat's 5th "flag" byte is the phone-measured RSSI, not a motion flag.** `l60/j0`
+   ("BLEPath_SensorPassiveEntryManager") calls `BluetoothGatt.readRemoteRssi()` every ~300 ms,
+   stores it (`j0.g`, default `j0.h = -128`), and `l60/i0` builds the heartbeat as a `PASSIVE_ENTRY`
+   `VasRequest` with `attrValue = { (byte) rssi }`. So:
+   ```
+   heartbeat(37B) = counter(4,LE) ‖ rssiByte(1) ‖ HMAC(secret, pNonce(16)‖vNonce(16)‖counter(4,LE)‖rssiByte(1))
+   ```
+   This explains the snoop exactly (`0x80` = −128 before the first reading, then `0xb0–0xbe` = −80…−66
+   = real RSSI). **Our code sent a constant `0x80` ⇒ the car always saw us at −128 (farthest) ⇒ never
+   localized us in-cabin ⇒ "no key detected".** Flag byte must track live RSSI.
+
+2. **Heartbeat cadence is ~300 ms** (`j0.e` self-reschedules at `(qVar.o||preCcc) ? 1000 : 300` ms;
+   `l60/i.n()` enforces a 300 ms floor), not 75 ms. Write type is `NO_RESPONSE` unless `qVar.o`.
+
+3. **Sensors fully authenticate too** — "connect-and-hold" was wrong (it's why the held links churn:
+   an unauthenticated idle GATT connection is dropped). `l60/i.m()`/`y()` run the phoneId+nonce
+   handshake for non-PRIMARY as well; only the *extra* PRIMARY-only coroutine `l60/i.I()` is gated on
+   `f == PRIMARY`. Every connection: connect → handshake → AUTHENTICATED → ranging heartbeat to 0x1b
+   carrying that link's RSSI. The car triangulates across all of them (`rssi > -85` = in-range gate
+   in `l60/i0`).
+
+**0x20 (`5ae32b92…`) is `VEHICLE_MESSAGE_UUID`** — the main message channel (also the active-command
+channel). On 0x20 notify-enable the app writes `{ SensorInformation.getId() }` (`s60/i0`:
+SensorInformation **= 0x01**) to it (`l60/i.m()`), matching the snoop's first `0x20` write `01`. The
+`10a8` write is a `PhoneProfile` message (PhoneProfile **= 0x10**, payload `a8`). Ranging is enabled
+per-connection by `l60/i.o()` ("Ranging session enabled"), gated on `tVar.v` (isAuth), driven by the
+vehicle's 0x20 messages — which starts the `j0` heartbeat stream.
+
+Handshake chars confirmed identical to ours: `m60/c.f = aa49565a…` (0x12 phoneId, written
+**BIG_ENDIAN**), `m60/c.g = e020a15d…` (0x15 nonce). PRE_CCC variant (`l60/i.j==true`, service
+`72CDDCA3…`, chars `R/S/T`) is a newer encrypted path our Gen-1 car does **not** use — the snoop is
+the LEGACY path, which is exactly our working active-command handshake.
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,

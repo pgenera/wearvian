@@ -24,12 +24,22 @@ import java.util.UUID
 /**
  * One presence connection to a single vehicle BLE device — the phone-key PRIMARY
  * module OR one of the location sensors. Each holds its own GATT + state so several
- * can run concurrently; the car triangulates the watch across them by RSSI to enable
- * drive (inside) vs unlock (door). See docs/passive-entry-protocol.md.
+ * can run concurrently; the car triangulates the watch across them by the RSSI each
+ * link reports, to enable drive (inside cabin) vs unlock (door). See
+ * docs/passive-entry-protocol.md.
  *
- * Flow per (re)connection: connect → discover → notify → phoneId echo → pNonce/vNonce
- * auth → stream the 37-byte heartbeat to 0x1b. [sharedSecret] is the per-vehicle ECDH
- * secret (computed once by the caller; identical for every device of this vehicle).
+ * Per the decompiled app (`l60/i`, `l60/j0`, `l60/i0`), EVERY connection — PRIMARY
+ * and sensors alike — runs the full phoneId+nonce auth handshake, then streams a
+ * 37-byte heartbeat to 0x1b every ~300 ms. The heartbeat's 5th byte is the
+ * phone-measured RSSI to that device (`readRemoteRssi`, default −128), which is the
+ * actual localization signal the car ranges on. A connection that only bonds/holds
+ * (no auth, no RSSI heartbeat) is dropped by the peripheral — which is why our old
+ * "connect-and-hold" sensors churned.
+ *
+ * Flow per (re)connection: connect → discover → notify (0x12/0x15/0x1c/0x20) →
+ * phoneId echo → pNonce/vNonce auth → write SensorInformation(0x01) to 0x20 →
+ * stream RSSI heartbeats to 0x1b. [sharedSecret] is the per-vehicle ECDH secret
+ * (computed once by the caller; identical for every device of this vehicle).
  */
 @SuppressLint("MissingPermission")
 class VehicleSession(
@@ -39,9 +49,9 @@ class VehicleSession(
     private val sharedSecret: ByteArray,
     private val label: String,
     /**
-     * The PRIMARY phone-key module does the full auth handshake + 37-byte heartbeat.
-     * The location sensors (decompile: `l60/i.I()` skips the heartbeat for non-PRIMARY)
-     * just need a held connection so the car can measure RSSI for localization.
+     * The PRIMARY phone-key module. Kept for logging/future use (the decompile runs
+     * an extra PRIMARY-only coroutine `l60/i.I()`); the auth + RSSI-heartbeat path
+     * below is identical for PRIMARY and sensors.
      */
     private val primary: Boolean,
 ) {
@@ -51,6 +61,8 @@ class VehicleSession(
     private var charWritten = CompletableDeferred<Boolean>()
     private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
     @Volatile private var sessionAlive = false
+    /** Live phone→device RSSI, fed into the heartbeat. −128 (=0x80) until the first read. */
+    @Volatile private var latestRssi: Int = RSSI_DEFAULT
     private var inbound = 0
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
@@ -73,28 +85,29 @@ class VehicleSession(
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
             DebugLog.ble("·", label, "discovered (${g.services.size} svc)")
-            findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
-
-            // Sensors don't do the phone-key handshake/heartbeat (PRIMARY-only); they
-            // just hold a connection so the car can RSSI-localize the watch.
-            if (!primary) {
-                DebugLog.ble("·", label, "holding (sensor presence for RSSI)")
-                while (scope.isActive && sessionAlive) delay(HOLD_MS)
-                return
-            }
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(g, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             val readChar = requireChar(g, RivianBle.CHAR_RIVIAN_READ)
+            findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
+            findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { enableNotify(g, it) }
             enableNotify(g, phoneIdChar)
             enableNotify(g, nonceChar)
             DebugLog.ble("·", label, "notify enabled; → phoneId")
 
+            // phoneId write; the PRIMARY echoes the vehicle-id back. Sensors may not
+            // echo — tolerate a missing echo, but reject a real mismatch.
             notifications[phoneIdChar.uuid] = CompletableDeferred()
             writeChar(g, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
-            val vid = withTimeout(OP_MS) { notifications.getValue(phoneIdChar.uuid).await() }
-            require(PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId)) { "vehicle id mismatch" }
+            val vid = runCatching { withTimeout(PHONEID_ECHO_MS) { notifications.getValue(phoneIdChar.uuid).await() } }
+                .getOrNull()
+            when {
+                vid == null -> DebugLog.ble("·", label, "no phoneId echo (sensor); continuing")
+                !PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId) -> error("vehicle id mismatch")
+                else -> DebugLog.ble("·", label, "phoneId echo ok")
+            }
 
+            // pNonce/vNonce auth — required: the heartbeat HMAC needs vNonce.
             val pNonce = ByteArray(16).also { SecureRandom().nextBytes(it) }
             notifications[nonceChar.uuid] = CompletableDeferred()
             writeChar(g, nonceChar, ActiveCommandFrames.authNonce(sharedSecret, pNonce))
@@ -102,12 +115,28 @@ class VehicleSession(
             val vNonce = vResp.copyOf(16)
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
+            // Kick off the vehicle message channel: write SensorInformation (0x01) to
+            // 0x20 so the car starts ranging this link (decompile: l60/i.m()).
+            findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { msgChar ->
+                runCatching { writeChar(g, msgChar, byteArrayOf(MSG_SENSOR_INFORMATION)) }
+                    .onSuccess { DebugLog.ble("→", "$label/0x20", "SensorInformation(01)", 1) }
+                    .onFailure { DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${it.message}") }
+            }
+            g.readRemoteRssi()
+
+            // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
             while (scope.isActive && sessionAlive) {
-                val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, HEARTBEAT_FLAG)
+                val rssiByte = latestRssi.toByte()
+                val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
                 writeChar(g, readChar, hb)
-                if (counter % HB_LOG_EVERY == 0) DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter", hb.size)
+                if (counter % HB_LOG_EVERY == 0) {
+                    DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter rssi=$latestRssi", hb.size)
+                }
                 counter++
+                // Re-read RSSI sequentially (after the write completes) to avoid
+                // overlapping GATT ops; the result lands for the next cycle.
+                g.readRemoteRssi()
                 delay(HEARTBEAT_PERIOD_MS)
             }
         } finally {
@@ -123,6 +152,7 @@ class VehicleSession(
         descriptorWritten = CompletableDeferred()
         charWritten = CompletableDeferred()
         notifications.clear()
+        latestRssi = RSSI_DEFAULT
     }
 
     private fun requireChar(g: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
@@ -161,6 +191,10 @@ class VehicleSession(
             servicesReady.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) latestRssi = rssi
+        }
+
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             descriptorWritten.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
@@ -177,6 +211,10 @@ class VehicleSession(
             }
             if (characteristic.uuid == RivianBle.CHAR_VEHICLE_STATUS) {
                 DebugLog.ble("←", "$label/0x1c", "status ${value.toHexString()}", value.size)
+            } else if (characteristic.uuid == RivianBle.CHAR_ACTIVE_COMMAND) {
+                if (inbound++ % INBOUND_LOG_EVERY == 0) {
+                    DebugLog.ble("←", "$label/0x20", "msg ${value.toHexString().take(16)}…", value.size)
+                }
             } else if (inbound++ % INBOUND_LOG_EVERY == 0) {
                 DebugLog.ble("←", "$label", "notify ${value.toHexString().take(12)}…", value.size)
             }
@@ -186,11 +224,15 @@ class VehicleSession(
     companion object {
         private const val CONNECT_MS = 10_000L
         private const val OP_MS = 5_000L
+        private const val PHONEID_ECHO_MS = 3_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
-        private const val HOLD_MS = 2_000L
-        private const val HEARTBEAT_PERIOD_MS = 75L
-        private const val HB_LOG_EVERY = 13
+        // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
+        private const val HEARTBEAT_PERIOD_MS = 300L
+        private const val HB_LOG_EVERY = 10
         private const val INBOUND_LOG_EVERY = 30
-        private val HEARTBEAT_FLAG = 0x80.toByte()
+        /** Default RSSI before the first readRemoteRssi (l60/j0.h = −128 = 0x80). */
+        private const val RSSI_DEFAULT = -128
+        /** s60/i0.SensorInformation.getId() = 1 — first write to 0x20 to start ranging. */
+        private const val MSG_SENSOR_INFORMATION = 0x01.toByte()
     }
 }
