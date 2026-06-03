@@ -16,6 +16,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
@@ -192,9 +194,15 @@ class VehicleSession(
         latestRssi = RSSI_DEFAULT
     }
 
-    /** Initiate + await link-layer bonding with this device (for unbonded sensors). */
-    private suspend fun ensureBonded(): Boolean {
-        if (device.bondState == BluetoothDevice.BOND_BONDED) return true
+    /**
+     * Initiate + await link-layer bonding with this device (for unbonded sensors).
+     * Serialized across all sessions via [bondGate]: firing createBond() on several
+     * sensors at once while the PK link is active fails the pairing connection
+     * (HCI_ERR_CONN_FAILED_ESTABLISHMENT) before SMP can run; one clean bond at a
+     * time gives the controller a usable radio.
+     */
+    private suspend fun ensureBonded(): Boolean = bondGate.withLock {
+        if (device.bondState == BluetoothDevice.BOND_BONDED) return@withLock true
         val bonded = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
@@ -207,10 +215,12 @@ class VehicleSession(
                 }
             }
         }
+        // ACTION_BOND_STATE_CHANGED is a system broadcast, so the receiver must be
+        // EXPORTED — NOT_EXPORTED silently drops it (we never saw the result).
         context.registerReceiver(
-            receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_NOT_EXPORTED,
+            receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_EXPORTED,
         )
-        return try {
+        try {
             val started = device.createBond()
             DebugLog.ble("·", label, "createBond()=$started state=${bondName(device.bondState)}")
             if (!started && device.bondState != BluetoothDevice.BOND_BONDED) false
@@ -347,7 +357,10 @@ class VehicleSession(
     companion object {
         private const val CONNECT_MS = 10_000L
         private const val OP_MS = 5_000L
-        private const val BOND_MS = 20_000L
+        private const val BOND_MS = 15_000L
+
+        /** Serializes bonding across all sessions — concurrent createBond() storms fail. */
+        private val bondGate = Mutex()
         private const val PHONEID_ECHO_MS = 3_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
