@@ -75,6 +75,14 @@ class PairingManager(
         val device = scanForVehicle()
         logi("pair: found device ${device.name} ${device.address} bondState=${device.bondState}")
 
+        // A bond left over from a PREVIOUS enrollment is orphaned once the vehicle's
+        // key changes (e.g. you cleared app data + re-enrolled). Android then tries to
+        // encrypt the link with the stale LTK, the vehicle reports key-missing
+        // (encryption failure 0x6), and the link is torn down before the handshake can
+        // run — exactly the "Timed out talking to the vehicle" we hit. Clear it so we
+        // connect fresh; the Rivian handshake runs in the clear (no encryption needed).
+        removeStaleBond(device)
+
         onProgress(Progress.Connecting)
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
@@ -180,6 +188,42 @@ class PairingManager(
             char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         )
         withTimeout(GATT_OP_TIMEOUT_MS) { charWritten.await() }
+    }
+
+    /**
+     * Remove any existing OS bond before connecting. After a re-enrollment the
+     * vehicle holds a new key, so a bond from the prior enrollment is orphaned and
+     * makes Android's auto-encryption fail with key-missing — pairing then times out
+     * at the first GATT op. Clearing it lets us connect unencrypted (the handshake is
+     * in the clear); a fresh matching bond is re-established at the end of [pair].
+     * `removeBond()` is a hidden API, so call it reflectively.
+     */
+    private suspend fun removeStaleBond(device: BluetoothDevice) {
+        if (device.bondState != BluetoothDevice.BOND_BONDED) return
+        val gone = CompletableDeferred<Boolean>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                    == BluetoothDevice.BOND_NONE
+                ) {
+                    gone.complete(true)
+                }
+            }
+        }
+        context.registerReceiver(receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        try {
+            logi("pair: clearing stale bond (bondState=${device.bondState}) before fresh connect")
+            val started = runCatching {
+                device.javaClass.getMethod("removeBond").invoke(device) as Boolean
+            }.getOrElse { logw("pair: removeBond() reflection failed — ${it.message}"); false }
+            if (started) {
+                runCatching { withTimeout(BOND_TIMEOUT_MS) { gone.await() } }
+                    .onFailure { logw("pair: bond removal not confirmed in time; continuing") }
+            }
+            logi("pair: bond cleared (bondState=${device.bondState})")
+        } finally {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
     }
 
     private suspend fun bond(device: BluetoothDevice) {
