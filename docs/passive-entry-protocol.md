@@ -389,7 +389,33 @@ so PK-vs-sensor can't be labelled from this capture (a raw `btsnoop_hci.log` pul
 them). The earlier "## RE update 2026-06-03 (2)/(3)" bonding/signed-params sections are superseded
 for this car.
 
-## Complete BLE active-command table (2026-06-05, from h60/* → em.k2)
+## On-vehicle command results (2026-06-05, R1S)
+
+Confirmed by the user driving/operating the actual vehicle with the watch as the only key:
+
+| command | request code | result |
+|---------|--------------|--------|
+| Drive enable (presence/heartbeat) | — | ✅ works |
+| Unlock / Lock | `0x03` / `0x06` | ✅ works |
+| Frunk (hood) open / close | `0x26` / `0x27` | ✅ works |
+| Liftgate (hatch) open / close | `0x2a` / `0x2b` | ✅ works (confirms the `0x2a` pattern-prediction) |
+| **All windows open / close** | `0x15` / `0x16` | ❌ no effect |
+| **Charge-port door open / close** | `0x36` / `0x37` | ❌ no effect |
+| Gear Guard, Flash lights, Sound (page 3) | `0x17`/`0x18`, `0x6e`, `0x6f` | untested |
+
+**Windows / charge-port are NOT a frame bug.** Our request codes are byte-exact with the official
+app's descriptors (`h60/w` `{21,0}`=OPEN_ALL_WINDOWS, `h60/m` `{22,0}`=CLOSE, `h60/x` `{54,0}`=
+OPEN_CHARGE_PORT_DOOR, `h60/n` `{55,0}`=CLOSE), and both carry firmware BLE **response** codes
+(`OPEN_ALL_WINDOWS` 38/39, `CLOSE` 40/41, `OPEN_CHARGE_PORT_DOOR` 104/105, `CLOSE` 106/107 in
+`CommandReturnValue`). The frame is structurally identical to frunk (bare 2-byte code, no parameter).
+So the non-actuation is **vehicle-side** — the firmware receives the command but doesn't act (likely
+gated: the official app may route these via cloud, or the vehicle requires a state/condition we don't
+meet). **Next diagnostic (no new capture needed):** tap windows-open and read the `0x20`/`0x1c`
+response in the debug console — a FAIL reply (`0x27`=open-windows-fail, `0x69`=open-charge-fail) means
+*received-but-rejected* (state/permission gate); silence means *ignored*. That distinguishes a
+conditional gate from a hard cloud-only block.
+
+## Complete BLE active-command table (2026-06-05, from h60/* → k2.NAME)
 
 Extracted every command descriptor (`h60/*` static `new byte[]{lo,0}, k2.NAME`). Authoritative copy
 lives in `ActiveCommandFrames.Cmd`. **Open/close pairs are adjacent (open = close−1.)**
