@@ -16,7 +16,7 @@ object DebugLog {
     private val lines = ArrayDeque<String>()
     private val _flow = MutableStateFlow<List<String>>(emptyList())
     val flow: StateFlow<List<String>> = _flow
-    private val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val ts = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     @Synchronized
     fun add(line: String) {
