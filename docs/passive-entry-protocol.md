@@ -5,6 +5,38 @@ passive unlock + drive on the same Gen-1 R1S (`2c:a7:74:fe:3c:b1`, advertised
 name "Rivian Phone Key"), 2026-06-02. Only protocol *structure* is recorded here
 — no captured key material. The raw snoop is kept out of the repo.
 
+> The sections below are the full RE journey (some early assumptions were later
+> overturned). For the **confirmed, working** protocol read the summary immediately
+> below; later "RE update" sections supersede earlier ones where they conflict.
+
+## ✅ Working protocol (confirmed on-vehicle 2026-06-05)
+
+Passive **unlock** and **drive enable** both work from the watch's own BLE radio, fully offline.
+The whole thing runs **in the clear** — no link-layer pairing/encryption, no bonding, no
+signed-params (those belong to the PRE-CCC variant this Gen-1 car doesn't use).
+
+**Per-device session (identical for the "Rivian Phone Key" PRIMARY and each "Rivian Sensor 1–4"):**
+1. connect → discover → request HIGH connection priority,
+2. subscribe CCCD on **0x12** + **0x15** only (NEVER 0x1c),
+3. write **PhoneProfile (`10 80`) → 0x20**,
+4. write **phoneId → 0x12**; car notifies a **16-byte vehicle-id echo** on 0x12,
+5. write **pNonce (48 B) → 0x15**; car notifies a **48-byte vNonce** on 0x15,
+6. subscribe CCCD on **0x20**; write **SensorInformation (`01`) → 0x20**; receive the car's ranging stream,
+7. stream **37-byte heartbeats → 0x1b** (`counter(4,LE) ‖ rssiByte ‖ HMAC`), the 5th byte = the
+   phone-measured **RSSI** to that device (`readRemoteRssi`, default −128). The car localizes the watch
+   by RSSI across all devices → inside cabin = drive, at a door = unlock. The phone sends **nothing**
+   special for unlock/drive — they're the car's decision from RSSI.
+
+**Crypto:** `sessionSecret = HKDF-SHA256(ECDH(watchPriv, vehiclePub))`; HMAC-SHA256 signs nonces &
+heartbeats; AES-128-GCM (key = first16(HMAC(sessionSecret, CONSTANT_B)), AAD = pNonce⊕vNonce) wraps the
+64-byte **active commands** on 0x20. Active commands (unlock/lock proven on-vehicle) = full table in
+`ActiveCommandFrames.Cmd`.
+
+**Gotchas handled:** re-enroll leaves an orphaned BLE bond (encryption key-missing 0x6 → pairing
+timeout) — `PairingManager.removeStaleBond()` clears it. **Cloud-only (not on BLE):** state-of-charge /
+range (GraphQL `vehicleState`), open-liftgate/-tailgate (app routes via cloud; `0x2a` is the likely
+firmware code, untested), charging, HVAC temp/seats.
+
 ## Key finding
 
 Passive entry is **not** "bond once and rely on proximity." It is a continuous,

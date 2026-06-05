@@ -178,10 +178,16 @@ class PresenceService : Service() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping")
         isRunning = false
+        // Cancel the coroutine scope FIRST so the notification observer is gone before
+        // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
+        // standalone notification that outlives the service. Then remove the FG
+        // notification explicitly so deactivating the key clears it.
+        scope.cancel()
         PresenceStatus.reset()
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
         wakeLock = null
-        scope.cancel()
         super.onDestroy()
     }
 

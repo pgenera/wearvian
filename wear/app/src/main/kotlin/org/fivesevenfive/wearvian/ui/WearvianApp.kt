@@ -38,6 +38,12 @@ fun WearvianApp(
 ) {
     LaunchedEffect(Unit) { onRefresh() }
 
+    // The BONDED control surface is its own full-screen vertical pager (ControlScreens.kt).
+    if (state.phase == Phase.BONDED) {
+        ControlScreens(state, onTogglePresence, onCommand, onReset)
+        return
+    }
+
     Scaffold {
         Column(
             modifier = Modifier.fillMaxSize().padding(12.dp),
@@ -65,36 +71,7 @@ fun WearvianApp(
                     Button(onClick = onPair) { Text("Pair with vehicle") }
                 }
 
-                Phase.BONDED -> {
-                    Title("Ready ✓")
-                    Caption(
-                        if (state.presenceRunning) "Phone key active — approach to unlock and drive."
-                        else "Activate the phone key to be detected by the vehicle.",
-                    )
-                    Button(
-                        onClick = { onTogglePresence(!state.presenceRunning) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (state.presenceRunning) "Deactivate" else "Activate phone key")
-                    }
-                    Button(
-                        onClick = { onCommand(ActiveCommandFrames.Cmd.UNLOCK_ALL, "UNLOCK") },
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    ) { Text("Unlock") }
-                    Button(
-                        onClick = { onCommand(ActiveCommandFrames.Cmd.LOCK_ALL, "LOCK") },
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    ) { Text("Lock") }
-                    // Two-tap confirm so an accidental tap can't clear enrollment.
-                    // Note: this keeps the watch's key; re-enrolling reuses it.
-                    var confirmReset by remember { mutableStateOf(false) }
-                    Button(
-                        onClick = { if (confirmReset) onReset() else confirmReset = true },
-                        modifier = Modifier.padding(top = 8.dp),
-                    ) {
-                        Text(if (confirmReset) "Tap again to re-enroll" else "Reset enrollment")
-                    }
-                }
+                Phase.BONDED -> Unit // handled by ControlScreens above
 
                 Phase.ERROR -> {
                     Title("Something went wrong")
