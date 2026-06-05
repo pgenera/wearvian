@@ -184,8 +184,8 @@ class KeyTileService : TileService() {
         const val WHITE = 0xFFFFFFFF.toInt()
         const val BTN_BG = 0xFF1C1C1C.toInt()
         // Explicit glyph sizes — bigger than Material's default tile-button icon.
-        const val KEY_ICON_DP = 34f
-        const val CMD_ICON_DP = 30f
+        const val KEY_ICON_DP = 38f
+        const val CMD_ICON_DP = 34f
 
         // Process-lifetime scope so a queued command survives the TileService instance
         // being torn down between requests (BLE send takes a few seconds).

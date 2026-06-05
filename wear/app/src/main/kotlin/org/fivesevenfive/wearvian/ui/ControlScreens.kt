@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -209,16 +208,17 @@ private fun ClosureRow(
     inFlight: Set<Int>,
     onCommand: (Int, String) -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
-        // Push the label + buttons together to the right so the name sits next to them.
-        Spacer(Modifier.weight(1f))
-        Text(name, color = Color.White, fontSize = 13.sp)
-        Spacer(Modifier.width(8.dp))
+    // A compact, centered group — category icon + open/close — so nothing hugs the
+    // round bezel.
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(icon, name, Modifier.size(24.dp), colorFilter = ColorFilter.tint(Color.White))
         RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
             onCommand(openCode, openLabel)
         }
-        Spacer(Modifier.width(6.dp))
         RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN, closeCode in inFlight) {
             onCommand(closeCode, closeLabel)
         }
