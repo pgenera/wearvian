@@ -12,8 +12,8 @@ android {
         applicationId = "org.fivesevenfive.wearvian"
         minSdk = 33          // Wear OS 4+
         targetSdk = 34       // foreground-service types are required at 34+
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
