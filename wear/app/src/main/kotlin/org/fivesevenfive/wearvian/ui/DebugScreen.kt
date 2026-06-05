@@ -12,8 +12,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -34,9 +37,9 @@ import org.fivesevenfive.wearvian.util.DebugLog
 /**
  * Black-field debug console reached by swiping left on the app. Shows the recent
  * BLE message exchange (and its semantic meaning) in small monospace text, newest
- * at the bottom. The build version is curved along the top bezel. The view pins to
- * the newest line (jumps to the bottom on open and follows new lines); the rotary
- * crown still scrolls between updates.
+ * at the bottom. The build version is curved along the top bezel. The view follows
+ * the tail (sticks to the bottom as lines arrive) until you scroll up, then holds
+ * position; scrolling back to the bottom resumes following.
  */
 @Composable
 fun DebugScreen() {
@@ -44,10 +47,24 @@ fun DebugScreen() {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
+    // Follow the tail until the user scrolls up; resume when they return to the bottom.
+    var autoFollow by remember { mutableStateOf(true) }
+
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-    // Pin to the newest line: jump to the bottom on open and stay there as lines arrive.
+    // New lines stick to the bottom only while following (data appends never change
+    // autoFollow — only a user scroll does, below).
     LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
+        if (autoFollow && lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
+    }
+    // When a scroll settles, decide whether we're parked at the bottom.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) {
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                autoFollow = last == null || last.index >= info.totalItemsCount - 1
+            }
+        }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         LazyColumn(
