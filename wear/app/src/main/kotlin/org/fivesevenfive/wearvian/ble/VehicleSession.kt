@@ -8,16 +8,11 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
@@ -34,18 +29,20 @@ import java.util.UUID
  * link reports, to enable drive (inside cabin) vs unlock (door). See
  * docs/passive-entry-protocol.md.
  *
- * Per the decompiled app (`l60/i`, `l60/j0`, `l60/i0`), EVERY connection — PRIMARY
- * and sensors alike — runs the full phoneId+nonce auth handshake, then streams a
- * 37-byte heartbeat to 0x1b every ~300 ms. The heartbeat's 5th byte is the
- * phone-measured RSSI to that device (`readRemoteRssi`, default −128), which is the
- * actual localization signal the car ranges on. A connection that only bonds/holds
- * (no auth, no RSSI heartbeat) is dropped by the peripheral — which is why our old
- * "connect-and-hold" sensors churned.
+ * Confirmed against an official-app btsnoop of a fresh, never-paired device (2026-06-05):
+ * EVERY device — PRIMARY and sensors alike — uses the **identical, in-the-clear** flow.
+ * There is NO link-layer pairing/encryption and NO bonding (0 Encryption Change / LTK /
+ * Pairing events in the capture); our old createBond attempts caused the HCI 0x05 failures.
+ * The app subscribes ONLY 0x12 + 0x15 (handshake) and 0x20 (ranging) — it NEVER subscribes
+ * 0x1c; we were subscribing 0x1c first, which broke the sensor sessions.
  *
- * Flow per (re)connection: connect → discover → notify (0x12/0x15/0x1c/0x20) →
- * phoneId echo → pNonce/vNonce auth → write SensorInformation(0x01) to 0x20 →
- * stream RSSI heartbeats to 0x1b. [sharedSecret] is the per-vehicle ECDH secret
- * (computed once by the caller; identical for every device of this vehicle).
+ * Flow per (re)connection (exact order from the capture):
+ *   connect → discover → notify 0x12,0x15 → write PhoneProfile(10 80)→0x20 →
+ *   write phoneId→0x12 (car echoes 16-byte vehicle-id) → write pNonce→0x15
+ *   (car returns 48-byte vNonce) → notify 0x20 → write SensorInformation(01)→0x20 →
+ *   stream 37-byte RSSI heartbeats to 0x1b. The heartbeat's 5th byte is the
+ *   phone-measured RSSI (`readRemoteRssi`, default −128) — the localization signal the
+ *   car ranges on. [sharedSecret] is the per-vehicle ECDH secret (identical per device).
  */
 @SuppressLint("MissingPermission")
 class VehicleSession(
@@ -83,16 +80,6 @@ class VehicleSession(
 
     private suspend fun runOnce(scope: CoroutineScope) {
         reset()
-        // Sensors are separate, unbonded BLE devices; their characteristics require
-        // an encrypted link, so the first CCCD write to an unbonded sensor is dropped
-        // with HCI 0x05 (auth failure). The official app bonds each device
-        // (decompile l60/i.r() → createBond; b0.e gates a sensor's AUTHENTICATED state
-        // on bondState==BONDED). Bond first, then connect with encryption available.
-        if (!primary && device.bondState != BluetoothDevice.BOND_BONDED) {
-            val ok = ensureBonded()
-            DebugLog.ble("·", label, "bond after createBond: state=${bondName(device.bondState)} ok=$ok")
-            if (!ok) error("bonding failed (state=${bondName(device.bondState)})")
-        }
         DebugLog.ble("·", label, "connecting ${device.address}")
         val g = device.connectGatt(context, false, gattCallback)
         try {
@@ -102,29 +89,37 @@ class VehicleSession(
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
             // Request a fast connection interval — the default power-save interval
-            // (~1 s) throttled our heartbeats to ~0.9 Hz; the car wants multi-Hz
-            // presence for drive. HIGH ≈ 7.5–15 ms interval.
+            // (~1 s) throttled our heartbeats to ~0.9 Hz. HIGH ≈ 7.5–15 ms interval.
             val connPri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
             DebugLog.ble("·", label, "discovered (${g.services.size} svc) connPriReq=$connPri")
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(g, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             val readChar = requireChar(g, RivianBle.CHAR_RIVIAN_READ)
-            val n1c = findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(g, it) }
-            val n20 = findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { enableNotify(g, it) }
+            val msgChar = findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)
+            // Subscribe ONLY the handshake chars now (0x12, 0x15) — exactly what the
+            // official app does. NOT 0x1c (the app never subscribes it; doing so broke
+            // our sensor sessions). 0x20 is subscribed after auth, below.
             val n12 = enableNotify(g, phoneIdChar)
             val n15 = enableNotify(g, nonceChar)
-            DebugLog.ble("·", label, "notify 0x1c=$n1c 0x20=$n20 0x12=$n12 0x15=$n15; → phoneId")
+            DebugLog.ble("·", label, "notify 0x12=$n12 0x15=$n15; → PhoneProfile")
 
-            // phoneId write; the PRIMARY echoes the vehicle-id back. Sensors may not
-            // echo — tolerate a missing echo, but reject a real mismatch.
+            // Write PhoneProfile (type 0x10 + capability 0x80) to 0x20 before phoneId,
+            // matching the capture order.
+            msgChar?.let {
+                runCatching { writeChar(g, it, MSG_PHONE_PROFILE) }
+                    .onSuccess { DebugLog.ble("→", "$label/0x20", "PhoneProfile(1080)", 2) }
+                    .onFailure { e -> DebugLog.ble("·", label, "0x20 PhoneProfile write failed: ${e.message}") }
+            }
+
+            // phoneId write; the car echoes a 16-byte vehicle-id back on 0x12.
             notifications[phoneIdChar.uuid] = CompletableDeferred()
             writeChar(g, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
             DebugLog.ble("→", "$label/0x12", "phoneId written; awaiting echo")
             val vid = runCatching { withTimeout(PHONEID_ECHO_MS) { notifications.getValue(phoneIdChar.uuid).await() } }
                 .getOrNull()
             when {
-                vid == null -> DebugLog.ble("·", label, "no phoneId echo (sensor); continuing")
+                vid == null -> DebugLog.ble("·", label, "no phoneId echo; continuing")
                 !PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId) -> error("vehicle id mismatch")
                 else -> DebugLog.ble("·", label, "phoneId echo ok ${vid.toHexString().take(12)}…")
             }
@@ -139,12 +134,13 @@ class VehicleSession(
             val vNonce = vResp.copyOf(16)
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
-            // Kick off the vehicle message channel: write SensorInformation (0x01) to
-            // 0x20 so the car starts ranging this link (decompile: l60/i.m()).
-            findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)?.let { msgChar ->
-                runCatching { writeChar(g, msgChar, byteArrayOf(MSG_SENSOR_INFORMATION)) }
+            // Now subscribe 0x20 (the ranging channel) and kick it off with
+            // SensorInformation(0x01) — order matches the capture (0x20 CCCD after auth).
+            msgChar?.let {
+                enableNotify(g, it)
+                runCatching { writeChar(g, it, byteArrayOf(MSG_SENSOR_INFORMATION)) }
                     .onSuccess { DebugLog.ble("→", "$label/0x20", "SensorInformation(01)", 1) }
-                    .onFailure { DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${it.message}") }
+                    .onFailure { e -> DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${e.message}") }
             }
             g.readRemoteRssi()
 
@@ -192,49 +188,6 @@ class VehicleSession(
         charWritten = CompletableDeferred()
         notifications.clear()
         latestRssi = RSSI_DEFAULT
-    }
-
-    /**
-     * Initiate + await link-layer bonding with this device (for unbonded sensors).
-     * Serialized across all sessions via [bondGate]: firing createBond() on several
-     * sensors at once while the PK link is active fails the pairing connection
-     * (HCI_ERR_CONN_FAILED_ESTABLISHMENT) before SMP can run; one clean bond at a
-     * time gives the controller a usable radio.
-     */
-    private suspend fun ensureBonded(): Boolean = bondGate.withLock {
-        if (device.bondState == BluetoothDevice.BOND_BONDED) return@withLock true
-        val bonded = CompletableDeferred<Boolean>()
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context, i: Intent) {
-                @Suppress("DEPRECATION")
-                val dev = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                if (dev?.address != device.address) return
-                when (i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)) {
-                    BluetoothDevice.BOND_BONDED -> if (!bonded.isCompleted) bonded.complete(true)
-                    BluetoothDevice.BOND_NONE -> if (!bonded.isCompleted) bonded.complete(false)
-                }
-            }
-        }
-        // ACTION_BOND_STATE_CHANGED is a system broadcast, so the receiver must be
-        // EXPORTED — NOT_EXPORTED silently drops it (we never saw the result).
-        context.registerReceiver(
-            receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), Context.RECEIVER_EXPORTED,
-        )
-        try {
-            val started = device.createBond()
-            DebugLog.ble("·", label, "createBond()=$started state=${bondName(device.bondState)}")
-            if (!started && device.bondState != BluetoothDevice.BOND_BONDED) false
-            else runCatching { withTimeout(BOND_MS) { bonded.await() } }.getOrDefault(false)
-        } finally {
-            runCatching { context.unregisterReceiver(receiver) }
-        }
-    }
-
-    private fun bondName(s: Int): String = when (s) {
-        BluetoothDevice.BOND_BONDED -> "BONDED"
-        BluetoothDevice.BOND_BONDING -> "BONDING"
-        BluetoothDevice.BOND_NONE -> "NONE"
-        else -> "?$s"
     }
 
     private fun requireChar(g: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
@@ -357,10 +310,6 @@ class VehicleSession(
     companion object {
         private const val CONNECT_MS = 10_000L
         private const val OP_MS = 5_000L
-        private const val BOND_MS = 15_000L
-
-        /** Serializes bonding across all sessions — concurrent createBond() storms fail. */
-        private val bondGate = Mutex()
         private const val PHONEID_ECHO_MS = 3_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
@@ -374,7 +323,9 @@ class VehicleSession(
         private const val CMD_LOG_EVERY = 8
         /** Default RSSI before the first readRemoteRssi (l60/j0.h = −128 = 0x80). */
         private const val RSSI_DEFAULT = -128
-        /** s60/i0.SensorInformation.getId() = 1 — first write to 0x20 to start ranging. */
+        /** s60/i0.SensorInformation.getId() = 1 — written to 0x20 to start ranging. */
         private const val MSG_SENSOR_INFORMATION = 0x01.toByte()
+        /** PhoneProfile message: type 0x10 + capability byte 0x80 (from the capture). */
+        private val MSG_PHONE_PROFILE = byteArrayOf(0x10, 0x80.toByte())
     }
 }

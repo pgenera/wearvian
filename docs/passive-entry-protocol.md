@@ -327,6 +327,36 @@ recoverable from the generated protobuf classes in `smali/classes3` — then: bu
 write to `Q` → await `Q` response → `createBond` → subscribe encrypted chars → heartbeat. No unknown
 key or unrecoverable secret remains.
 
+## RE update 2026-06-05 — official-app btsnoop of a FRESH device: sensors are in-the-clear (supersedes bonding/signed-params)
+
+Captured an HCI btsnoop of the official app setting up a **brand-new, never-paired** device on this
+R1S (738 s, `~/wearvian/snoop/btsnoop_hci.log`). It overturns the bonding/signed-params theory for
+this Gen-1 car:
+
+- **No link-layer pairing, no encryption, no bonding** — `0` Encryption Change events, `0` LTK
+  requests, `0` Pairing Request/Response/Confirm. The only SMP PDU is the phone *receiving*
+  "Signing Information" (CSRK), unencrypted. **Our HCI 0x05 failures were self-inflicted by our own
+  `createBond()` (builds 2g/2h).** Bonding is removed.
+- **No Q-char (0823DA14) / signed-params writes at all** — those belong to the **PRE-CCC** variant
+  this car doesn't use. `SignedParams.kt`/`.proto` stay in-tree but unused for this vehicle.
+- **The handshake is identical for the PK and every sensor** (in the clear):
+  1. subscribe CCCD on **0x12 + 0x15 only** (NEVER 0x1c — the app never touches it; we were
+     subscribing it first, which broke our sensor sessions),
+  2. write **PhoneProfile (`10 80`) → 0x20**,
+  3. write **phoneId → 0x12** ⇒ car notifies a **16-byte vehicle-id echo** on 0x12,
+  4. write **pNonce (48 B) → 0x15** ⇒ car notifies a **48-byte vNonce** on 0x15,
+  5. subscribe CCCD on **0x20** ⇒ receive the car's ranging stream (831 msgs observed),
+  6. stream **0x1b heartbeats (37 B, RSSI 5th byte)**.
+- Counts over the capture: CCCD 0x12 ×31, 0x15 ×31, 0x20 ×14, **0x1c ×0**; 14 full handshakes
+  (14 echoes + 14 vNonces); heartbeats on ~13 connection handles ⇒ **sensors heartbeat too**.
+- **Validated our framing**: heartbeat `00000000 80 <32B HMAC>`, nonce 48 B, 0x20 writes `01`/`1080`.
+
+Implemented in `ble/VehicleSession.kt` (2026-06-05): drop bonding, drop 0x1c, subscribe
+0x12/0x15 then 0x20, add the PhoneProfile write. Limitation: the bugreport scrubbed BD addresses,
+so PK-vs-sensor can't be labelled from this capture (a raw `btsnoop_hci.log` pulled directly keeps
+them). The earlier "## RE update 2026-06-03 (2)/(3)" bonding/signed-params sections are superseded
+for this car.
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,
