@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-feature android:name="android.hardware.type.watch" />
+    <!-- Marks this bundle as the Wear OS form factor so Play delivers it to watches
+         (and the phone bundle, which lacks this feature, to phones). -->
+    <uses-feature android:name="android.hardware.type.watch" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <!-- BLE: we connect to a known device by name and never derive physical

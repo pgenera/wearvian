@@ -8,6 +8,12 @@ local.properties
 .claude/
 .kotlin/
 
+# Release signing — NEVER commit these
+keystore.properties
+*.jks
+*.keystore
+!debug.keystore
+
 # Python (auth-server / tooling)
 .venv/
 venv/

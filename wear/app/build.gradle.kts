@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release signing credentials live in <repo-root>/keystore.properties (gitignored).
+// Both the watch and companion apps MUST be signed with the SAME key — required by the
+// Wear Data Layer (same applicationId + signature) and by Play (one listing, one key).
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }
 }
 
 android {
@@ -12,8 +22,21 @@ android {
         applicationId = "org.fivesevenfive.wearvian"
         minSdk = 33          // Wear OS 4+
         targetSdk = 34       // foreground-service types are required at 34+
-        versionCode = 2
+        // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
+        // Must stay unique across BOTH apps and only ever increase.
+        versionCode = 1002
         versionName = "0.2.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +46,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Sign release builds when the keystore is present; otherwise leave unsigned
+            // (CI without secrets can still build, you just can't upload it).
+            if (keystorePropertiesFile.exists()) signingConfig = signingConfigs.getByName("release")
         }
     }
 
