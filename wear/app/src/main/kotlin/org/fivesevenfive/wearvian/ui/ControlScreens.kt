@@ -1,5 +1,10 @@
 package org.fivesevenfive.wearvian.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -60,6 +65,9 @@ private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private const val PAGES = 3
 
+/** Closure-row open/close button diameter — enlarged from 34dp for an easier touch target. */
+private val CLOSURE_BTN = 42.dp
+
 /**
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
  * swipe or the rotary crown. Pure-black OLED field, high-contrast white iconography
@@ -105,8 +113,8 @@ fun ControlScreens(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (page) {
                     0 -> KeyPage(state, onTogglePresence, onCommand)
-                    1 -> ClosuresPage(onCommand)
-                    else -> SignalPage(onCommand)
+                    1 -> ClosuresPage(state.inFlight, onCommand)
+                    else -> SignalPage(state.inFlight, onCommand)
                 }
             }
         }
@@ -135,32 +143,36 @@ private fun KeyPage(
         )
         Label(if (active) "Key active" else "Key off")
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            LabeledIcon(Icons.Filled.LockOpen, "Unlock") { onCommand(Cmd.UNLOCK_ALL, "UNLOCK") }
-            LabeledIcon(Icons.Filled.Lock, "Lock") { onCommand(Cmd.LOCK_ALL, "LOCK") }
+            LabeledIcon(Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight) {
+                onCommand(Cmd.UNLOCK_ALL, "UNLOCK")
+            }
+            LabeledIcon(Icons.Filled.Lock, "Lock", busy = Cmd.LOCK_ALL in state.inFlight) {
+                onCommand(Cmd.LOCK_ALL, "LOCK")
+            }
         }
     }
 }
 
 @Composable
-private fun ClosuresPage(onCommand: (Int, String) -> Unit) {
+private fun ClosuresPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+        Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
     ) {
         Header("Closures")
-        ClosureRow(Icons.Filled.Inventory2, "Frunk",
-            { onCommand(Cmd.OPEN_FRUNK, "OPEN_FRUNK") }, { onCommand(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK") })
-        ClosureRow(Icons.Filled.Luggage, "Hatch",
-            { onCommand(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE") }, { onCommand(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE") })
-        ClosureRow(Icons.Filled.Bolt, "Charge",
-            { onCommand(Cmd.OPEN_CHARGE_PORT, "OPEN_CHARGE_PORT") }, { onCommand(Cmd.CLOSE_CHARGE_PORT, "CLOSE_CHARGE_PORT") })
-        ClosureRow(Icons.Filled.Window, "Windows",
-            { onCommand(Cmd.OPEN_ALL_WINDOWS, "VENT_WINDOWS") }, { onCommand(Cmd.CLOSE_ALL_WINDOWS, "CLOSE_WINDOWS") })
+        ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
+            "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand)
+        ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
+            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand)
+        ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
+            "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
+        ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
+            "VENT_WINDOWS", "CLOSE_WINDOWS", inFlight, onCommand)
     }
 }
 
 @Composable
-private fun SignalPage(onCommand: (Int, String) -> Unit) {
+private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
@@ -168,12 +180,20 @@ private fun SignalPage(onCommand: (Int, String) -> Unit) {
     ) {
         Header("Security & lights")
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LabeledIcon(Icons.Filled.Shield, "Guard on", GOLD) { onCommand(Cmd.ENABLE_GEAR_GUARD, "GEAR_GUARD_ON") }
-            LabeledIcon(Icons.Filled.Shield, "Guard off") { onCommand(Cmd.DISABLE_GEAR_GUARD, "GEAR_GUARD_OFF") }
+            LabeledIcon(Icons.Filled.Shield, "Guard on", GOLD, Cmd.ENABLE_GEAR_GUARD in inFlight) {
+                onCommand(Cmd.ENABLE_GEAR_GUARD, "GEAR_GUARD_ON")
+            }
+            LabeledIcon(Icons.Filled.Shield, "Guard off", busy = Cmd.DISABLE_GEAR_GUARD in inFlight) {
+                onCommand(Cmd.DISABLE_GEAR_GUARD, "GEAR_GUARD_OFF")
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LabeledIcon(Icons.Filled.Lightbulb, "Lights") { onCommand(Cmd.FLASH_LIGHTS, "FLASH_LIGHTS") }
-            LabeledIcon(Icons.Filled.VolumeUp, "Sound") { onCommand(Cmd.ACTIVATE_SOUND, "ACTIVATE_SOUND") }
+            LabeledIcon(Icons.Filled.Lightbulb, "Lights", busy = Cmd.FLASH_LIGHTS in inFlight) {
+                onCommand(Cmd.FLASH_LIGHTS, "FLASH_LIGHTS")
+            }
+            LabeledIcon(Icons.Filled.VolumeUp, "Sound", busy = Cmd.ACTIVATE_SOUND in inFlight) {
+                onCommand(Cmd.ACTIVATE_SOUND, "ACTIVATE_SOUND")
+            }
         }
     }
 }
@@ -181,33 +201,77 @@ private fun SignalPage(onCommand: (Int, String) -> Unit) {
 // ---- building blocks ----
 
 @Composable
-private fun ClosureRow(icon: ImageVector, name: String, onOpen: () -> Unit, onClose: () -> Unit) {
+private fun ClosureRow(
+    icon: ImageVector,
+    name: String,
+    openCode: Int,
+    closeCode: Int,
+    openLabel: String,
+    closeLabel: String,
+    inFlight: Set<Int>,
+    onCommand: (Int, String) -> Unit,
+) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Image(icon, name, Modifier.size(18.dp), colorFilter = ColorFilter.tint(Color.White))
+        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
         Spacer(Modifier.width(6.dp))
         Text(name, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
-        RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, 34.dp, onOpen)
+        RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
+            onCommand(openCode, openLabel)
+        }
         Spacer(Modifier.width(6.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, 34.dp, onClose)
+        RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN, closeCode in inFlight) {
+            onCommand(closeCode, closeLabel)
+        }
     }
 }
 
 @Composable
-private fun LabeledIcon(icon: ImageVector, label: String, tint: Color = Color.White, onClick: () -> Unit) {
+private fun LabeledIcon(
+    icon: ImageVector,
+    label: String,
+    tint: Color = Color.White,
+    busy: Boolean = false,
+    onClick: () -> Unit,
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundIcon(icon, label, tint, 48.dp, onClick)
+        RoundIcon(icon, label, tint, 48.dp, busy, onClick)
         Spacer(Modifier.height(3.dp))
         Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
 }
 
+/**
+ * A circular icon button. When [busy] (its command is in flight) it throbs — the icon
+ * pulses its alpha — and taps are disabled until the command completes or times out,
+ * then it returns to the steady idle graphic.
+ */
 @Composable
-private fun RoundIcon(icon: ImageVector, desc: String, tint: Color, diameter: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
+private fun RoundIcon(
+    icon: ImageVector,
+    desc: String,
+    tint: Color,
+    diameter: androidx.compose.ui.unit.Dp,
+    busy: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val alpha = if (busy) {
+        val transition = rememberInfiniteTransition(label = "throb")
+        val a by transition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(tween(550), RepeatMode.Reverse),
+            label = "throbAlpha",
+        )
+        a
+    } else {
+        1f
+    }
     Box(
-        Modifier.size(diameter).clip(CircleShape).background(BTN_BG).clickable(onClick = onClick),
+        Modifier.size(diameter).clip(CircleShape).background(BTN_BG)
+            .clickable(enabled = !busy, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Image(icon, desc, Modifier.size(diameter * 0.52f), colorFilter = ColorFilter.tint(tint))
+        Image(icon, desc, Modifier.size(diameter * 0.52f), alpha = alpha, colorFilter = ColorFilter.tint(tint))
     }
 }
 

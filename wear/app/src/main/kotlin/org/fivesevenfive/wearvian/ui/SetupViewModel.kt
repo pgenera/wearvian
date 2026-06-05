@@ -25,6 +25,8 @@ data class SetupUiState(
     val phase: Phase = Phase.LOADING,
     val detail: String? = null,
     val presenceRunning: Boolean = false,
+    /** Command codes currently being sent over BLE — drives the in-flight throb on each button. */
+    val inFlight: Set<Int> = emptySet(),
 )
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
@@ -118,13 +120,27 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Send an authenticated active-entry command (e.g. lock/unlock) over BLE. */
+    /**
+     * Send an authenticated active-entry command (e.g. lock/unlock) over BLE. The
+     * command code is held in [SetupUiState.inFlight] for the duration so the UI can
+     * throb + disable that button until the send completes or times out. Duplicate
+     * taps while in flight are ignored. [ActiveCommandManager.sendCommand] is fully
+     * time-bounded and never throws, so the code always clears.
+     */
     fun sendCommand(commandCode: Int, label: String) {
         val enrollment = store.load() ?: run { logw("sendCommand: not enrolled"); return }
+        if (commandCode in _state.value.inFlight) {
+            logi("sendCommand: $label already in flight — ignoring"); return
+        }
         logi("sendCommand: $label (0x%04x)".format(commandCode))
+        _state.value = _state.value.copy(inFlight = _state.value.inFlight + commandCode)
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
+            try {
+                withContext(Dispatchers.IO) {
+                    ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
+                }
+            } finally {
+                _state.value = _state.value.copy(inFlight = _state.value.inFlight - commandCode)
             }
         }
     }
