@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.Luggage
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material.icons.filled.Window
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,8 +64,8 @@ private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private const val PAGES = 3
 
-/** Closure-row open/close button diameter — enlarged from 34dp for an easier touch target. */
-private val CLOSURE_BTN = 42.dp
+/** Closure-row open/close button diameter — large touch target (room freed by hiding Windows). */
+private val CLOSURE_BTN = 50.dp
 
 /**
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
@@ -166,8 +165,7 @@ private fun ClosuresPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
             "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand)
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
-        ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
-            "VENT_WINDOWS", "CLOSE_WINDOWS", inFlight, onCommand)
+        // Windows hidden until confirmed working on-vehicle (0x15/0x16 currently no-op).
     }
 }
 
@@ -291,4 +289,5 @@ private fun PageDots(current: Int, modifier: Modifier) {
     }
 }
 
-private const val ROTARY_STEP = 48f
+// Rotary crown travel required to flip one page — larger = less twitchy paging.
+private const val ROTARY_STEP = 110f

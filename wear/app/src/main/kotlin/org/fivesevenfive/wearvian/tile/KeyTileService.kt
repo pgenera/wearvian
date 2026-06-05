@@ -2,9 +2,12 @@ package org.fivesevenfive.wearvian.tile
 
 import androidx.concurrent.futures.ResolvableFuture
 import androidx.wear.protolayout.ActionBuilders
+import androidx.wear.protolayout.ColorBuilders.argb
 import androidx.wear.protolayout.DimensionBuilders.dp
+import androidx.wear.protolayout.LayoutElementBuilders.ColorFilter
 import androidx.wear.protolayout.LayoutElementBuilders.Column
 import androidx.wear.protolayout.LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER
+import androidx.wear.protolayout.LayoutElementBuilders.Image
 import androidx.wear.protolayout.LayoutElementBuilders.Row
 import androidx.wear.protolayout.LayoutElementBuilders.Spacer
 import androidx.wear.protolayout.ModifiersBuilders.Clickable
@@ -61,12 +64,12 @@ class KeyTileService : TileService() {
                 Column.Builder()
                     .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
                     .addContent(keyButton(keyActive))
-                    .addContent(Spacer.Builder().setHeight(dp(8f)).build())
+                    .addContent(Spacer.Builder().setHeight(dp(10f)).build())
                     .addContent(
                         Row.Builder()
-                            .addContent(commandButton(ID_UNLOCK, R.drawable.ic_tile_unlock))
-                            .addContent(Spacer.Builder().setWidth(dp(10f)).build())
-                            .addContent(commandButton(ID_LOCK, R.drawable.ic_tile_lock))
+                            .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK))
+                            .addContent(Spacer.Builder().setWidth(dp(12f)).build())
+                            .addContent(commandButton(ID_LOCK, ICON_LOCK))
                             .build(),
                     )
                     .build(),
@@ -92,7 +95,11 @@ class KeyTileService : TileService() {
         return immediate(res)
     }
 
-    /** The key control: launches the app to toggle the mobile key. Gold when active. */
+    /**
+     * The key control: launches the app **and** activates the mobile key (the launch
+     * intent carries [MainActivity.EXTRA_ACTIVATE_KEY], which the app acts on). Gold
+     * when the key is already active.
+     */
     private fun keyButton(active: Boolean): Button {
         val launch = Clickable.Builder()
             .setId(ID_KEY)
@@ -102,30 +109,45 @@ class KeyTileService : TileService() {
                         ActionBuilders.AndroidActivity.Builder()
                             .setPackageName(packageName)
                             .setClassName(MainActivity::class.java.name)
+                            .addKeyToExtraMapping(
+                                MainActivity.EXTRA_ACTIVATE_KEY,
+                                ActionBuilders.AndroidBooleanExtra.Builder().setValue(true).build(),
+                            )
                             .build(),
                     )
                     .build(),
             )
             .build()
-        val colors = if (active) ButtonColors(GOLD, BLACK) else ButtonColors(BTN_BG, WHITE)
+        val bg = if (active) GOLD else BTN_BG
+        val glyph = if (active) BLACK else WHITE // gold circle → black glyph for contrast
         return Button.Builder(this, launch)
-            .setIconContent(ICON_KEY)
+            .setCustomContent(iconElement(ICON_KEY, KEY_ICON_DP, glyph))
             .setSize(ButtonDefaults.LARGE_SIZE)
-            .setButtonColors(colors)
+            .setButtonColors(ButtonColors(bg, glyph))
             .build()
     }
 
     /** A lock/unlock control: fires the command in-process via LoadAction (no app UI). */
-    private fun commandButton(id: String, iconResId: Int): Button {
+    private fun commandButton(id: String, icon: String): Button {
         val click = Clickable.Builder()
             .setId(id)
             .setOnClick(ActionBuilders.LoadAction.Builder().build())
             .build()
         return Button.Builder(this, click)
-            .setIconContent(if (iconResId == R.drawable.ic_tile_lock) ICON_LOCK else ICON_UNLOCK)
+            .setCustomContent(iconElement(icon, CMD_ICON_DP, WHITE))
+            .setSize(ButtonDefaults.LARGE_SIZE)
             .setButtonColors(ButtonColors(BTN_BG, WHITE))
             .build()
     }
+
+    /** A tinted icon sized explicitly (Material's default tile-button glyph is too small). */
+    private fun iconElement(iconId: String, sizeDp: Float, tintArgb: Int): Image =
+        Image.Builder()
+            .setResourceId(iconId)
+            .setWidth(dp(sizeDp))
+            .setHeight(dp(sizeDp))
+            .setColorFilter(ColorFilter.Builder().setTint(argb(tintArgb)).build())
+            .build()
 
     private fun dispatch(code: Int, label: String) {
         val enrollment = EnrollmentStore(this).load() ?: run {
@@ -161,6 +183,9 @@ class KeyTileService : TileService() {
         const val BLACK = 0xFF000000.toInt()
         const val WHITE = 0xFFFFFFFF.toInt()
         const val BTN_BG = 0xFF1C1C1C.toInt()
+        // Explicit glyph sizes — bigger than Material's default tile-button icon.
+        const val KEY_ICON_DP = 34f
+        const val CMD_ICON_DP = 30f
 
         // Process-lifetime scope so a queued command survives the TileService instance
         // being torn down between requests (BLE send takes a few seconds).

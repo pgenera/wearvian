@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.ui
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -38,14 +39,33 @@ class MainActivity : ComponentActivity() {
             logi("permissions result: $grants")
         }
 
+    /** Set when launched from the tile's key control; consumed once we reach BONDED. */
+    private val activateKeyRequest = mutableStateOf(false)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_ACTIVATE_KEY, false)) activateKeyRequest.value = true
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         logi("MainActivity: onCreate; requesting permissions")
         permissionLauncher.launch(requiredPermissions)
+        activateKeyRequest.value = intent?.getBooleanExtra(EXTRA_ACTIVATE_KEY, false) == true
 
         setContent {
             val vm: SetupViewModel = viewModel()
             val state by vm.state
+            // The tile's key control launches us with EXTRA_ACTIVATE_KEY to also start
+            // the mobile key. Activate once we're bonded (setPresence is idempotent).
+            val activate by activateKeyRequest
+            LaunchedEffect(activate, state.phase) {
+                if (activate && state.phase == Phase.BONDED) {
+                    if (!state.presenceRunning) vm.setPresence(true)
+                    activateKeyRequest.value = false
+                }
+            }
             // Keep the screen on through the setup/pairing/companion dance so it
             // can't sleep mid-flow; allow it to sleep once bonded or on error.
             LaunchedEffect(state.phase) {
@@ -104,5 +124,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        /** Boolean intent extra: when true (set by the tile's key control), activate the mobile key on launch. */
+        const val EXTRA_ACTIVATE_KEY = "org.fivesevenfive.wearvian.ACTIVATE_KEY"
     }
 }
