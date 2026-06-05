@@ -56,14 +56,12 @@ fun DebugScreen() {
     LaunchedEffect(lines.size) {
         if (autoFollow && lines.isNotEmpty()) listState.scrollToItem(lines.size - 1)
     }
-    // When a scroll settles, decide whether we're parked at the bottom.
+    // When a touch-drag settles, decide whether we're parked at the bottom. (Rotary
+    // scrolls are handled in onRotaryScrollEvent — they toggle isScrollInProgress too
+    // briefly for this observer to catch.)
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (!scrolling) {
-                val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull()
-                autoFollow = last == null || last.index >= info.totalItemsCount - 1
-            }
+            if (!scrolling) autoFollow = !listState.canScrollForward
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -71,7 +69,14 @@ fun DebugScreen() {
             state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .onRotaryScrollEvent { e -> scope.launch { listState.scrollBy(e.verticalScrollPixels) }; true }
+                .onRotaryScrollEvent { e ->
+                    scope.launch {
+                        listState.scrollBy(e.verticalScrollPixels)
+                        // Resume following only when the crown brought us back to the bottom.
+                        autoFollow = !listState.canScrollForward
+                    }
+                    true
+                }
                 .focusRequester(focus)
                 .focusable()
                 .padding(horizontal = 8.dp, vertical = 28.dp),
