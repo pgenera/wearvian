@@ -36,7 +36,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -73,7 +72,6 @@ fun ControlScreens(
     state: SetupUiState,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
-    onReset: () -> Unit,
 ) {
     val pager = rememberPagerState { PAGES }
     val scope = rememberCoroutineScope()
@@ -106,7 +104,7 @@ fun ControlScreens(
         ) { page ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (page) {
-                    0 -> KeyPage(state, onTogglePresence, onCommand, onReset)
+                    0 -> KeyPage(state, onTogglePresence, onCommand)
                     1 -> ClosuresPage(onCommand)
                     else -> SignalPage(onCommand)
                 }
@@ -121,12 +119,11 @@ private fun KeyPage(
     state: SetupUiState,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
-    onReset: () -> Unit,
 ) {
     val active = state.presenceRunning
     Column(
         Modifier.fillMaxSize().padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         RoundIcon(
@@ -141,15 +138,6 @@ private fun KeyPage(
             LabeledIcon(Icons.Filled.LockOpen, "Unlock") { onCommand(Cmd.UNLOCK_ALL, "UNLOCK") }
             LabeledIcon(Icons.Filled.Lock, "Lock") { onCommand(Cmd.LOCK_ALL, "LOCK") }
         }
-        var confirm by remember { mutableStateOf(false) }
-        Text(
-            text = if (confirm) "Tap to re-enroll" else "Reset",
-            color = DIM,
-            fontSize = 11.sp,
-            modifier = Modifier
-                .clickable { if (confirm) onReset() else confirm = true }
-                .padding(top = 2.dp),
-        )
     }
 }
 

@@ -40,7 +40,7 @@ fun WearvianApp(
 
     // The BONDED control surface is its own full-screen vertical pager (ControlScreens.kt).
     if (state.phase == Phase.BONDED) {
-        ControlScreens(state, onTogglePresence, onCommand, onReset)
+        ControlScreens(state, onTogglePresence, onCommand)
         return
     }
 
