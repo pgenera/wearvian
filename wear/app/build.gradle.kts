@@ -60,6 +60,12 @@ dependencies {
     implementation("androidx.wear.compose:compose-foundation:1.4.0")
     implementation("androidx.wear.compose:compose-navigation:1.4.0")
 
+    // Wear OS Tile: quick lock/unlock/key without opening the app.
+    implementation("androidx.wear.tiles:tiles:1.4.0")
+    implementation("androidx.wear.protolayout:protolayout:1.2.0")
+    implementation("androidx.wear.protolayout:protolayout-material:1.2.0")
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
+
     // Encrypted on-device storage for keys / enrollment data
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
