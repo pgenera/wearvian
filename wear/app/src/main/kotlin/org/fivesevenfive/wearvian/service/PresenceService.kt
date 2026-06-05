@@ -247,8 +247,9 @@ class PresenceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
         private const val STAGGER_MS = 1_500L
-        /** No link UP for this long → drop to passive (offloaded proximity wake). */
-        private const val IDLE_TIMEOUT_MS = 5 * 60_000L
+        /** No link UP for this long → drop to passive (offloaded proximity wake).
+         *  TEMPORARILY 90s for on-device testing; restore to 5 min before M2 ships. */
+        private const val IDLE_TIMEOUT_MS = 90_000L
 
         @Volatile
         var isRunning = false
