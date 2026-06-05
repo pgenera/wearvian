@@ -16,6 +16,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
+import org.fivesevenfive.wearvian.service.PresenceStatus
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.toHexString
@@ -80,10 +81,12 @@ class VehicleSession(
 
     private suspend fun runOnce(scope: CoroutineScope) {
         reset()
+        PresenceStatus.set(label, PresenceStatus.Link.CONNECTING)
         DebugLog.ble("·", label, "connecting ${device.address}")
         val g = device.connectGatt(context, false, gattCallback)
         try {
             withTimeout(CONNECT_MS) { connected.await() }
+            PresenceStatus.set(label, PresenceStatus.Link.CONNECTED)
             DebugLog.ble("·", label, "connected")
             g.discoverServices()
             withTimeout(OP_MS) { servicesReady.await() }
@@ -132,6 +135,7 @@ class VehicleSession(
             val vResp = runCatching { withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() } }
                 .getOrElse { DebugLog.ble("·", label, "vNonce TIMEOUT — auth failed"); throw it }
             val vNonce = vResp.copyOf(16)
+            PresenceStatus.set(label, PresenceStatus.Link.UP)
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
             // Now subscribe 0x20 (the ranging channel) and kick it off with
@@ -176,6 +180,7 @@ class VehicleSession(
             }
         } finally {
             sessionAlive = false
+            PresenceStatus.set(label, PresenceStatus.Link.DOWN)
             runCatching { g.disconnect() }
             runCatching { g.close() }
         }

@@ -49,6 +49,7 @@ class PresenceService : Service() {
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     private var wakeLock: PowerManager.WakeLock? = null
     private var loopJob: Job? = null
+    private var notifJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -73,6 +74,11 @@ class PresenceService : Service() {
         }
         isRunning = true
         loopJob = scope.launch { presenceLoop(enrollment) }
+        // Mirror the aggregate connection state into the ongoing notification, like the
+        // official app's "vehicle connected / disconnected" persistent notification.
+        if (notifJob?.isActive != true) {
+            notifJob = scope.launch { PresenceStatus.summary.collect { updateNotification(it) } }
+        }
         return START_STICKY
     }
 
@@ -134,10 +140,17 @@ class PresenceService : Service() {
     }.getOrNull()
 
     private fun startAsForeground() {
-        val mgr = getSystemService(NotificationManager::class.java)
-        mgr.createNotificationChannel(
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.presence_channel_name), NotificationManager.IMPORTANCE_LOW),
         )
+        startForeground(
+            NOTIFICATION_ID, buildNotification(PresenceStatus.summary.value),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
+    }
+
+    /** Build the ongoing notification showing the current vehicle connection state. */
+    private fun buildNotification(state: String): Notification {
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).apply {
@@ -145,20 +158,27 @@ class PresenceService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notification: Notification = Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.presence_notification_title))
-            .setContentText(getString(R.string.presence_notification_text))
+            .setContentText(state)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true) // updates frequently — never buzz/re-alert
             .build()
-        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+    }
+
+    /** Re-post the ongoing notification with the latest connection state. */
+    private fun updateNotification(state: String) {
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(state))
+        logi("notification: $state  [${PresenceStatus.snapshot()}]")
     }
 
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping")
         isRunning = false
+        PresenceStatus.reset()
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
         wakeLock = null
         scope.cancel()
