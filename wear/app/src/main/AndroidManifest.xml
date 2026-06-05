@@ -45,6 +45,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- Woken by the OS (offloaded BLE scan PendingIntent) when the vehicle's beacon
+             comes into range while we idle passively; restarts PresenceService. -->
+        <receiver
+            android:name=".service.VehicleProximityReceiver"
+            android:exported="false" />
+
         <!-- Quick lock/unlock/key tile. Lock/unlock run in-process (no app UI);
              the key control launches MainActivity. -->
         <service

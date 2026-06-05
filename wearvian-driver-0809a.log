@@ -1,0 +1,151 @@
+--------- beginning of main
+06-03 08:09:16.370 I/wearvian(22895): MainActivity: onCreate; requesting permissions
+06-03 08:09:16.723 I/wearvian(22895): permissions result: {android.permission.BLUETOOTH_SCAN=true, android.permission.BLUETOOTH_CONNECT=true, android.permission.BLUETOOTH_ADVERTISE=true, android.permission.POST_NOTIFICATIONS=true}
+06-03 08:09:18.866 I/wearvian(22895): refresh: enrolled=true hasKey=true bonded=true vin=7PDSGABA6PN021246
+06-03 08:09:20.640 I/wearvian(22895): setPresence: true
+06-03 08:09:20.771 I/wearvian(22895): PresenceService: onStartCommand
+06-03 08:09:20.885 I/wearvian(22895): dbg: presence: wake lock acquired
+06-03 08:09:21.398 I/wearvian(22895): dbg: presence: loop start for 7PDSGABA6PN021246
+06-03 08:09:21.399 I/wearvian(22895): KeyManager: ECDH against vehiclePublicKey=04775F67AFF21A92…
+06-03 08:09:22.425 I/wearvian(22895): dbg: · PK  connecting 2C:A7:74:FE:3C:B1
+06-03 08:09:22.869 I/wearvian(22895): dbg: · PK  connected
+06-03 08:09:22.901 I/wearvian(22895): dbg: · PK  discovered (4 svc)
+06-03 08:09:23.086 I/wearvian(22895): dbg: · PK  notify enabled; → phoneId
+06-03 08:09:23.625 I/wearvian(22895): dbg: PK: session up (vNonce a9b573b4…)
+06-03 08:09:23.662 I/wearvian(22895): dbg: ← PK/0x1c  status 0000000010070c0f003b110e0a01005078000000  20B
+06-03 08:09:23.755 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=0  37B
+06-03 08:09:28.557 I/wearvian(22895): dbg: · S3  Rivian Sensor 3 74:B8:39:F1:64:89 rssi=-80 → session
+06-03 08:09:28.562 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:09:28.960 I/wearvian(22895): dbg: · S3  connected
+06-03 08:09:30.803 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:09:35.326 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=13  37B
+06-03 08:09:35.863 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:09:37.374 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:09:37.706 I/wearvian(22895): dbg: · S3  connected
+06-03 08:09:39.767 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:09:44.788 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:09:46.300 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:09:46.772 I/wearvian(22895): dbg: · S3  connected
+06-03 08:09:48.756 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=26  37B
+06-03 08:09:49.272 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:09:51.159 I/wearvian(22895): dbg: · S2  Rivian Sensor 2 74:B8:39:FA:42:83 rssi=-50 → session
+06-03 08:09:51.163 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:09:51.299 I/wearvian(22895): dbg: · S2  connected
+06-03 08:09:52.670 I/wearvian(22895): dbg: · S1  Rivian Sensor 1 74:B8:39:43:03:57 rssi=-66 → session
+06-03 08:09:52.678 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:09:52.843 I/wearvian(22895): dbg: · S1  connected
+06-03 08:09:52.915 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:09:54.198 I/wearvian(22895): dbg: · S4  Rivian Sensor 4 74:B8:39:E9:77:8D rssi=-77 → session
+06-03 08:09:54.205 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:09:54.290 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:09:54.409 I/wearvian(22895): dbg: · S4  connected
+06-03 08:09:54.643 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:09:55.794 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:09:55.994 I/wearvian(22895): dbg: · S3  connected
+06-03 08:09:56.394 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:09:57.927 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:09:58.156 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:09:59.435 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:09:59.652 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:00.060 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:01.160 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:01.416 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:01.465 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:01.640 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:02.928 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:03.089 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:03.167 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:03.330 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:04.554 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=39  37B
+06-03 08:10:04.670 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:04.848 I/wearvian(22895): dbg: · S3  connected
+06-03 08:10:04.873 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:10:06.659 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:07.000 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:10:08.169 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:10:08.343 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:08.774 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:09.852 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:09.897 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:09.980 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:10.420 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:11.415 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:11.644 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:11.922 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:12.022 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:13.537 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:13.824 I/wearvian(22895): dbg: · S3  connected
+06-03 08:10:14.097 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:10:15.435 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:15.660 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:10:16.676 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:16.944 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:10:17.171 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:18.185 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:18.520 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:18.786 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:19.109 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:19.532 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=52  37B
+06-03 08:10:20.532 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:20.616 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:20.668 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:20.753 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:22.177 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:22.312 I/wearvian(22895): dbg: · S3  connected
+06-03 08:10:22.565 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:10:23.803 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:24.165 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:10:25.312 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:10:25.459 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:25.545 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:27.052 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:27.144 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:27.211 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:27.580 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:29.081 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:29.086 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:29.179 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:29.252 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:30.683 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:30.951 I/wearvian(22895): dbg: · S3  connected
+06-03 08:10:31.508 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:10:32.159 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:32.880 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:10:33.669 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:10:33.825 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:34.101 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:34.522 I/wearvian(22895): dbg: → PK/0x1b  hb ctr=65  37B
+06-03 08:10:35.528 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:35.606 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:35.780 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:36.522 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:37.577 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:37.901 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:38.026 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:38.336 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:39.409 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:39.780 I/wearvian(22895): dbg: S3: session ended — disconnected status=133
+06-03 08:10:40.536 I/wearvian(22895): dbg: · S4  discovered (4 svc)
+06-03 08:10:40.546 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:41.287 I/wearvian(22895): dbg: · S3  connecting 74:B8:39:F1:64:89
+06-03 08:10:41.656 I/wearvian(22895): dbg: · S3  connected
+06-03 08:10:42.051 I/wearvian(22895): dbg: · S2  connecting 74:B8:39:FA:42:83
+06-03 08:10:42.180 I/wearvian(22895): dbg: · S2  connected
+06-03 08:10:42.594 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:43.843 I/wearvian(22895): dbg: · S3  discovered (4 svc)
+06-03 08:10:43.852 I/wearvian(22895): dbg: · S2  discovered (4 svc)
+06-03 08:10:44.099 I/wearvian(22895): dbg: · S1  connecting 74:B8:39:43:03:57
+06-03 08:10:44.207 I/wearvian(22895): dbg: · S1  connected
+06-03 08:10:45.577 I/wearvian(22895): dbg: · S4  holding (sensor presence for RSSI)
+06-03 08:10:45.900 I/wearvian(22895): dbg: · S1  discovered (4 svc)
+06-03 08:10:47.072 I/wearvian(22895): refresh: enrolled=true hasKey=true bonded=true vin=7PDSGABA6PN021246
+06-03 08:10:47.080 I/wearvian(22895): dbg: · S4  connecting 74:B8:39:E9:77:8D
+06-03 08:10:47.214 I/wearvian(22895): dbg: · S4  connected
+06-03 08:10:47.940 I/wearvian(22895): setPresence: false
+06-03 08:10:47.953 I/wearvian(22895): PresenceService: onDestroy
+06-03 08:10:47.954 I/wearvian(22895): dbg: presence: stopping
+06-03 08:10:47.965 I/wearvian(22895): dbg: · S2  holding (sensor presence for RSSI)
+06-03 08:10:47.976 I/wearvian(22895): dbg: · S1  holding (sensor presence for RSSI)
+06-03 08:10:47.993 I/wearvian(22895): dbg: · S3  holding (sensor presence for RSSI)
+06-03 08:10:47.998 I/wearvian(22895): dbg: PK: session ended — Job was cancelled
+06-03 08:10:48.000 I/wearvian(22895): dbg: S4: session ended — Job was cancelled

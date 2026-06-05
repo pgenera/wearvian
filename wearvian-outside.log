@@ -1,0 +1,22 @@
+--------- beginning of main
+06-03 06:48:21.386 I/wearvian(17495): dbg: presence: found 0 sensor-service device(s)
+06-03 06:48:21.400 I/wearvian(17495): dbg: · gatt  connecting 2C:A7:74:FE:3C:B1
+06-03 06:48:21.517 I/wearvian(17495): dbg: · gatt  state=2 status=0
+06-03 06:48:21.531 I/wearvian(17495): dbg: · gatt  connected + discovered
+06-03 06:48:22.079 I/wearvian(17495): KeyManager: ECDH against vehiclePublicKey=04775F67AFF21A92…
+06-03 06:48:22.595 I/wearvian(17495): dbg: → 0x12  phoneId  16B
+06-03 06:48:22.604 I/wearvian(17495): dbg: ← 0x12  vehicleId ok  16B
+06-03 06:48:22.860 I/wearvian(17495): dbg: → 0x15  authNonce pNonce+HMAC  48B
+06-03 06:48:22.921 I/wearvian(17495): dbg: ← 0x15  vNonce  20B
+06-03 06:48:22.924 I/wearvian(17495): dbg: presence: session up — streaming heartbeat to 0x1b
+06-03 06:48:22.927 I/wearvian(17495): dbg: ← 0x20  notify 0101010603b13cfe…  11B
+06-03 06:48:22.961 I/wearvian(17495): dbg: ← 0x1c  status 00000000100f0c0f003b110d0a01005078000000  20B
+06-03 06:48:23.354 I/wearvian(17495): dbg: → 0x1b  heartbeat ctr=0  37B
+06-03 06:48:34.334 I/wearvian(17495): dbg: → 0x1b  heartbeat ctr=13  37B
+06-03 06:48:45.826 I/wearvian(17495): dbg: → 0x1b  heartbeat ctr=26  37B
+06-03 06:48:58.425 I/wearvian(17495): dbg: → 0x1b  heartbeat ctr=39  37B
+06-03 06:49:11.137 I/wearvian(17495): dbg: → 0x1b  heartbeat ctr=52  37B
+06-03 06:49:16.735 I/wearvian(17495): setPresence: false
+06-03 06:49:16.811 I/wearvian(17495): PresenceService: onDestroy
+06-03 06:49:16.812 I/wearvian(17495): dbg: presence: stopping
+06-03 06:49:16.828 I/wearvian(17495): dbg: presence: session ended — Job was cancelled

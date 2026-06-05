@@ -18,15 +18,18 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.R
+import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
@@ -50,11 +53,18 @@ class PresenceService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var loopJob: Job? = null
     private var notifJob: Job? = null
+    private var idleJob: Job? = null
+
+    /** Set when we stop *on purpose* to idle passively — keeps the proximity wake armed. */
+    @Volatile private var goingPassive = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         logi("PresenceService: onStartCommand")
+        // We're running now (possibly woken by proximity) — clear any armed offloaded scan.
+        goingPassive = false
+        ProximityWake.disarm(this)
         startAsForeground()
         if (wakeLock == null) {
             wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
@@ -79,7 +89,42 @@ class PresenceService : Service() {
         if (notifJob?.isActive != true) {
             notifJob = scope.launch { PresenceStatus.summary.collect { updateNotification(it) } }
         }
+        // Drop to passive (offloaded proximity wake) after a stretch with no link up.
+        if (idleJob?.isActive != true) {
+            idleJob = scope.launch { monitorIdle() }
+        }
         return START_STICKY
+    }
+
+    /**
+     * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), arm the
+     * hardware-offloaded proximity wake and stop the foreground service so we idle at
+     * near-zero battery. [VehicleProximityReceiver] brings us back on approach.
+     * [kotlinx.coroutines.flow.collectLatest] cancels the countdown the moment a link
+     * comes up.
+     */
+    private suspend fun monitorIdle() {
+        PresenceStatus.connected.collectLatest { up ->
+            if (up) return@collectLatest
+            delay(IDLE_TIMEOUT_MS)
+            goPassive()
+        }
+    }
+
+    private fun goPassive() {
+        if (goingPassive) return
+        val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return }
+        val svc = vehicleServiceUuid(enrollment.vasVehicleId)
+        val macs = VehicleAddressStore(this).load()
+        val armed = ProximityWake.arm(this, svc, macs)
+        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive; wake armed=$armed (svc=${svc != null} macs=${macs.size})")
+        if (!armed) {
+            // Couldn't arm the wake — don't go dark, or we'd never come back.
+            DebugLog.add("presence: wake NOT armed — staying foreground")
+            return
+        }
+        goingPassive = true
+        stopSelf()
     }
 
     private suspend fun presenceLoop(enrollment: Enrollment) {
@@ -87,10 +132,12 @@ class PresenceService : Service() {
         val sharedSecret = runCatching { keyManager.sharedSecret(enrollment.vehiclePublicKey) }
             .getOrElse { DebugLog.add("presence: ECDH failed — ${it.message}"); return }
         val started = HashSet<String>()
+        val addresses = VehicleAddressStore(this)
 
         // PRIMARY phone-key (the bonded device).
         adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }?.let { primary ->
             started.add(primary.address)
+            addresses.add(primary.address) // remember for the proximity-wake filters
             scope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK", primary = true).runForever(scope) }
         } ?: DebugLog.add("presence: no bonded ${RivianBle.DEVICE_NAME}")
 
@@ -107,6 +154,7 @@ class PresenceService : Service() {
                 // inside-cabin localization and are the most reliable to bring up.
                 hits.sortedByDescending { it.rssi }.forEach { hit ->
                     if (started.add(hit.address)) {
+                        addresses.add(hit.address) // remember for the proximity-wake filters
                         val label = sensorLabel(hit.name)
                         DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
                         val dev = adapter.getRemoteDevice(hit.address)
@@ -176,8 +224,11 @@ class PresenceService : Service() {
 
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
-        DebugLog.add("presence: stopping")
+        DebugLog.add("presence: stopping (passive=$goingPassive)")
         isRunning = false
+        // If we're idling passively on purpose, KEEP the offloaded proximity wake armed
+        // so we get woken on approach. Any other stop (user deactivated the key) cancels it.
+        if (!goingPassive) ProximityWake.disarm(this)
         // Cancel the coroutine scope FIRST so the notification observer is gone before
         // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
         // standalone notification that outlives the service. Then remove the FG
@@ -196,6 +247,8 @@ class PresenceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
         private const val STAGGER_MS = 1_500L
+        /** No link UP for this long → drop to passive (offloaded proximity wake). */
+        private const val IDLE_TIMEOUT_MS = 5 * 60_000L
 
         @Volatile
         var isRunning = false
