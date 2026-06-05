@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -63,8 +64,8 @@ private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private const val PAGES = 3
 
-/** Closure-row open/close button diameter — large touch target (room freed by hiding Windows). */
-private val CLOSURE_BTN = 50.dp
+/** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
+private val CLOSURE_BTN = 42.dp
 
 /**
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
@@ -208,17 +209,22 @@ private fun ClosureRow(
     inFlight: Set<Int>,
     onCommand: (Int, String) -> Unit,
 ) {
-    // A compact, centered group — category icon + open/close — so nothing hugs the
-    // round bezel.
+    // One compact, centered cluster: category icon + label + open/close. Centering
+    // (not edge-anchoring) keeps it clear of the round bezel while the label stays
+    // snug to both the category icon and the buttons.
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Image(icon, name, Modifier.size(24.dp), colorFilter = ColorFilter.tint(Color.White))
+        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
+        Spacer(Modifier.width(5.dp))
+        Text(name, color = Color.White, fontSize = 13.sp)
+        Spacer(Modifier.width(12.dp))
         RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
             onCommand(openCode, openLabel)
         }
+        Spacer(Modifier.width(8.dp))
         RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN, closeCode in inFlight) {
             onCommand(closeCode, closeLabel)
         }
