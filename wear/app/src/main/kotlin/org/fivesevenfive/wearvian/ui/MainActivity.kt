@@ -46,6 +46,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_ACTIVATE_KEY, false)) activateKeyRequest.value = true
+        // Consume it so a later config-change/recreate can't re-trigger activation.
+        intent.removeExtra(EXTRA_ACTIVATE_KEY)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,6 +55,7 @@ class MainActivity : ComponentActivity() {
         logi("MainActivity: onCreate; requesting permissions")
         permissionLauncher.launch(requiredPermissions)
         activateKeyRequest.value = intent?.getBooleanExtra(EXTRA_ACTIVATE_KEY, false) == true
+        intent?.removeExtra(EXTRA_ACTIVATE_KEY) // consume — don't re-activate on recreate
 
         setContent {
             val vm: SetupViewModel = viewModel()

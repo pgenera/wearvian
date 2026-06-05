@@ -5,7 +5,6 @@ import android.bluetooth.le.ScanResult
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.loge
 
@@ -26,12 +25,13 @@ class VehicleProximityReceiver : BroadcastReceiver() {
         val results = intent.getParcelableArrayListExtra<ScanResult>(BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT)
         val who = results?.firstOrNull()?.device?.address
         DebugLog.add("proximity: vehicle nearby (err=$errorCode dev=${who ?: "?"}) → start presence")
-        // We caught it; stop the offloaded scan and bring presence back up.
-        ProximityWake.disarm(context)
+        // Do NOT disarm here: PresenceService.onStartCommand disarms once it's actually
+        // running. If the FGS start is blocked (Android 12+ background limit), leaving the
+        // scan armed lets the next approach retry instead of the app going permanently dark.
         runCatching { PresenceService.start(context) }
             .onFailure {
                 loge("proximity: FGS start blocked", it)
-                DebugLog.add("proximity: FGS start blocked — ${it.message}")
+                DebugLog.add("proximity: FGS start blocked — ${it.message} (wake left armed to retry)")
             }
     }
 }

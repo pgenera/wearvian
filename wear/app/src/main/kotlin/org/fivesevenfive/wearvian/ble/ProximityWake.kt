@@ -3,6 +3,7 @@ package org.fivesevenfive.wearvian.ble
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -33,8 +34,7 @@ object ProximityWake {
      * all-matches if the chip doesn't support offloaded batching.
      */
     fun arm(context: Context, serviceUuid: UUID?, addresses: Set<String>): Boolean {
-        val scanner = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
-            .adapter?.bluetoothLeScanner ?: run {
+        val scanner = scanner(context) ?: run {
             DebugLog.add("proximity: no scanner (BT off?) — can't arm")
             return false
         }
@@ -75,11 +75,13 @@ object ProximityWake {
 
     /** Cancel the offloaded scan (e.g. once presence is back up). */
     fun disarm(context: Context) {
-        val scanner = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager)
-            .adapter?.bluetoothLeScanner ?: return
+        val scanner = scanner(context) ?: return
         runCatching { scanner.stopScan(pendingIntent(context)) }
         DebugLog.add("proximity: disarmed")
     }
+
+    private fun scanner(context: Context): BluetoothLeScanner? =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bluetoothLeScanner
 
     private fun pendingIntent(context: Context): PendingIntent {
         // MUTABLE so the system can fill in the scan-result extras on delivery.

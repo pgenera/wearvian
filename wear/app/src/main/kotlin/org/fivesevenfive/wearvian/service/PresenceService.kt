@@ -18,9 +18,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.ble.RivianBle
@@ -105,31 +106,40 @@ class PresenceService : Service() {
      * comes up.
      */
     private suspend fun monitorIdle() {
-        PresenceStatus.connected.collectLatest { up ->
-            if (up) return@collectLatest
-            delay(IDLE_TIMEOUT_MS)
-            goPassive()
+        while (true) {
+            // Wait until no link is UP. Reading the flow (not a single collectLatest pass)
+            // also recovers from a stale `connected==true` carried over a process restart.
+            PresenceStatus.connected.first { !it }
+            // Disconnected — go passive only if we stay disconnected for the whole window;
+            // a reconnect within it cancels the attempt.
+            val reconnected = withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } }
+            // If we stayed idle and successfully went passive, this scope ends. If goPassive
+            // couldn't arm (BT off) or power-save is off, loop and retry rather than spinning
+            // foreground forever with no further attempt.
+            if (reconnected == null && goPassive()) return
         }
     }
 
-    private fun goPassive() {
-        if (goingPassive) return
+    /** Drop to passive (arm the proximity wake + stop). @return true iff we went passive. */
+    private fun goPassive(): Boolean {
+        if (goingPassive) return true
         if (!SettingsStore(this).proximityWakeEnabled) {
             DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
-            return
+            return false
         }
-        val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return }
+        val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
         val svc = vehicleServiceUuid(enrollment.vasVehicleId)
         val macs = VehicleAddressStore(this).load()
         val armed = ProximityWake.arm(this, svc, macs)
         DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive; wake armed=$armed (svc=${svc != null} macs=${macs.size})")
         if (!armed) {
-            // Couldn't arm the wake — don't go dark, or we'd never come back.
-            DebugLog.add("presence: wake NOT armed — staying foreground")
-            return
+            // Couldn't arm the wake — don't go dark; the loop retries later.
+            DebugLog.add("presence: wake NOT armed — will retry")
+            return false
         }
         goingPassive = true
         stopSelf()
+        return true
     }
 
     private suspend fun presenceLoop(enrollment: Enrollment) {

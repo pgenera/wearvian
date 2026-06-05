@@ -60,8 +60,12 @@ fun DebugScreen() {
     // scrolls are handled in onRotaryScrollEvent — they toggle isScrollInProgress too
     // briefly for this observer to catch.)
     LaunchedEffect(listState) {
+        var wasScrolling = false
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (!scrolling) autoFollow = !listState.canScrollForward
+            // Only react to a real scroll *settling* (true→false); ignore the initial
+            // false so it can't disable follow before the open-time scroll-to-bottom.
+            if (wasScrolling && !scrolling) autoFollow = !listState.canScrollForward
+            wasScrolling = scrolling
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
