@@ -9,7 +9,6 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
@@ -41,8 +40,6 @@ class ActiveCommandManager(
     private var descriptorWritten = CompletableDeferred<Boolean>()
     private var charWritten = CompletableDeferred<Boolean>()
     private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
-    /** Live phone→vehicle RSSI fed into the wake heartbeats; −128 until the first read. */
-    @Volatile private var latestRssi = -128
 
     suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
@@ -59,18 +56,12 @@ class ActiveCommandManager(
             val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
             val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
             val cmdChar = requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND)
-            val readChar = requireChar(gatt, RivianBle.CHAR_RIVIAN_READ)
             findChar(gatt, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(gatt, it) }
             enableNotify(gatt, phoneIdChar)
             enableNotify(gatt, nonceChar)
             enableNotify(gatt, cmdChar)
 
             val shared = keyManager.sharedSecret(enrollment.vehiclePublicKey)
-
-            // 0) PhoneProfile opens the ranging session — exactly what the official app's
-            // command session does (PhoneProfile 10 80 → 0x20 before phoneId).
-            runCatching { writeChar(gatt, cmdChar, MSG_PHONE_PROFILE) }
-            DebugLog.ble("→", "0x20", "PhoneProfile(1080)", 2)
 
             // 1) phone id -> vehicle echoes its id
             notifications[phoneIdChar.uuid] = CompletableDeferred()
@@ -89,24 +80,7 @@ class ActiveCommandManager(
             val vNonce = vResp.copyOf(16)
             DebugLog.ble("←", "0x15", "vNonce ${vNonce.toHexString().take(8)}…", vResp.size)
 
-            // 3) WAKE the vehicle over BLE (no cloud). There is no BLE "wake" command —
-            // WakeVehicle has an empty BLE byte[] (h60/r0) and is cloud-only in the app.
-            // Instead, the app's command session wakes the vehicle the same way passive
-            // entry does: kick off ranging (SensorInformation 0x01 → 0x20) then stream
-            // authenticated heartbeats to 0x1b, and send the command *within* that live
-            // session. A bare one-shot command can't wake a sleeping command processor.
-            enableNotify(gatt, readChar)
-            runCatching { writeChar(gatt, cmdChar, byteArrayOf(MSG_SENSOR_INFORMATION)) }
-            DebugLog.ble("→", "0x20", "SensorInformation(01)", 1)
-            gatt.readRemoteRssi()
-            repeat(WAKE_BEATS) { i ->
-                val hb = ActiveCommandFrames.heartbeatFrame(shared, pNonce, vNonce, i, latestRssi.toByte())
-                runCatching { writeChar(gatt, readChar, hb, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) }
-                delay(WAKE_BEAT_MS)
-            }
-            DebugLog.add("cmd $label: BLE wake session sent ($WAKE_BEATS beats) → command")
-
-            // 4) encrypted command frame, within the now-awake session
+            // 3) encrypted command frame
             val frame = ActiveCommandFrames.activeCommandFrame(shared, pNonce, vNonce, counter = 0, commandCode = commandCode)
             notifications[cmdChar.uuid] = CompletableDeferred()
             writeChar(gatt, cmdChar, frame)
@@ -139,14 +113,9 @@ class ActiveCommandManager(
         runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }
     }
 
-    private suspend fun writeChar(
-        gatt: BluetoothGatt,
-        char: BluetoothGattCharacteristic,
-        value: ByteArray,
-        writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-    ) {
+    private suspend fun writeChar(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, value: ByteArray) {
         charWritten = CompletableDeferred()
-        gatt.writeCharacteristic(char, value, writeType)
+        gatt.writeCharacteristic(char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         withTimeout(OP_MS) { charWritten.await() }
     }
 
@@ -159,10 +128,6 @@ class ActiveCommandManager(
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             servicesReady.complete(status == BluetoothGatt.GATT_SUCCESS)
-        }
-
-        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) latestRssi = rssi
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
@@ -181,12 +146,5 @@ class ActiveCommandManager(
     private companion object {
         const val CONNECT_MS = 10_000L
         const val OP_MS = 5_000L
-        /** Wake-burst: heartbeats streamed to 0x1b before the command, to wake a sleeping vehicle. */
-        const val WAKE_BEATS = 24
-        const val WAKE_BEAT_MS = 110L
-        /** PhoneProfile message: type 0x10 + capability byte 0x80 (opens the ranging session). */
-        val MSG_PHONE_PROFILE = byteArrayOf(0x10, 0x80.toByte())
-        /** SensorInformation id = 1 — written to 0x20 to start ranging. */
-        const val MSG_SENSOR_INFORMATION = 0x01.toByte()
     }
 }
