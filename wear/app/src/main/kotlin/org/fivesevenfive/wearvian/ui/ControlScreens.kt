@@ -211,8 +211,10 @@ private fun ClosureRow(
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
-        Spacer(Modifier.width(6.dp))
-        Text(name, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        // Push the label + buttons together to the right so the name sits next to them.
+        Spacer(Modifier.weight(1f))
+        Text(name, color = Color.White, fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
         RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
             onCommand(openCode, openLabel)
         }
