@@ -34,6 +34,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Luggage
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.ToggleOff
+import androidx.compose.material.icons.filled.ToggleOn
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.runtime.Composable
@@ -62,7 +64,7 @@ import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
-private const val PAGES = 3
+private const val PAGES = 4
 
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
 private val CLOSURE_BTN = 42.dp
@@ -79,6 +81,7 @@ fun ControlScreens(
     state: SetupUiState,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
+    onProximityWakeChange: (Boolean) -> Unit,
 ) {
     val pager = rememberPagerState { PAGES }
     val scope = rememberCoroutineScope()
@@ -113,7 +116,8 @@ fun ControlScreens(
                 when (page) {
                     0 -> KeyPage(state, onTogglePresence, onCommand)
                     1 -> ClosuresPage(state.inFlight, onCommand)
-                    else -> SignalPage(state.inFlight, onCommand)
+                    2 -> SignalPage(state.inFlight, onCommand)
+                    else -> SettingsPage(state.proximityWakeEnabled, onProximityWakeChange)
                 }
             }
         }
@@ -193,6 +197,30 @@ private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
                 onCommand(Cmd.ACTIVATE_SOUND, "ACTIVATE_SOUND")
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsPage(proximityWakeOn: Boolean, onChange: (Boolean) -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Header("Settings")
+        Image(
+            imageVector = if (proximityWakeOn) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
+            contentDescription = if (proximityWakeOn) "Auto power-save on" else "Auto power-save off",
+            modifier = Modifier.width(64.dp).height(40.dp).clickable { onChange(!proximityWakeOn) },
+            colorFilter = ColorFilter.tint(if (proximityWakeOn) GOLD else DIM),
+        )
+        Label("Auto power-save")
+        Text(
+            "Sleeps when away,\nwakes near the car",
+            color = DIM,
+            fontSize = 10.sp,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 

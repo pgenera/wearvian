@@ -29,6 +29,7 @@ import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
@@ -113,6 +114,10 @@ class PresenceService : Service() {
 
     private fun goPassive() {
         if (goingPassive) return
+        if (!SettingsStore(this).proximityWakeEnabled) {
+            DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
+            return
+        }
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return }
         val svc = vehicleServiceUuid(enrollment.vasVehicleId)
         val macs = VehicleAddressStore(this).load()

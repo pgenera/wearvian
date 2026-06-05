@@ -15,6 +15,7 @@ import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.logi
 import org.fivesevenfive.wearvian.util.logw
@@ -27,12 +28,15 @@ data class SetupUiState(
     val presenceRunning: Boolean = false,
     /** Command codes currently being sent over BLE — drives the in-flight throb on each button. */
     val inFlight: Set<Int> = emptySet(),
+    /** Auto power-save (proximity wake) toggle, surfaced on the settings screen. */
+    val proximityWakeEnabled: Boolean = true,
 )
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
 class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = EnrollmentStore(app)
+    private val settings = SettingsStore(app)
     private val keyManager = KeyManager()
     private val companion = CompanionEnrollmentClient(app)
 
@@ -48,7 +52,11 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
             // Reflect the real foreground-service state so the toggle doesn't desync
             // when the UI recomposes (e.g. returning from the debug console).
-            e.bonded -> SetupUiState(Phase.BONDED, presenceRunning = PresenceService.isRunning)
+            e.bonded -> SetupUiState(
+                Phase.BONDED,
+                presenceRunning = PresenceService.isRunning,
+                proximityWakeEnabled = settings.proximityWakeEnabled,
+            )
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
         }
     }
@@ -149,6 +157,16 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         logi("setPresence: $on")
         if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
         _state.value = _state.value.copy(presenceRunning = on)
+    }
+
+    /**
+     * Toggle auto power-save (proximity wake). Persisted; [PresenceService] reads it when
+     * deciding whether to drop to passive. Takes effect on the next idle cycle.
+     */
+    fun setProximityWake(on: Boolean) {
+        logi("setProximityWake: $on")
+        settings.proximityWakeEnabled = on
+        _state.value = _state.value.copy(proximityWakeEnabled = on)
     }
 
     /**

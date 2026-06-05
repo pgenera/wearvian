@@ -34,13 +34,14 @@ fun WearvianApp(
     onPair: () -> Unit,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit = { _, _ -> },
+    onProximityWakeChange: (Boolean) -> Unit = {},
     onReset: () -> Unit,
 ) {
     LaunchedEffect(Unit) { onRefresh() }
 
     // The BONDED control surface is its own full-screen vertical pager (ControlScreens.kt).
     if (state.phase == Phase.BONDED) {
-        ControlScreens(state, onTogglePresence, onCommand)
+        ControlScreens(state, onTogglePresence, onCommand, onProximityWakeChange)
         return
     }
 

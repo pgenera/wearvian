@@ -119,6 +119,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onTogglePresence = vm::setPresence,
                         onCommand = vm::sendCommand,
+                        onProximityWakeChange = vm::setProximityWake,
                         onReset = vm::reset,
                     )
                 }
