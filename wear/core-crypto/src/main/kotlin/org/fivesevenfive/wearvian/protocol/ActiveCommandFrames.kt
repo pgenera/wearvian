@@ -32,23 +32,49 @@ object ActiveCommandFrames {
     val CONSTANT_B: ByteArray =
         RivianCrypto.fromHex("07862b2ed8328106a7cdff7b5c1b23bedffddb33a6aa3c82b0fedc784485df77")
 
-    /** 2-byte little-endian active-command codes (`em.k2` → `attrValue`). */
+    // BLE-sendable active-command codes (2-byte little-endian attrValue), extracted from
+    // the decompiled command registry (h60 classes -> em.k2). Complete set of codes with a
+    // non-empty BLE byte array. In this app build the OpenLiftgate/OpenTailgate classes were
+    // nulled to an empty byte array (the app routes them via the cloud) and their natural
+    // code 0x2a is reserved as k2.NONE -- but every open/close pair is adjacent
+    // (open = close-1: windows 15/16, tonneau 10/11, frunk 26/27, charge 36/37), so 0x2a is
+    // the open-liftgate code the vehicle firmware almost certainly still accepts;
+    // OPEN_LIFTGATE below is that pattern-predicted code (verify on-vehicle). Genuinely
+    // cloud-only (no plausible BLE code): WakeVehicle, Start/StopCharging, SetChargingLimit,
+    // HVAC seat/temperature, GearGuard video. SoC/range are cloud telemetry, not BLE.
     object Cmd {
+        // --- Closures / locks ---
         const val UNLOCK_ALL = 0x0003
         const val LOCK_ALL = 0x0006
-        const val PANIC_ON = 0x0007
-        const val OPEN_ALL_WINDOWS = 0x0015
-        const val CLOSE_ALL_WINDOWS = 0x0016
-        const val ENABLE_GEAR_GUARD = 0x0017
-        const val DISABLE_GEAR_GUARD = 0x0018
         const val OPEN_FRUNK = 0x0026
         const val CLOSE_FRUNK = 0x0027
+        const val OPEN_LIFTGATE = 0x002a  // pattern-predicted (app reserves it as NONE); verify on-vehicle
         const val CLOSE_LIFTGATE = 0x002b
-        const val PANIC_OFF = 0x0034
+        const val OPEN_ALL_WINDOWS = 0x0015
+        const val CLOSE_ALL_WINDOWS = 0x0016
         const val OPEN_CHARGE_PORT = 0x0036
         const val CLOSE_CHARGE_PORT = 0x0037
+        // R1T-only closures (no-op on an R1S)
+        const val OPEN_TONNEAU_COVER = 0x0010
+        const val CLOSE_TONNEAU_COVER = 0x0011
+        const val RELEASE_LEFT_SIDE_BIN = 0x000e
+        const val RELEASE_RIGHT_SIDE_BIN = 0x000f
+        // --- Alarms / signaling ---
+        const val PANIC_ON = 0x0007
+        const val PANIC_OFF = 0x0034
         const val FLASH_LIGHTS = 0x006e
         const val ACTIVATE_SOUND = 0x006f
+        // --- Gear Guard (security) ---
+        const val ENABLE_GEAR_GUARD = 0x0017
+        const val DISABLE_GEAR_GUARD = 0x0018
+        // --- Cabin preconditioning (set-temp 0x0035 takes a temp arg, not a plain code) ---
+        const val CABIN_PRECONDITION_ENABLE = 0x0019
+        const val CABIN_PRECONDITION_DISABLE = 0x001a
+        // --- Two-factor drive authorization ---
+        const val DRIVE_AUTH_ALLOW = 0x0072
+        const val DRIVE_AUTH_DENY = 0x0073
+        const val DRIVE_AUTH_MOBILE_NOTIF_ENABLE = 0x005e
+        const val DRIVE_AUTH_MOBILE_NOTIF_DISABLE = 0x005f
     }
 
     private fun sessionKey(sharedSecret: ByteArray) = RivianCrypto.deriveSecretKey(sharedSecret)

@@ -357,6 +357,34 @@ so PK-vs-sensor can't be labelled from this capture (a raw `btsnoop_hci.log` pul
 them). The earlier "## RE update 2026-06-03 (2)/(3)" bonding/signed-params sections are superseded
 for this car.
 
+## Complete BLE active-command table (2026-06-05, from h60/* → em.k2)
+
+Extracted every command descriptor (`h60/*` static `new byte[]{lo,0}, k2.NAME`). Authoritative copy
+lives in `ActiveCommandFrames.Cmd`. **Open/close pairs are adjacent (open = close−1.)**
+
+| code | command | | code | command |
+|------|---------|-|------|---------|
+| 0x03 | UNLOCK_ALL_CLOSURES | | 0x2b | CLOSE_LIFTGATE |
+| 0x06 | LOCK_ALL_CLOSURES | | **0x2a** | **OPEN_LIFTGATE** (see note) |
+| 0x26 / 0x27 | OPEN / CLOSE_FRUNK | | 0x10 / 0x11 | OPEN / CLOSE_TONNEAU (R1T) |
+| 0x15 / 0x16 | OPEN / CLOSE_ALL_WINDOWS | | 0x0e / 0x0f | RELEASE_LEFT / RIGHT_SIDE_BIN (R1T) |
+| 0x36 / 0x37 | OPEN / CLOSE_CHARGE_PORT | | 0x17 / 0x18 | ENABLE / DISABLE_GEAR_GUARD |
+| 0x07 / 0x34 | PANIC_ON / OFF | | 0x19 / 0x1a | CABIN_PRECONDITION_ENABLE / DISABLE |
+| 0x6e | FLASH_EXTERNAL_LIGHTS | | 0x72 / 0x73 | DRIVE_AUTH_USER_INPUT ALLOW / DENY |
+| 0x6f | ACTIVATE_EXTERNAL_SOUND | | 0x5e / 0x5f | DRIVE_AUTH_MOBILE_NOTIF ENABLE / DISABLE |
+
+**OPEN_LIFTGATE / OPEN_TAILGATE note:** in this app build their command classes are nulled to an
+empty BLE byte[] (the app routes them via the **cloud**), and `0x2a` is reserved as `k2.NONE`. But
+`0x2a` is exactly the open-liftgate code by the open=close−1 pattern, so the **vehicle firmware almost
+certainly still accepts `0x2a`** — Rivian just stopped the app sending it over BLE. Worth trying
+on-vehicle. (`0x0a/0x0c/0x12` also map to `k2.NONE` — reserved no-ops.)
+
+**Cloud-only (no BLE code — need INTERNET / the companion):** WakeVehicle, Start/Stop charging,
+SetChargingLimit, CabinPreconditioningSetTemperature (0x35 takes a temp arg), all HVAC seat/defrost
+controls, GearGuard video, climate hold, software InstallNow. **State of charge / range / mileage are
+cloud telemetry** (GraphQL `vehicleState`: `batteryLevel`, `distanceToEmpty`, `vehicleMileage`) — the
+BLE path has no battery fields, so SoC is **not** retrievable over Bluetooth.
+
 ## What this means for the app
 
 - **Passive entry/drive needs a new presence-session component**: after bonding,
