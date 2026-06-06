@@ -75,6 +75,14 @@ class VehicleSession(
     @Volatile private var vNonce: ByteArray? = null
     /** Last decrypted STATUS plaintext — log only on change so closure transitions stand out. */
     private var lastStatusHex: String? = null
+    /**
+     * Active-command counter — SEPARATE from the heartbeat counter. On-vehicle (2026-06-06)
+     * the vehicle rejected commands carrying the running heartbeat counter (e.g. 74) and
+     * terminated the link (status 0x13), while the proven one-shot path uses counter=0. So
+     * 0x1b heartbeats and 0x20 commands keep independent counter spaces; commands run
+     * 0,1,2,… per connection. Reset on reconnect.
+     */
+    private var commandCounter = 0
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
@@ -202,15 +210,15 @@ class VehicleSession(
                     while (true) {
                         val cmd = CommandBus.poll() ?: break
                         val frame = ActiveCommandFrames.activeCommandFrame(
-                            sharedSecret, pNonce, vNonce, counter, cmd.code,
+                            sharedSecret, pNonce, vNonce, commandCounter, cmd.code,
                         )
                         runCatching { writeChar(g, msgChar, frame) }
                             .onSuccess {
                                 DebugLog.ble("→", "$label/0x20",
-                                    "CMD ${cmd.label} (0x%04x) ctr=$counter".format(cmd.code), frame.size)
+                                    "CMD ${cmd.label} (0x%04x) cmdctr=$commandCounter".format(cmd.code), frame.size)
                             }
                             .onFailure { e -> DebugLog.add("$label: CMD ${cmd.label} write failed — ${e.message}") }
-                        counter++
+                        commandCounter++
                     }
                 }
                 val rssiByte = latestRssi.toByte()
@@ -244,6 +252,7 @@ class VehicleSession(
         pNonce = null
         vNonce = null
         lastStatusHex = null
+        commandCounter = 0
     }
 
     private fun requireChar(g: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
