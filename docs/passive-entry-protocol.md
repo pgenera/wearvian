@@ -594,3 +594,16 @@ prober found no match) — but moot now that 0x1c gives plaintext status directl
   other static bytes `[8]=0x28`,`[11]=0x50`,`[12]=0x78` unidentified (range/temp/limit?).
 - Full decode now: `[0]`=wake/sleep, `[1]`=doors, `[2]`=frunk/liftgate(/charge-port), `[3]`=windows,
   `[5]`=SoC?, rest static/unknown.
+
+### Refinement 2 (2026-06-06, locks capture — decode essentially complete)
+- **LOCK** = high nibbles of `[1]` (0xf0) and `[2]` (0xa0): set=locked, clear=unlocked. Confirmed by two
+  lock/unlock cycles WHILE AWAKE (toggled cleanly; brief `7f` transient mid-unlock). So `[0]` bit0 = asleep
+  is SEPARATE from lock; earlier logs had both nibbles set only because locked＆asleep coincided.
+- **FRUNK** = `[2]` bit `0x08` CONFIRMED (OPEN_FRUNK 0x26 cleared, CLOSE_FRUNK 0x27 set). So `[2]`:
+  `0x08`=frunk, `0x04`=liftgate (1=closed), high-nibble=locked.
+- **Charge port NOT in this frame** — cycled twice while awake, zero byte change.
+- **Charge limit NOT in this frame** — changed 70→73% on the app, zero byte change. SoC `[5]=0x41=65` was a
+  COINCIDENCE, not SoC: `[4..15]` byte-identical across all sessions. Confirms F1 (battery/SoC/limit = cloud
+  GraphQL only, no BLE fields). Don't try to read battery from 0x1c.
+- Final 0x1c map: `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk0x08/liftgate0x04,
+  `[3]`=windows, `[4..15]`=static config. Everything needed for status icons is here except charge-port (cloud).
