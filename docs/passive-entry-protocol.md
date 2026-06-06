@@ -455,3 +455,66 @@ BLE path has no battery fields, so SoC is **not** retrievable over Bluetooth.
   the `0x18` command frame.
 - Re-confirm the heartbeat HMAC preimage before implementing; our crypto core
   already has the HMAC/HKDF primitives.
+
+---
+
+## 2026-06-06 — sleeping-truck command capture (charge-port + windows resolved)
+
+Capture: official app on a **sleeping** R1S — unlock, then open/close charge-port door, then
+vent/close windows. Decoded with `tools/btsnoop_rivian.py` (reusable; see its header for the full
+protocol notes). This **overturns the "windows/charge-port are cloud-only" guess**.
+
+### The 0x20 channel is the command *and* status bus
+
+All command traffic and all status traffic share characteristic `0x20` (GATT value handle `0x0020`).
+Frames are tagged by their first two bytes:
+
+| tag | dir | size | role |
+|-----|-----|------|------|
+| `16 01` | phone → veh | 64 B | **COMMAND** = `[16 01][12B IV][AES-128-GCM ct+tag]` (our existing frame) |
+| `17 01` | veh → phone | 67 B | **CMD-ACK** — encrypted CommandReturnValue (one per command) |
+| `18 01` | veh → phone | 114 B | **STATUS** — encrypted vehicle/closure state, streamed continuously |
+| `01 01…` | veh → phone | 11 B | SensorInformation (handshake control) |
+| `07 xx … 01 00` | veh → phone | 6 B | per-heartbeat ranging/RSSI response |
+
+### Windows & charge-port ARE sent over BLE — byte-identical to unlock
+
+The capture has **5 `16 01` command frames** (unlock, CP-open, CP-close, windows-vent,
+windows-close), each 64 B, each answered by a `17 01` ack. **The frame format and channel are
+identical to unlock.** So our command codes (`0x36/0x37`, `0x15/0x16`) and frame wrapping are
+correct — these commands are *not* cloud-routed.
+
+### Why ours fail: they need a live, awake presence session — not a one-shot
+
+The truck was asleep. The app does **not** just connect-and-command. It:
+
+1. Reconnects + re-handshakes (phoneId `0x12` + nonce `0x15`) **4× over ~5 s** while the vehicle wakes.
+2. Streams 37-byte heartbeats to `0x1b` continuously (**755** in this session, ~12 Hz) plus ranging.
+3. Waits until the vehicle starts pushing `18 01` STATUS (first at t≈9.2 s) — i.e. it's awake.
+4. **Only then** (t≈14 s, ~10 s after first contact) sends the first command, and keeps the
+   heartbeat/status session running across all 5 commands.
+
+Our `ActiveCommandManager` does a one-shot: connect → handshake → one command → disconnect.
+Unlock/lock tolerate that (security module answers half-asleep), but charge-port/windows are gated
+on the vehicle considering the phone **present** via the sustained heartbeat+ranging session. They
+get a `17 01` ack (received) but the body modules drop them with no presence — matching the earlier
+"received-but-rejected, vehicle-side gating" observation.
+
+**Heartbeat counter:** the 37-byte heartbeat is `[le32 counter][1B flag][32B keyed payload]`. The
+`le32` counter is plaintext, increments per authenticated message, and **resets to 0 on each
+reconnect**. Commands share this running counter (HMAC binds `le32(counter)`), so a command sent
+mid-session must use the *current* counter — a hardcoded `counter=0` is valid only as the **first**
+message of a fresh connection (which is exactly why our one-shot unlock works and a warmup-then-unlock
+regressed earlier).
+
+### Implications for the app
+
+- To make charge-port / windows / liftgate / etc. work, **send active commands through a live
+  presence session** (the same heartbeat/ranging stream as drive) using the **running counter**, not
+  the isolated one-shot connection. The drive presence loop in `PresenceService` already does most of
+  this — fold command-sending into it rather than a separate connect.
+- **Status is recoverable:** subscribe `0x20`, decrypt the `18 01` frames with our session secret to
+  read closure/lock state (this is how the official app "knows"). Decode of the 114-B plaintext
+  fields (lock, charge-port, windows, frunk, liftgate) is the next step — needs our own session so we
+  hold the key; the official app's frames are encrypted under its key and can't be read offline.
+- Final validation is on-vehicle (we hold the key; the car is the oracle) — unchanged constraint.
