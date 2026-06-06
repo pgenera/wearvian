@@ -73,6 +73,9 @@ private const val PAGES = 4
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
 private val CLOSURE_BTN = 42.dp
 
+/** Fixed width of the closure-row icon+label cluster so the open/close buttons align in columns. */
+private val LABEL_W = 78.dp
+
 /**
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
  * swipe or the rotary crown. Pure-black OLED field, high-contrast white iconography
@@ -300,25 +303,29 @@ private fun ClosureRow(
     open: Boolean = false,
     stateKnown: Boolean = false,
 ) {
-    // One compact, centered cluster: category icon + label + open/close. Current state (when
-    // known) is shown by lighting the matching button — up filled = currently open, down
-    // filled = currently closed — so the row width stays fixed and the cue is colorblind-safe.
+    // Category icon + label, then open/close. The leading cluster has a FIXED width so the
+    // open (▲) buttons line up in one vertical column and the close (▼) buttons in another
+    // across every row. Current state (when known) lights the ACTIONABLE button — the one whose
+    // press would change state: down filled when currently open (you can close it), up filled
+    // when currently closed (you can open it). The fill is a luminance cue, so colorblind-safe.
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
-        Spacer(Modifier.width(5.dp))
-        Text(name, color = Color.White, fontSize = 13.sp)
-        Spacer(Modifier.width(12.dp))
+        Row(Modifier.width(LABEL_W), verticalAlignment = Alignment.CenterVertically) {
+            Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
+            Spacer(Modifier.width(5.dp))
+            Text(name, color = Color.White, fontSize = 13.sp)
+        }
+        Spacer(Modifier.width(10.dp))
         RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN,
-            busy = openCode in inFlight, active = stateKnown && open) {
+            busy = openCode in inFlight, active = stateKnown && !open) {
             onCommand(openCode, openLabel)
         }
         Spacer(Modifier.width(8.dp))
         RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN,
-            busy = closeCode in inFlight, active = stateKnown && !open) {
+            busy = closeCode in inFlight, active = stateKnown && open) {
             onCommand(closeCode, closeLabel)
         }
     }
@@ -366,9 +373,9 @@ private fun RoundIcon(
     } else {
         1f
     }
-    // [active] = this is the closure's CURRENT state: invert to a bright filled circle with a
-    // dark glyph. The fill is a luminance/contrast change (not a hue), so it reads regardless
-    // of color vision; combined with the up/down position it shows open-vs-closed at a glance.
+    // [active] = this button is the actionable one for the closure's current state: invert to a
+    // bright filled circle with a dark glyph. The fill is a luminance/contrast change (not a hue),
+    // so it reads regardless of color vision and highlights the press that will change state.
     Box(
         Modifier.size(diameter).clip(CircleShape).background(if (active) Color.White else BTN_BG)
             .clickable(enabled = !busy, onClick = onClick),
