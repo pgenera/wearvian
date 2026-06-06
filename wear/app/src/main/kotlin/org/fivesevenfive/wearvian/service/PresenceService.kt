@@ -22,6 +22,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -87,7 +89,7 @@ class PresenceService : Service() {
             DebugLog.add("presence: already running; ignoring duplicate start")
             return START_STICKY
         }
-        isRunning = true
+        _running.value = true
         // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
         // restores it on unlock.
         locked = keyguard?.isDeviceLocked == true
@@ -310,7 +312,7 @@ class PresenceService : Service() {
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping (passive=$goingPassive)")
-        isRunning = false
+        _running.value = false
         // If we're idling passively on purpose, KEEP the offloaded proximity wake armed
         // so we get woken on approach. Any other stop (user deactivated the key) cancels it.
         if (!goingPassive) ProximityWake.disarm(this)
@@ -338,8 +340,10 @@ class PresenceService : Service() {
         private const val LOCK_POLL_MS = 2_000L
         private const val LOCKED_TEXT = "Watch locked · key paused"
 
-        @Volatile
-        var isRunning = false
+        /** Live "is the presence service running" — observed by the UI for the active/passive flip. */
+        private val _running = MutableStateFlow(false)
+        val running: StateFlow<Boolean> = _running
+        val isRunning: Boolean get() = _running.value
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, PresenceService::class.java))

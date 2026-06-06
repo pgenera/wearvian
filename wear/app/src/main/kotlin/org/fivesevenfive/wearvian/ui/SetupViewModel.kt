@@ -50,6 +50,20 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = mutableStateOf(SetupUiState())
     val state: State<SetupUiState> get() = _state
 
+    init {
+        // Live tri-state: when the presence service starts/stops (e.g. the proximity wake
+        // brings it up on approach, or it idles to passive), reflect it on the BONDED
+        // screen without waiting for a resume. Re-read keyArmed so off/active/passive stay
+        // consistent (e.g. the notification "Off" both stops the service and disarms).
+        viewModelScope.launch {
+            PresenceService.running.collect { running ->
+                if (_state.value.phase == Phase.BONDED) {
+                    _state.value = _state.value.copy(presenceRunning = running, keyArmed = settings.keyArmed)
+                }
+            }
+        }
+    }
+
     fun refresh() {
         val e = store.load()
         // Log key presence on every launch so persistence across app updates is
