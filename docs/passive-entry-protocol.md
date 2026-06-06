@@ -581,3 +581,16 @@ CONFIDENT: windows (`[3]`) + driver door (`[1]` bit 0x08). LIKELY: lock/sleep (`
 hi-nibbles), frunk/charge-port (`[2]`). NOT in this frame: exterior lights (no byte changed during
 L/R light toggles). The compact 20-byte 0x20 ack/status frames stayed undecryptable (the implicit-IV
 prober found no match) — but moot now that 0x1c gives plaintext status directly.
+
+### Refinement (2026-06-06, charge-then-frunk capture)
+- `[1]` low nibble = **DOORS** (4 bits, 1=closed): `0x08`=driver, `0x04`=passenger, `0x02`=rear-driver,
+  `0x01`=rear-passenger. CONFIRMED — a door walk (passenger→rear-passenger→rear-driver) cleared bits in order.
+- `[2]` bit `0x04` = **liftgate** (CONFIRMED via OPEN/CLOSE_LIFTGATE 0x2a/0x2b timing); bit `0x08` = **frunk** (front).
+  Charge-port still uncaptured-awake (it was cycled while the car was asleep → frames frozen at `11ffac`).
+- `[0]` = **wake/sleep** (1=asleep), NOT lock — both unlocks coincided with wake, and a liftgate-while-locked
+  also flipped it. Lock and sleep are coupled in all captures so far; no clean lock-only bit yet.
+- `[5]` (frame byte 9) = `0x41` = 65 = **SoC%** strong candidate (matches 65.3% at capture time; constant across
+  sessions as expected). Unproven until a capture with a different SoC. Charge-limit (70%) byte not yet found;
+  other static bytes `[8]=0x28`,`[11]=0x50`,`[12]=0x78` unidentified (range/temp/limit?).
+- Full decode now: `[0]`=wake/sleep, `[1]`=doors, `[2]`=frunk/liftgate(/charge-port), `[3]`=windows,
+  `[5]`=SoC?, rest static/unknown.
