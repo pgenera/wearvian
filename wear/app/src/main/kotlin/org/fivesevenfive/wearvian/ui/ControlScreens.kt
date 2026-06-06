@@ -216,7 +216,7 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
         // now that commands ride the live session (the old one-shot path no-op'd them).
         ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
             "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand,
-            open = status.anyWindowOpen, stateKnown = status.valid)
+            open = status.anyWindowOpen, stateKnown = status.valid, upOpens = false)
         // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
@@ -302,6 +302,7 @@ private fun ClosureRow(
     onCommand: (Int, String) -> Unit,
     open: Boolean = false,
     stateKnown: Boolean = false,
+    upOpens: Boolean = true,
 ) {
     // Category icon + label, then open/close. The leading cluster has a FIXED width so the
     // open (▲) buttons line up in one vertical column and the close (▼) buttons in another
@@ -318,15 +319,24 @@ private fun ClosureRow(
             Spacer(Modifier.width(5.dp))
             Text(name, color = Color.White, fontSize = 13.sp)
         }
+        // Which command each arrow fires. Normally up=open / down=close; windows are inverted
+        // ([upOpens]=false) because raising a window closes it — so up=close, down=open. In both
+        // cases the lit button is the actionable one (the press that changes the current state).
+        val upCode = if (upOpens) openCode else closeCode
+        val upLabel = if (upOpens) openLabel else closeLabel
+        val downCode = if (upOpens) closeCode else openCode
+        val downLabel = if (upOpens) closeLabel else openLabel
         Spacer(Modifier.width(10.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN,
-            busy = openCode in inFlight, active = stateKnown && !open) {
-            onCommand(openCode, openLabel)
+        RoundIcon(Icons.Filled.KeyboardArrowUp, if (upOpens) "Open $name" else "Close $name",
+            Color.White, CLOSURE_BTN,
+            busy = upCode in inFlight, active = stateKnown && (if (upOpens) !open else open)) {
+            onCommand(upCode, upLabel)
         }
         Spacer(Modifier.width(8.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN,
-            busy = closeCode in inFlight, active = stateKnown && open) {
-            onCommand(closeCode, closeLabel)
+        RoundIcon(Icons.Filled.KeyboardArrowDown, if (upOpens) "Close $name" else "Open $name",
+            Color.White, CLOSURE_BTN,
+            busy = downCode in inFlight, active = stateKnown && (if (upOpens) open else !open)) {
+            onCommand(downCode, downLabel)
         }
     }
 }
