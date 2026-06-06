@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.service.PresenceStatus
+import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.toHexString
@@ -70,6 +71,24 @@ class VehicleSession(
     @Volatile private var latestRssi: Int = RSSI_DEFAULT
     private var inbound = 0
     private var cmdInbound = 0
+    /** Session nonces, kept so the GATT callback can decrypt inbound 0x20 status/ack frames. */
+    @Volatile private var pNonce: ByteArray? = null
+    @Volatile private var vNonce: ByteArray? = null
+    /** Last decrypted STATUS plaintext — log only on change so closure transitions stand out. */
+    private var lastStatusHex: String? = null
+    /** Last raw 0x1c VEHICLE_STATUS frame — dedupe so closure transitions stand out. */
+    private var lastStatus1cHex: String? = null
+    /**
+     * Active-command sequence number ("csn") — SEPARATE from the heartbeat counter, and the
+     * value bound into each command's HMAC preimage. Confirmed in the decompile: the command
+     * builder uses `tVar.r` (`em/f0.f`: `int i = tVar.r; tVar.r = i + 1`) while heartbeats use
+     * a different field (`j0Var.k`). `csn` is init'd by connection type (`l60.x`): LEGACY → 0,
+     * PRE_CCC/CCC → 1, reset on session clear. Our Gen-1 link is LEGACY (no CCC encryption), so
+     * csn starts at 0, +1 per command, reset per (re)connect (each does a fresh nonce handshake).
+     * The earlier build fed the heartbeat counter here (74, 1, 10…); the vehicle failed the csn
+     * check and dropped the link (status 0x13) on every command.
+     */
+    private var commandCounter = 0
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
@@ -137,6 +156,9 @@ class VehicleSession(
             val vResp = runCatching { withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() } }
                 .getOrElse { DebugLog.ble("·", label, "vNonce TIMEOUT — auth failed"); throw it }
             val vNonce = vResp.copyOf(16)
+            // Publish the nonces so the GATT callback can decrypt inbound 0x20 status/ack frames.
+            this.pNonce = pNonce
+            this.vNonce = vNonce
             PresenceStatus.set(label, PresenceStatus.Link.UP)
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
@@ -147,6 +169,20 @@ class VehicleSession(
                 runCatching { writeChar(g, it, byteArrayOf(MSG_SENSOR_INFORMATION)) }
                     .onSuccess { DebugLog.ble("→", "$label/0x20", "SensorInformation(01)", 1) }
                     .onFailure { e -> DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${e.message}") }
+            }
+
+            // EXPERIMENT (branch wearvian-vehicle-status-0x1c): subscribe CHAR_VEHICLE_STATUS
+            // (0x1c) on the PRIMARY link, POST-auth. The decompile (em/f0.e, non-secured branch)
+            // shows the official app subscribes this char for the full vehicle-status stream; we
+            // dropped it long ago because subscribing it PRE-auth on the in-the-clear SENSORS
+            // forced link encryption (HCI status=0x05) and broke them. PRIMARY-only + post-auth
+            // is the safe variant. If rich status arrives here, the "missing subscription"
+            // hypothesis is confirmed. Sensors still never subscribe it.
+            if (primary) {
+                findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let {
+                    val ok = enableNotify(g, it)
+                    DebugLog.ble("·", label, "0x1c VEHICLE_STATUS subscribe=$ok [experiment]")
+                } ?: DebugLog.ble("·", label, "0x1c char not found")
             }
             g.readRemoteRssi()
 
@@ -186,6 +222,25 @@ class VehicleSession(
                     pausedForLock = false
                     DebugLog.add("$label: watch unlocked — resuming heartbeats")
                 }
+                // PRIMARY drains queued active commands so they ride THIS live, awake
+                // session with the running counter — the only way the vehicle accepts the
+                // presence-gated closures (charge-port/windows/liftgate). A fresh one-shot's
+                // counter=0 would look stale mid-session. See CommandBus / docs.
+                if (primary && msgChar != null) {
+                    while (true) {
+                        val cmd = CommandBus.poll() ?: break
+                        val frame = ActiveCommandFrames.activeCommandFrame(
+                            sharedSecret, pNonce, vNonce, commandCounter, cmd.code,
+                        )
+                        runCatching { writeChar(g, msgChar, frame) }
+                            .onSuccess {
+                                DebugLog.ble("→", "$label/0x20",
+                                    "CMD ${cmd.label} (0x%04x) cmdctr=$commandCounter".format(cmd.code), frame.size)
+                            }
+                            .onFailure { e -> DebugLog.add("$label: CMD ${cmd.label} write failed — ${e.message}") }
+                        commandCounter++
+                    }
+                }
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
                 writeChar(g, readChar, hb, hbWriteType)
@@ -214,6 +269,10 @@ class VehicleSession(
         charWritten = CompletableDeferred()
         notifications.clear()
         latestRssi = RSSI_DEFAULT
+        pNonce = null
+        vNonce = null
+        lastStatusHex = null
+        commandCounter = 0
     }
 
     private fun requireChar(g: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
@@ -279,6 +338,73 @@ class VehicleSession(
         else -> "rc=$rc"
     }
 
+    /** Try the implicit-IV decrypt prober on an inbound frame; returns a log suffix or "". */
+    private fun probe(frame: ByteArray): String {
+        val pn = pNonce ?: return ""
+        val vn = vNonce ?: return ""
+        val hit = ActiveCommandFrames.probeInbound(sharedSecret, pn, vn, commandCounter, frame) ?: return ""
+        return "  ‹DECRYPT $hit›"
+    }
+
+    /**
+     * EXPERIMENT (branch wearvian-vehicle-status-0x1c): a 0x1c CHAR_VEHICLE_STATUS notification,
+     * from the PRIMARY-only post-auth subscription we re-added. Log on change so closure
+     * transitions stand out; old captures suggested 0x1c carries structured (likely plaintext)
+     * status, but run the decrypt prober too in case it's encrypted.
+     */
+    private fun onVehicleStatus(value: ByteArray) {
+        VehicleStatus.update(value) // publish parsed lock/closure state to the UI
+        val hex = value.toHexString()
+        if (hex == lastStatus1cHex) return
+        lastStatus1cHex = hex
+        DebugLog.ble("←", "$label/0x1c", "VEHICLE_STATUS $hex${probe(value)}", value.size)
+    }
+
+    /**
+     * Handle a 0x20 notification. The vehicle multiplexes three things on this channel
+     * (docs/passive-entry-protocol.md): `18 01` STATUS reports (lock/closure/charge
+     * state), `17 01` command acks (CommandReturnValue), and short ranging chatter. We
+     * decrypt the encrypted frames with our own session key and log the PLAINTEXT, so the
+     * watch's debug log alone reveals closure state — no phone snoop needed. STATUS is
+     * deduped (logged only when the plaintext changes) so cycling a closure with another
+     * key shows up as a single new line.
+     */
+    private fun onActiveChannelMessage(value: ByteArray) {
+        val p = pNonce
+        val v = vNonce
+        when (value.firstOrNull()) {
+            ActiveCommandFrames.TYPE_VEHICLE_STATUS -> {
+                val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
+                when {
+                    pt == null -> {
+                        if (value.toHexString() != lastStatusHex) {
+                            lastStatusHex = value.toHexString()
+                            DebugLog.ble("←", "$label/0x20", "STATUS raw ${value.toHexString()}${probe(value)}", value.size)
+                        }
+                    }
+                    pt.toHexString() != lastStatusHex -> {
+                        lastStatusHex = pt.toHexString()
+                        DebugLog.ble("←", "$label/0x20", "STATUS pt=${pt.toHexString()}", pt.size)
+                    }
+                    // else: identical to the last status — suppress the repeat.
+                }
+            }
+            ActiveCommandFrames.TYPE_ACTIVE_CMD_RESPONSE -> {
+                val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
+                DebugLog.ble("←", "$label/0x20",
+                    pt?.let { "CMD-ACK pt=${it.toHexString()}" } ?: "CMD-ACK raw ${value.toHexString()}${probe(value)}",
+                    value.size)
+            }
+            else -> {
+                // Ranging / control chatter: full hex for the first few, then throttle.
+                if (cmdInbound < CMD_LOG_FIRST || cmdInbound % CMD_LOG_EVERY == 0) {
+                    DebugLog.ble("←", "$label/0x20", "msg ${value.toHexString()}", value.size)
+                }
+                cmdInbound++
+            }
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED && !connected.isCompleted) {
@@ -319,14 +445,9 @@ class VehicleSession(
                 return
             }
             if (characteristic.uuid == RivianBle.CHAR_VEHICLE_STATUS) {
-                DebugLog.ble("←", "$label/0x1c", "status ${value.toHexString()}", value.size)
+                onVehicleStatus(value)
             } else if (characteristic.uuid == RivianBle.CHAR_ACTIVE_COMMAND) {
-                // 0x20 carries the vehicle's ranging/drive-state messages — the channel
-                // we least understand. Log the first few in full, then throttle, full hex.
-                if (cmdInbound < CMD_LOG_FIRST || cmdInbound % CMD_LOG_EVERY == 0) {
-                    DebugLog.ble("←", "$label/0x20", "msg ${value.toHexString()}", value.size)
-                }
-                cmdInbound++
+                onActiveChannelMessage(value)
             } else if (inbound++ % INBOUND_LOG_EVERY == 0) {
                 DebugLog.ble("←", "$label/${tag(characteristic.uuid)}", "notify ${value.toHexString().take(12)}…", value.size)
             }

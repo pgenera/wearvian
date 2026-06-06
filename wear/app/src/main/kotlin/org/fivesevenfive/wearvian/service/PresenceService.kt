@@ -335,6 +335,7 @@ class PresenceService : Service() {
         // notification explicitly so deactivating the key clears it.
         scope.cancel()
         PresenceStatus.reset()
+        VehicleStatus.clear() // vehicle state is unknown once we stop listening
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }

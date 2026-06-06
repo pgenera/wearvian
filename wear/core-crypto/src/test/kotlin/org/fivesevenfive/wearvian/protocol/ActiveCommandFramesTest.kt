@@ -4,6 +4,9 @@ import org.fivesevenfive.wearvian.crypto.RivianCrypto
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Structural + self-consistency tests for the reverse-engineered active-command and
@@ -66,5 +69,49 @@ class ActiveCommandFramesTest {
         assertEquals(37, hb.size)
         assertContentEquals(ActiveCommandFrames.le32(0), hb.copyOf(4))
         assertEquals(0x80.toByte(), hb[4])
+    }
+
+    @Test
+    fun decryptInboundRecoversStatusPayload() {
+        // Build an inbound STATUS-style frame the way the vehicle would (same key/AAD
+        // as a command, an arbitrary status payload) and confirm decryptInbound recovers it.
+        val payload = ByteArray(40) { (it * 3 + 11).toByte() }
+        val iv = ByteArray(ActiveCommandFrames.IV_LEN) { (it + 0x90).toByte() }
+        val ct = RivianCrypto.aesGcmEncrypt(
+            ActiveCommandFrames.aesKey(sharedSecret), iv, ActiveCommandFrames.aad(pNonce, vNonce), payload,
+        )
+        val frame = byteArrayOf(ActiveCommandFrames.TYPE_VEHICLE_STATUS, ActiveCommandFrames.VERSION_1) + iv + ct
+        assertContentEquals(payload, ActiveCommandFrames.decryptInbound(sharedSecret, pNonce, vNonce, frame))
+    }
+
+    @Test
+    fun probeInboundFindsImplicitIvFrame() {
+        // Synthesize a compact inbound frame the way we suspect the vehicle does: implicit IV
+        // = le32(csn) ‖ zeros(8), AAD = pNonce⊕vNonce, 2-byte plaintext code, 16-byte tag.
+        val csn = 3
+        val code = byteArrayOf(0x68, 0x01) // 104,1 = charge-port-open OK in the decompile table
+        val iv = ActiveCommandFrames.le32(csn) + ByteArray(8)
+        val ct = RivianCrypto.aesGcmEncrypt(
+            ActiveCommandFrames.aesKey(sharedSecret), iv, ActiveCommandFrames.aad(pNonce, vNonce), code,
+        )
+        val frame = byteArrayOf(ActiveCommandFrames.TYPE_ACTIVE_CMD_RESPONSE, ActiveCommandFrames.VERSION_1) + ct
+        val hit = ActiveCommandFrames.probeInbound(sharedSecret, pNonce, vNonce, csn, frame)
+        assertNotNull(hit)
+        assertTrue(hit.contains("iv=csn_le"), "expected csn_le IV match, got: $hit")
+        assertTrue(hit.contains("pt=6801"), "expected decoded code 6801, got: $hit")
+    }
+
+    @Test
+    fun probeInboundReturnsNullWhenNothingMatches() {
+        // A frame that isn't actually GCM under any candidate IV/AAD → no match.
+        assertNull(ActiveCommandFrames.probeInbound(sharedSecret, pNonce, vNonce, 0, ByteArray(20) { it.toByte() }))
+    }
+
+    @Test
+    fun decryptInboundReturnsNullOnShortFrameOrBadKey() {
+        assertNull(ActiveCommandFrames.decryptInbound(sharedSecret, pNonce, vNonce, ByteArray(5)))
+        val frame = ActiveCommandFrames.activeCommandFrame(sharedSecret, pNonce, vNonce, 0, ActiveCommandFrames.Cmd.LOCK_ALL)
+        val wrongSecret = ByteArray(32) { (it + 1).toByte() }
+        assertNull(ActiveCommandFrames.decryptInbound(wrongSecret, pNonce, vNonce, frame))
     }
 }

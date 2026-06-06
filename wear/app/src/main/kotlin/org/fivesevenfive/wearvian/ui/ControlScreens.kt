@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.ToggleOff
 import androidx.compose.material.icons.filled.ToggleOn
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Window
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,9 +58,11 @@ import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Text
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
+import org.fivesevenfive.wearvian.service.VehicleStatus
 
 private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
@@ -90,6 +93,8 @@ fun ControlScreens(
     val focus = remember { FocusRequester() }
     var acc by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    // Live vehicle state (lock/closures) from the PRIMARY 0x1c stream — drives icon state.
+    val status by VehicleStatus.state.collectAsStateWithLifecycle()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VerticalPager(
@@ -116,8 +121,8 @@ fun ControlScreens(
         ) { page ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (page) {
-                    0 -> KeyPage(state, onTogglePresence, onCommand)
-                    1 -> ClosuresPage(state.inFlight, onCommand)
+                    0 -> KeyPage(state, status, onTogglePresence, onCommand)
+                    1 -> ClosuresPage(state.inFlight, status, onCommand)
                     2 -> SignalPage(state.inFlight, onCommand)
                     else -> SettingsPage(state.proximityWakeEnabled, state.deviceSecure, onProximityWakeChange, onStartPassive)
                 }
@@ -130,6 +135,7 @@ fun ControlScreens(
 @Composable
 private fun KeyPage(
     state: SetupUiState,
+    status: VehicleStatus.State,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
 ) {
@@ -163,23 +169,50 @@ private fun KeyPage(
                 onCommand(Cmd.LOCK_ALL, "LOCK")
             }
         }
+        // Live lock state from the 0x1c stream, shown colorblind-safe: the padlock GLYPH
+        // differs (open vs closed shackle) AND it's spelled out — no reliance on color.
+        if (status.valid) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    if (status.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    null, Modifier.size(14.dp), colorFilter = ColorFilter.tint(Color.White),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(if (status.locked) "Locked" else "Unlocked", color = Color.White, fontSize = 11.sp)
+            }
+        }
+        // Surface genuinely useful live state when we have it (text, not color).
+        if (status.valid && (status.anyDoorOpen || status.anyWindowOpen)) {
+            Text(
+                listOfNotNull(
+                    if (status.anyDoorOpen) "door open" else null,
+                    if (status.anyWindowOpen) "window open" else null,
+                ).joinToString(" · "),
+                color = WARN, fontSize = 10.sp, textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
 @Composable
-private fun ClosuresPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
+private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onCommand: (Int, String) -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+        Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
         Header("Closures")
+        // Frunk/hatch/window open-state come from the 0x1c stream. Charge-port door state
+        // is NOT in that frame (cloud-only), so it has no live indicator.
         ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
-            "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand)
+            "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand, open = status.valid && status.frunkOpen)
         ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
-            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand)
+            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand, open = status.valid && status.liftgateOpen)
+        // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
+        // now that commands ride the live session (the old one-shot path no-op'd them).
+        ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
+            "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand, open = status.valid && status.anyWindowOpen)
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
-        // Windows hidden until confirmed working on-vehicle (0x15/0x16 currently no-op).
     }
 }
 
@@ -260,18 +293,20 @@ private fun ClosureRow(
     closeLabel: String,
     inFlight: Set<Int>,
     onCommand: (Int, String) -> Unit,
+    open: Boolean = false,
 ) {
-    // One compact, centered cluster: category icon + label + open/close. Centering
-    // (not edge-anchoring) keeps it clear of the round bezel while the label stays
-    // snug to both the category icon and the buttons.
+    // One compact, centered cluster: category icon + label + open/close. Open state is
+    // shown colorblind-safe: the label spells out "· open" (text, not just color); gold is
+    // only a secondary cue.
+    val stateTint = if (open) GOLD else Color.White
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
+        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(stateTint))
         Spacer(Modifier.width(5.dp))
-        Text(name, color = Color.White, fontSize = 13.sp)
+        Text(if (open) "$name · open" else name, color = stateTint, fontSize = 13.sp)
         Spacer(Modifier.width(12.dp))
         RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
             onCommand(openCode, openLabel)

@@ -25,8 +25,15 @@ import java.security.SecureRandom
 object ActiveCommandFrames {
 
     const val TYPE_ACTIVE_CMD_REQUEST: Byte = 0x16
+    // Inbound frame types the vehicle notifies on char 0x20 during a live session
+    // (decoded 2026-06-06, docs/passive-entry-protocol.md). Same wrapping as the
+    // outbound command frame: [type][0x01][12B IV][AES-128-GCM ct+tag].
+    const val TYPE_ACTIVE_CMD_RESPONSE: Byte = 0x17 // CommandReturnValue ack, one per command
+    const val TYPE_VEHICLE_STATUS: Byte = 0x18      // streamed lock/closure/charge state
     const val VERSION_1: Byte = 0x01
     const val IV_LEN = 12
+    /** Smallest decryptable inbound frame: type + version + IV + GCM tag. */
+    const val MIN_FRAME_LEN = 2 + IV_LEN + 16
 
     /** `q60/a` CONSTANT_B — the fixed input to the AES-key HMAC. */
     val CONSTANT_B: ByteArray =
@@ -115,6 +122,67 @@ object ActiveCommandFrames {
         val pt = activeCommandPlaintext(sharedSecret, pNonce, vNonce, counter, commandCode)
         val ct = RivianCrypto.aesGcmEncrypt(aesKey(sharedSecret), iv, aad(pNonce, vNonce), pt)
         return byteArrayOf(TYPE_ACTIVE_CMD_REQUEST, VERSION_1) + iv + ct
+    }
+
+    /**
+     * Decrypt an inbound 0x20 frame the vehicle notifies during a live session — a
+     * command response (0x17) or a vehicle-status report (0x18). Wrapping mirrors the
+     * outbound command: `[type][0x01][12B IV][AES-128-GCM ct+tag]`, same AES key and
+     * AAD. Returns the plaintext, or null if the frame is too short or the GCM tag
+     * doesn't verify (wrong key / not actually an encrypted frame). Lets the watch
+     * read closure/lock state from its own session instead of needing a phone snoop.
+     */
+    fun decryptInbound(
+        sharedSecret: ByteArray, pNonce: ByteArray, vNonce: ByteArray, frame: ByteArray,
+    ): ByteArray? {
+        if (frame.size < MIN_FRAME_LEN) return null
+        val iv = frame.copyOfRange(2, 2 + IV_LEN)
+        val ct = frame.copyOfRange(2 + IV_LEN, frame.size)
+        return runCatching {
+            RivianCrypto.aesGcmDecrypt(aesKey(sharedSecret), iv, aad(pNonce, vNonce), ct)
+        }.getOrNull()
+    }
+
+    /**
+     * Brute-probe the decryption of a compact inbound 0x20 frame (0x17 ack / 0x18 status,
+     * ~20 B) whose IV is NOT carried in the frame. Our outbound command uses an explicit
+     * 12-B IV, but the vehicle's compact replies are `[type][ver][ct][16-B GCM tag]` with an
+     * *implicit* IV we must derive. The session key is on-device, so we just try a handful of
+     * plausible (IV, AAD) derivations and let GCM's tag tell us which is right — a successful
+     * decrypt is definitive (no key material ever leaves the watch). Returns
+     * "iv=… aad=… pt=…" for the first combo that authenticates, or null if none do.
+     *
+     * `csn` is the command sequence number this frame relates to (for an ack: the csn of the
+     * command just sent; for status it may not matter). We try csn and csn-1, LE and BE.
+     */
+    fun probeInbound(
+        sharedSecret: ByteArray, pNonce: ByteArray, vNonce: ByteArray, csn: Int, frame: ByteArray,
+    ): String? {
+        if (frame.size < 2 + 16) return null
+        val key = aesKey(sharedSecret)
+        val ct = frame.copyOfRange(2, frame.size) // strip [type][ver]; rest = ct‖tag
+        fun be32(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
+        val ivs = buildList {
+            add("zero" to ByteArray(IV_LEN))
+            add("csn_le" to (le32(csn) + ByteArray(8)))
+            add("csn-1_le" to (le32(csn - 1) + ByteArray(8)))
+            add("csn_be" to (be32(csn) + ByteArray(8)))
+            add("csn-1_be" to (ByteArray(8) + be32(csn - 1)))
+            add("pNonce12" to pNonce.copyOf(IV_LEN))
+            add("vNonce12" to vNonce.copyOf(IV_LEN))
+            add("xor12" to aad(pNonce, vNonce).copyOf(IV_LEN))
+        }
+        val aads = buildList {
+            add("xor" to aad(pNonce, vNonce))
+            add("none" to ByteArray(0))
+            add("pNonce" to pNonce)
+            add("vNonce" to vNonce)
+        }
+        for ((ivName, iv) in ivs) for ((aadName, ad) in aads) {
+            val pt = runCatching { RivianCrypto.aesGcmDecrypt(key, iv, ad, ct) }.getOrNull()
+            if (pt != null) return "iv=$ivName aad=$aadName pt=${RivianCrypto.toHex(pt)}"
+        }
+        return null
     }
 
     /** PASSIVE_ENTRY heartbeat frame written (unencrypted) to char 0x1b (37 bytes). */

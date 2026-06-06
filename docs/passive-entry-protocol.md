@@ -455,3 +455,155 @@ BLE path has no battery fields, so SoC is **not** retrievable over Bluetooth.
   the `0x18` command frame.
 - Re-confirm the heartbeat HMAC preimage before implementing; our crypto core
   already has the HMAC/HKDF primitives.
+
+---
+
+## 2026-06-06 — sleeping-truck command capture (charge-port + windows resolved)
+
+Capture: official app on a **sleeping** R1S — unlock, then open/close charge-port door, then
+vent/close windows. Decoded with `tools/btsnoop_rivian.py` (reusable; see its header for the full
+protocol notes). This **overturns the "windows/charge-port are cloud-only" guess**.
+
+### The 0x20 channel is the command *and* status bus
+
+All command traffic and all status traffic share characteristic `0x20` (GATT value handle `0x0020`).
+Frames are tagged by their first two bytes:
+
+| tag | dir | size | role |
+|-----|-----|------|------|
+| `16 01` | phone → veh | 64 B | **COMMAND** = `[16 01][12B IV][AES-128-GCM ct+tag]` (our existing frame) |
+| `17 01` | veh → phone | 67 B | **CMD-ACK** — encrypted CommandReturnValue (one per command) |
+| `18 01` | veh → phone | 114 B | **STATUS** — encrypted vehicle/closure state, streamed continuously |
+| `01 01…` | veh → phone | 11 B | SensorInformation (handshake control) |
+| `07 xx … 01 00` | veh → phone | 6 B | per-heartbeat ranging/RSSI response |
+
+### Windows & charge-port ARE sent over BLE — byte-identical to unlock
+
+The capture has **5 `16 01` command frames** (unlock, CP-open, CP-close, windows-vent,
+windows-close), each 64 B, each answered by a `17 01` ack. **The frame format and channel are
+identical to unlock.** So our command codes (`0x36/0x37`, `0x15/0x16`) and frame wrapping are
+correct — these commands are *not* cloud-routed.
+
+### Why ours fail: they need a live, awake presence session — not a one-shot
+
+The truck was asleep. The app does **not** just connect-and-command. It:
+
+1. Reconnects + re-handshakes (phoneId `0x12` + nonce `0x15`) **4× over ~5 s** while the vehicle wakes.
+2. Streams 37-byte heartbeats to `0x1b` continuously (**755** in this session, ~12 Hz) plus ranging.
+3. Waits until the vehicle starts pushing `18 01` STATUS (first at t≈9.2 s) — i.e. it's awake.
+4. **Only then** (t≈14 s, ~10 s after first contact) sends the first command, and keeps the
+   heartbeat/status session running across all 5 commands.
+
+Our `ActiveCommandManager` does a one-shot: connect → handshake → one command → disconnect.
+Unlock/lock tolerate that (security module answers half-asleep), but charge-port/windows are gated
+on the vehicle considering the phone **present** via the sustained heartbeat+ranging session. They
+get a `17 01` ack (received) but the body modules drop them with no presence — matching the earlier
+"received-but-rejected, vehicle-side gating" observation.
+
+**Heartbeat counter:** the 37-byte heartbeat is `[le32 counter][1B flag][32B keyed payload]`. The
+`le32` counter is plaintext, increments per authenticated message, and **resets to 0 on each
+reconnect**. Commands share this running counter (HMAC binds `le32(counter)`), so a command sent
+mid-session must use the *current* counter — a hardcoded `counter=0` is valid only as the **first**
+message of a fresh connection (which is exactly why our one-shot unlock works and a warmup-then-unlock
+regressed earlier).
+
+### Implications for the app
+
+- To make charge-port / windows / liftgate / etc. work, **send active commands through a live
+  presence session** (the same heartbeat/ranging stream as drive) using the **running counter**, not
+  the isolated one-shot connection. The drive presence loop in `PresenceService` already does most of
+  this — fold command-sending into it rather than a separate connect.
+- **Status is recoverable:** subscribe `0x20`, decrypt the `18 01` frames with our session secret to
+  read closure/lock state (this is how the official app "knows"). Decode of the 114-B plaintext
+  fields (lock, charge-port, windows, frunk, liftgate) is the next step — needs our own session so we
+  hold the key; the official app's frames are encrypted under its key and can't be read offline.
+- Final validation is on-vehicle (we hold the key; the car is the oracle) — unchanged constraint.
+
+---
+
+## 2026-06-06 (pm) — command counter is a separate "csn" (decompile-confirmed)
+
+On-vehicle test of the command-via-session build: the vehicle terminated the link
+(disconnect status `0x13`) within ~100–270 ms of **every** command, no `17 01` ack — the
+command frames were rejected. The build fed the running **heartbeat** counter (74, 10, 12…)
+into the command HMAC. The decompile shows why:
+
+- **Commands and heartbeats use independent counters.** Command builder `em/f0.f`:
+  `int i = tVar.r; tVar.r = i + 1;` — the command sequence number **`csn`** (`l60.x.r`,
+  logged as `csn=` in `l60.t.b`). Heartbeats use a different field (`l60/i0` builds the
+  PASSIVE_ENTRY request with `j0Var.k`). Both feed the same HMAC preimage shape
+  (`pNonce ‖ vNonce ‖ le32(counter) ‖ payload`, `jh/a.i0` branch 2 vs 3) but from
+  separate counter spaces.
+- **csn init by connection type** (`l60.x` ctor / `a()` reset, table `l60.v`):
+  `LEGACY → 0`, `PRE_CCC → 1`, `CCC → 1`. Our Gen-1 link is **LEGACY** (no CCC link
+  encryption), so **csn starts at 0**, +1 per command, reset on each fresh nonce handshake.
+- This is why the proven one-shot (single command, csn=0) always worked, and why feeding
+  the heartbeat counter broke it. Fix: `VehicleSession` keeps a dedicated `commandCounter`
+  (csn), 0-based, reset per reconnect.
+
+Also confirmed: `s60/i0` message types `ActiveCMDRequest=0x16`, `ActiveCMDResponse=0x17`,
+`VehicleStatus=0x18`; inbound decrypt `s60/e.a` = `IV=bytes[2..14]`, `ct+tag=bytes[14..]`,
+AES-128-GCM, AAD=`pNonce⊕vNonce` — byte-identical to our `ActiveCommandFrames.decryptInbound`.
+
+**Open thread — 20-byte vs 114-byte VehicleStatus.** Our session only ever receives 20-byte
+`18 01` frames; the official app only ever receives 114-byte ones. A 20-byte frame is too
+short to be a valid GCM VehicleStatus (20−2−12 = 6 < 16-byte tag) — the official decrypt
+would fail on it too. So our session is getting a different/"lesser" status stream than the
+official app's, persistently (not just during command rejection). Cause not yet found;
+candidates: a status-subscription/request step we skip (the app subscribes `0x1c`
+CHAR_VEHICLE_STATUS; we deliberately don't), or a session-class difference. Chase next.
+
+---
+
+## 2026-06-06 (pm) — VehicleStatus DECODED via 0x1c (hypothesis confirmed)
+
+Subscribing CHAR_VEHICLE_STATUS (0x1c) PRIMARY-only/post-auth (branch
+`wearvian-vehicle-status-0x1c`) WORKED — `subscribe=true`, no link breakage, and the vehicle
+streamed **plaintext, structured** status frames (the rich stream we never got on 0x20). The
+"missing subscription" hypothesis was correct: our old blanket drop of 0x1c (451fc90, to fix the
+in-the-clear sensors) also killed the legitimate PRIMARY status subscription.
+
+Frame = `[le32 counter (resets per reconnect)] ‖ [16-byte plaintext status]`. Decoded by correlating
+deduped frames against a scripted on-vehicle action sequence (unlock, charge-port, frunk, lights,
+4 windows in order, driver door close/open, lock):
+
+| status byte | field | notes |
+|---|---|---|
+| `[0]` | lock/wake | `0x11` locked&asleep → `0x10` awake/unlocked (flipped at unlock) |
+| `[1]` hi nibble | asleep flag | `0xf*` asleep → `0x0*` awake; reverts after lock |
+| `[1]` bit `0x08` | **driver door** | 1=closed, 0=open (matched door close→open) |
+| `[2]` hi nibble | asleep flag | `0xa*` asleep → `0x0*` awake |
+| `[2]` bits `0x08`,`0x04` | **frunk + charge-port** | two closure bits; which-is-which TBD (needs a clean per-closure pass) |
+| `[3]` 4 bits | **windows** | `0x08`=driver, `0x04`=passenger, `0x02`=driver-rear, `0x01`=pass-rear; 1=closed. `0x0f`=all closed. Matched 4 windows in exact order. |
+| `[4..15]` | static config | `00 41 11 18 28 01 00 50 78 00 00 00` unchanged this session |
+
+CONFIDENT: windows (`[3]`) + driver door (`[1]` bit 0x08). LIKELY: lock/sleep (`[0]` + `[1]`/`[2]`
+hi-nibbles), frunk/charge-port (`[2]`). NOT in this frame: exterior lights (no byte changed during
+L/R light toggles). The compact 20-byte 0x20 ack/status frames stayed undecryptable (the implicit-IV
+prober found no match) — but moot now that 0x1c gives plaintext status directly.
+
+### Refinement (2026-06-06, charge-then-frunk capture)
+- `[1]` low nibble = **DOORS** (4 bits, 1=closed): `0x08`=driver, `0x04`=passenger, `0x02`=rear-driver,
+  `0x01`=rear-passenger. CONFIRMED — a door walk (passenger→rear-passenger→rear-driver) cleared bits in order.
+- `[2]` bit `0x04` = **liftgate** (CONFIRMED via OPEN/CLOSE_LIFTGATE 0x2a/0x2b timing); bit `0x08` = **frunk** (front).
+  Charge-port still uncaptured-awake (it was cycled while the car was asleep → frames frozen at `11ffac`).
+- `[0]` = **wake/sleep** (1=asleep), NOT lock — both unlocks coincided with wake, and a liftgate-while-locked
+  also flipped it. Lock and sleep are coupled in all captures so far; no clean lock-only bit yet.
+- `[5]` (frame byte 9) = `0x41` = 65 = **SoC%** strong candidate (matches 65.3% at capture time; constant across
+  sessions as expected). Unproven until a capture with a different SoC. Charge-limit (70%) byte not yet found;
+  other static bytes `[8]=0x28`,`[11]=0x50`,`[12]=0x78` unidentified (range/temp/limit?).
+- Full decode now: `[0]`=wake/sleep, `[1]`=doors, `[2]`=frunk/liftgate(/charge-port), `[3]`=windows,
+  `[5]`=SoC?, rest static/unknown.
+
+### Refinement 2 (2026-06-06, locks capture — decode essentially complete)
+- **LOCK** = high nibbles of `[1]` (0xf0) and `[2]` (0xa0): set=locked, clear=unlocked. Confirmed by two
+  lock/unlock cycles WHILE AWAKE (toggled cleanly; brief `7f` transient mid-unlock). So `[0]` bit0 = asleep
+  is SEPARATE from lock; earlier logs had both nibbles set only because locked＆asleep coincided.
+- **FRUNK** = `[2]` bit `0x08` CONFIRMED (OPEN_FRUNK 0x26 cleared, CLOSE_FRUNK 0x27 set). So `[2]`:
+  `0x08`=frunk, `0x04`=liftgate (1=closed), high-nibble=locked.
+- **Charge port NOT in this frame** — cycled twice while awake, zero byte change.
+- **Charge limit NOT in this frame** — changed 70→73% on the app, zero byte change. SoC `[5]=0x41=65` was a
+  COINCIDENCE, not SoC: `[4..15]` byte-identical across all sessions. Confirms F1 (battery/SoC/limit = cloud
+  GraphQL only, no BLE fields). Don't try to read battery from 0x1c.
+- Final 0x1c map: `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk0x08/liftgate0x04,
+  `[3]`=windows, `[4..15]`=static config. Everything needed for status icons is here except charge-port (cloud).
