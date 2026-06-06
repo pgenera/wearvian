@@ -300,10 +300,8 @@ class PresenceService : Service() {
             this, 2, Intent(this, KeyOffReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // Two compact icon actions on one row: open the app, and turn the key off.
-        val openAction = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_notif_open), "Open", contentIntent,
-        ).build()
+        // Just the "Off" icon action — Wear OS already adds its own "Open app" button from
+        // the content intent, so a second open action would be redundant.
         val offAction = Notification.Action.Builder(
             Icon.createWithResource(this, R.drawable.ic_notif_power), "Off", offIntent,
         ).build()
@@ -314,7 +312,6 @@ class PresenceService : Service() {
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true) // updates frequently — never buzz/re-alert
-            .addAction(openAction)
             .addAction(offAction)
             .build()
     }
