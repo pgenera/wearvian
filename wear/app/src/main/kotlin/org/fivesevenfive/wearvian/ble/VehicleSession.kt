@@ -75,6 +75,8 @@ class VehicleSession(
     @Volatile private var vNonce: ByteArray? = null
     /** Last decrypted STATUS plaintext — log only on change so closure transitions stand out. */
     private var lastStatusHex: String? = null
+    /** Last raw 0x1c VEHICLE_STATUS frame — dedupe so closure transitions stand out. */
+    private var lastStatus1cHex: String? = null
     /**
      * Active-command sequence number ("csn") — SEPARATE from the heartbeat counter, and the
      * value bound into each command's HMAC preimage. Confirmed in the decompile: the command
@@ -166,6 +168,20 @@ class VehicleSession(
                 runCatching { writeChar(g, it, byteArrayOf(MSG_SENSOR_INFORMATION)) }
                     .onSuccess { DebugLog.ble("→", "$label/0x20", "SensorInformation(01)", 1) }
                     .onFailure { e -> DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${e.message}") }
+            }
+
+            // EXPERIMENT (branch wearvian-vehicle-status-0x1c): subscribe CHAR_VEHICLE_STATUS
+            // (0x1c) on the PRIMARY link, POST-auth. The decompile (em/f0.e, non-secured branch)
+            // shows the official app subscribes this char for the full vehicle-status stream; we
+            // dropped it long ago because subscribing it PRE-auth on the in-the-clear SENSORS
+            // forced link encryption (HCI status=0x05) and broke them. PRIMARY-only + post-auth
+            // is the safe variant. If rich status arrives here, the "missing subscription"
+            // hypothesis is confirmed. Sensors still never subscribe it.
+            if (primary) {
+                findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let {
+                    val ok = enableNotify(g, it)
+                    DebugLog.ble("·", label, "0x1c VEHICLE_STATUS subscribe=$ok [experiment]")
+                } ?: DebugLog.ble("·", label, "0x1c char not found")
             }
             g.readRemoteRssi()
 
@@ -321,6 +337,27 @@ class VehicleSession(
         else -> "rc=$rc"
     }
 
+    /** Try the implicit-IV decrypt prober on an inbound frame; returns a log suffix or "". */
+    private fun probe(frame: ByteArray): String {
+        val pn = pNonce ?: return ""
+        val vn = vNonce ?: return ""
+        val hit = ActiveCommandFrames.probeInbound(sharedSecret, pn, vn, commandCounter, frame) ?: return ""
+        return "  ‹DECRYPT $hit›"
+    }
+
+    /**
+     * EXPERIMENT (branch wearvian-vehicle-status-0x1c): a 0x1c CHAR_VEHICLE_STATUS notification,
+     * from the PRIMARY-only post-auth subscription we re-added. Log on change so closure
+     * transitions stand out; old captures suggested 0x1c carries structured (likely plaintext)
+     * status, but run the decrypt prober too in case it's encrypted.
+     */
+    private fun onVehicleStatus(value: ByteArray) {
+        val hex = value.toHexString()
+        if (hex == lastStatus1cHex) return
+        lastStatus1cHex = hex
+        DebugLog.ble("←", "$label/0x1c", "VEHICLE_STATUS $hex${probe(value)}", value.size)
+    }
+
     /**
      * Handle a 0x20 notification. The vehicle multiplexes three things on this channel
      * (docs/passive-entry-protocol.md): `18 01` STATUS reports (lock/closure/charge
@@ -337,8 +374,12 @@ class VehicleSession(
             ActiveCommandFrames.TYPE_VEHICLE_STATUS -> {
                 val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
                 when {
-                    pt == null ->
-                        DebugLog.ble("←", "$label/0x20", "STATUS undecryptable ${value.toHexString()}", value.size)
+                    pt == null -> {
+                        if (value.toHexString() != lastStatusHex) {
+                            lastStatusHex = value.toHexString()
+                            DebugLog.ble("←", "$label/0x20", "STATUS raw ${value.toHexString()}${probe(value)}", value.size)
+                        }
+                    }
                     pt.toHexString() != lastStatusHex -> {
                         lastStatusHex = pt.toHexString()
                         DebugLog.ble("←", "$label/0x20", "STATUS pt=${pt.toHexString()}", pt.size)
@@ -349,7 +390,7 @@ class VehicleSession(
             ActiveCommandFrames.TYPE_ACTIVE_CMD_RESPONSE -> {
                 val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
                 DebugLog.ble("←", "$label/0x20",
-                    pt?.let { "CMD-ACK pt=${it.toHexString()}" } ?: "CMD-ACK undecryptable ${value.toHexString()}",
+                    pt?.let { "CMD-ACK pt=${it.toHexString()}" } ?: "CMD-ACK raw ${value.toHexString()}${probe(value)}",
                     value.size)
             }
             else -> {
@@ -402,7 +443,7 @@ class VehicleSession(
                 return
             }
             if (characteristic.uuid == RivianBle.CHAR_VEHICLE_STATUS) {
-                DebugLog.ble("←", "$label/0x1c", "status ${value.toHexString()}", value.size)
+                onVehicleStatus(value)
             } else if (characteristic.uuid == RivianBle.CHAR_ACTIVE_COMMAND) {
                 onActiveChannelMessage(value)
             } else if (inbound++ % INBOUND_LOG_EVERY == 0) {
