@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.service.PresenceStatus
+import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.toHexString
@@ -352,6 +353,7 @@ class VehicleSession(
      * status, but run the decrypt prober too in case it's encrypted.
      */
     private fun onVehicleStatus(value: ByteArray) {
+        VehicleStatus.update(value) // publish parsed lock/closure state to the UI
         val hex = value.toHexString()
         if (hex == lastStatus1cHex) return
         lastStatus1cHex = hex
