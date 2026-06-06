@@ -31,8 +31,8 @@ import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
-import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
@@ -58,7 +58,9 @@ class KeyTileService : TileService() {
             ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
         }
 
-        val keyActive = PresenceService.isRunning
+        // Gold when the key is armed (active OR passively power-saving), not only while
+        // the service is currently running.
+        val keyActive = SettingsStore(this).keyArmed
         val layout = PrimaryLayout.Builder(requestParams.deviceConfiguration)
             .setContent(
                 Column.Builder()

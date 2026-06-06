@@ -16,7 +16,17 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, true)
         set(value) = prefs.edit().putBoolean(KEY_PROXIMITY_WAKE, value).apply()
 
+    /**
+     * Whether the user has the mobile key armed (operational intent, not a preference).
+     * Distinct from "presence service currently running": when auto power-save drops the
+     * service to passive, the key is still armed — the UI shows "Key passive", not "off".
+     */
+    var keyArmed: Boolean
+        get() = prefs.getBoolean(KEY_KEY_ARMED, false)
+        set(value) = prefs.edit().putBoolean(KEY_KEY_ARMED, value).apply()
+
     private companion object {
         const val KEY_PROXIMITY_WAKE = "proximity_wake_enabled"
+        const val KEY_KEY_ARMED = "key_armed"
     }
 }

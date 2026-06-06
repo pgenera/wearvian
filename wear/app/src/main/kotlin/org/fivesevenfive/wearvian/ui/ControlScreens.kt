@@ -132,7 +132,7 @@ private fun KeyPage(
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
 ) {
-    val active = state.presenceRunning
+    val armed = state.keyArmed
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
@@ -140,12 +140,20 @@ private fun KeyPage(
     ) {
         RoundIcon(
             icon = Icons.Filled.VpnKey,
-            desc = if (active) "Deactivate key" else "Activate key",
-            tint = if (active) GOLD else Color.White,
+            desc = if (armed) "Deactivate key" else "Activate key",
+            tint = if (armed) GOLD else Color.White,
             diameter = 60.dp,
-            onClick = { onTogglePresence(!active) },
+            onClick = { onTogglePresence(!armed) },
         )
-        Label(if (active) "Key active" else "Key off")
+        // Tri-state: off → not armed; active → armed + service running; passive → armed
+        // but auto power-save dropped the service (still armed, wakes on approach).
+        Label(
+            when {
+                !armed -> "Key off"
+                state.presenceRunning -> "Key active"
+                else -> "Key passive"
+            },
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             LabeledIcon(Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight) {
                 onCommand(Cmd.UNLOCK_ALL, "UNLOCK")

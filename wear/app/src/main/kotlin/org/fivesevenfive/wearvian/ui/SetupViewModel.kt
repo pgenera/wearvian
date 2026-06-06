@@ -33,6 +33,9 @@ data class SetupUiState(
     val proximityWakeEnabled: Boolean = true,
     /** Whether the watch has a secure lock set; if not, the anti-theft gating can't engage. */
     val deviceSecure: Boolean = true,
+    /** Whether the mobile key is armed (intent). With [presenceRunning] this gives the
+     *  tri-state: off / active (running) / passive (armed but power-saving). */
+    val keyArmed: Boolean = false,
 )
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
@@ -60,6 +63,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 presenceRunning = PresenceService.isRunning,
                 proximityWakeEnabled = settings.proximityWakeEnabled,
                 deviceSecure = isDeviceSecure(),
+                keyArmed = settings.keyArmed,
             )
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
         }
@@ -123,8 +127,15 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             }.onSuccess {
                 logi("startPairing: bonded; starting presence service")
                 store.setBonded(true)
+                settings.keyArmed = true
                 PresenceService.start(getApplication())
-                _state.value = SetupUiState(Phase.BONDED, presenceRunning = true)
+                _state.value = SetupUiState(
+                    Phase.BONDED,
+                    presenceRunning = true,
+                    keyArmed = true,
+                    proximityWakeEnabled = settings.proximityWakeEnabled,
+                    deviceSecure = isDeviceSecure(),
+                )
             }.onFailure {
                 loge("startPairing failed", it)
                 _state.value = SetupUiState(Phase.ERROR, detail = it.message ?: "Pairing failed")
@@ -159,8 +170,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPresence(on: Boolean) {
         logi("setPresence: $on")
+        settings.keyArmed = on // arm/disarm intent — survives auto power-save going passive
         if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
-        _state.value = _state.value.copy(presenceRunning = on)
+        _state.value = _state.value.copy(presenceRunning = on, keyArmed = on)
     }
 
     /**
@@ -187,6 +199,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun reset() {
         logi("reset: clearing enrollment cache + stopping presence (KEEPING Keystore key)")
+        settings.keyArmed = false
         PresenceService.stop(getApplication())
         store.clear()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
@@ -200,6 +213,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun wipeIdentity() {
         logw("wipeIdentity: deleting Keystore key + enrollment — full re-key + re-enroll required")
+        settings.keyArmed = false
         PresenceService.stop(getApplication())
         store.clear()
         keyManager.deleteKey()
