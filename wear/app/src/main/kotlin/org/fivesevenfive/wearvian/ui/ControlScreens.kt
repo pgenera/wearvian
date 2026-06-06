@@ -204,13 +204,17 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
         // Frunk/hatch/window open-state come from the 0x1c stream. Charge-port door state
         // is NOT in that frame (cloud-only), so it has no live indicator.
         ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
-            "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand, open = status.valid && status.frunkOpen)
+            "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
+            open = status.frunkOpen, stateKnown = status.valid)
         ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
-            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand, open = status.valid && status.liftgateOpen)
+            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
+            open = status.liftgateOpen, stateKnown = status.valid)
         // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
         // now that commands ride the live session (the old one-shot path no-op'd them).
         ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
-            "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand, open = status.valid && status.anyWindowOpen)
+            "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand,
+            open = status.anyWindowOpen, stateKnown = status.valid)
+        // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
     }
@@ -294,25 +298,27 @@ private fun ClosureRow(
     inFlight: Set<Int>,
     onCommand: (Int, String) -> Unit,
     open: Boolean = false,
+    stateKnown: Boolean = false,
 ) {
-    // One compact, centered cluster: category icon + label + open/close. Open state is
-    // shown colorblind-safe: the label spells out "· open" (text, not just color); gold is
-    // only a secondary cue.
-    val stateTint = if (open) GOLD else Color.White
+    // One compact, centered cluster: category icon + label + open/close. Current state (when
+    // known) is shown by lighting the matching button — up filled = currently open, down
+    // filled = currently closed — so the row width stays fixed and the cue is colorblind-safe.
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(stateTint))
+        Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
         Spacer(Modifier.width(5.dp))
-        Text(if (open) "$name · open" else name, color = stateTint, fontSize = 13.sp)
+        Text(name, color = Color.White, fontSize = 13.sp)
         Spacer(Modifier.width(12.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN, openCode in inFlight) {
+        RoundIcon(Icons.Filled.KeyboardArrowUp, "Open $name", Color.White, CLOSURE_BTN,
+            busy = openCode in inFlight, active = stateKnown && open) {
             onCommand(openCode, openLabel)
         }
         Spacer(Modifier.width(8.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN, closeCode in inFlight) {
+        RoundIcon(Icons.Filled.KeyboardArrowDown, "Close $name", Color.White, CLOSURE_BTN,
+            busy = closeCode in inFlight, active = stateKnown && !open) {
             onCommand(closeCode, closeLabel)
         }
     }
@@ -327,7 +333,7 @@ private fun LabeledIcon(
     onClick: () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundIcon(icon, label, tint, 48.dp, busy, onClick)
+        RoundIcon(icon, label, tint, 48.dp, busy = busy, onClick = onClick)
         Spacer(Modifier.height(3.dp))
         Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
@@ -345,6 +351,7 @@ private fun RoundIcon(
     tint: Color,
     diameter: androidx.compose.ui.unit.Dp,
     busy: Boolean = false,
+    active: Boolean = false,
     onClick: () -> Unit,
 ) {
     val alpha = if (busy) {
@@ -359,12 +366,18 @@ private fun RoundIcon(
     } else {
         1f
     }
+    // [active] = this is the closure's CURRENT state: invert to a bright filled circle with a
+    // dark glyph. The fill is a luminance/contrast change (not a hue), so it reads regardless
+    // of color vision; combined with the up/down position it shows open-vs-closed at a glance.
     Box(
-        Modifier.size(diameter).clip(CircleShape).background(BTN_BG)
+        Modifier.size(diameter).clip(CircleShape).background(if (active) Color.White else BTN_BG)
             .clickable(enabled = !busy, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Image(icon, desc, Modifier.size(diameter * 0.52f), alpha = alpha, colorFilter = ColorFilter.tint(tint))
+        Image(
+            icon, desc, Modifier.size(diameter * 0.52f), alpha = alpha,
+            colorFilter = ColorFilter.tint(if (active) Color.Black else tint),
+        )
     }
 }
 
