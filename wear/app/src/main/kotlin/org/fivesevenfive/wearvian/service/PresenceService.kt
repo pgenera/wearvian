@@ -73,7 +73,14 @@ class PresenceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        logi("PresenceService: onStartCommand")
+        logi("PresenceService: onStartCommand action=${intent?.action}")
+        // Manual "go passive now" from the settings button: arm the wake + stop.
+        if (intent?.action == ACTION_GO_PASSIVE) {
+            startAsForeground() // required since started via startForegroundService
+            DebugLog.add("presence: manual passive requested")
+            enterPassive()
+            return START_NOT_STICKY
+        }
         // We're running now (possibly woken by proximity) — clear any armed offloaded scan.
         goingPassive = false
         ProximityWake.disarm(this)
@@ -189,7 +196,7 @@ class PresenceService : Service() {
         }
     }
 
-    /** Drop to passive (arm the proximity wake + stop). @return true iff we went passive. */
+    /** Auto idle→passive: gated on power-save being on and not locked. @return true iff passive. */
     private fun goPassive(): Boolean {
         if (goingPassive) return true
         // While locked, BLE is already torn down by monitorLock — don't arm a proximity
@@ -199,12 +206,19 @@ class PresenceService : Service() {
             DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
             return false
         }
+        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive")
+        return enterPassive()
+    }
+
+    /** Arm the proximity wake and stop the service (used by auto-idle AND the manual button). */
+    private fun enterPassive(): Boolean {
+        if (goingPassive) return true
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
         val armed = ProximityWake.armForVehicle(this, enrollment.vasVehicleId)
-        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive; wake armed=$armed")
+        DebugLog.add("presence: → passive; wake armed=$armed")
         if (!armed) {
-            // Couldn't arm the wake — don't go dark; the loop retries later.
-            DebugLog.add("presence: wake NOT armed — will retry")
+            // Couldn't arm the wake — don't go dark; (auto path retries later).
+            DebugLog.add("presence: wake NOT armed")
             return false
         }
         goingPassive = true
@@ -287,10 +301,9 @@ class PresenceService : Service() {
             this, 2, Intent(this, KeyOffReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // "Off" action — turns the key off, stops the service, clears the notification.
-        // (Icon-only didn't render on Wear; keep the text label.)
+        // Disables the key: turns it off, stops the service, clears the notification.
         val offAction = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_notif_power), "Off", offIntent,
+            Icon.createWithResource(this, R.drawable.ic_notif_power), "Disable", offIntent,
         ).build()
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.presence_notification_title))
@@ -345,8 +358,17 @@ class PresenceService : Service() {
         val running: StateFlow<Boolean> = _running
         val isRunning: Boolean get() = _running.value
 
+        const val ACTION_GO_PASSIVE = "org.fivesevenfive.wearvian.GO_PASSIVE"
+
         fun start(context: Context) {
             context.startForegroundService(Intent(context, PresenceService::class.java))
+        }
+
+        /** Drop a running service to passive immediately (manual button). */
+        fun goPassiveNow(context: Context) {
+            context.startForegroundService(
+                Intent(context, PresenceService::class.java).setAction(ACTION_GO_PASSIVE),
+            )
         }
 
         fun stop(context: Context) {

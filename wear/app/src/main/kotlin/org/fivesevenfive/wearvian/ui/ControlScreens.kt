@@ -83,6 +83,7 @@ fun ControlScreens(
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
     onProximityWakeChange: (Boolean) -> Unit,
+    onStartPassive: () -> Unit,
 ) {
     val pager = rememberPagerState { PAGES }
     val scope = rememberCoroutineScope()
@@ -118,7 +119,7 @@ fun ControlScreens(
                     0 -> KeyPage(state, onTogglePresence, onCommand)
                     1 -> ClosuresPage(state.inFlight, onCommand)
                     2 -> SignalPage(state.inFlight, onCommand)
-                    else -> SettingsPage(state.proximityWakeEnabled, state.deviceSecure, onProximityWakeChange)
+                    else -> SettingsPage(state.proximityWakeEnabled, state.deviceSecure, onProximityWakeChange, onStartPassive)
                 }
             }
         }
@@ -210,7 +211,12 @@ private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
 }
 
 @Composable
-private fun SettingsPage(proximityWakeOn: Boolean, deviceSecure: Boolean, onChange: (Boolean) -> Unit) {
+private fun SettingsPage(
+    proximityWakeOn: Boolean,
+    deviceSecure: Boolean,
+    onChange: (Boolean) -> Unit,
+    onStartPassive: () -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
@@ -233,10 +239,11 @@ private fun SettingsPage(proximityWakeOn: Boolean, deviceSecure: Boolean, onChan
         )
         Label("Auto power-save")
         Text(
-            "Sleeps when away,\nwakes near the car",
-            color = DIM,
-            fontSize = 10.sp,
+            "Start passive mode",
+            color = GOLD,
+            fontSize = 12.sp,
             textAlign = TextAlign.Center,
+            modifier = Modifier.clickable { onStartPassive() }.padding(top = 4.dp),
         )
     }
 }

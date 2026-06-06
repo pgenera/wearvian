@@ -208,6 +208,23 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private fun isDeviceSecure(): Boolean =
         getApplication<Application>().getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
 
+    /**
+     * Manually enter passive mode: arm the key (if not already) and either drop a running
+     * service to passive now, or just register the proximity wake if it isn't running. The
+     * live running flow flips the UI to "Key passive".
+     */
+    fun startPassive() {
+        val e = store.load() ?: return
+        logi("startPassive: manual")
+        settings.keyArmed = true
+        if (PresenceService.isRunning) {
+            PresenceService.goPassiveNow(getApplication())
+        } else {
+            ProximityWake.armForVehicle(getApplication(), e.vasVehicleId)
+        }
+        _state.value = _state.value.copy(keyArmed = true)
+    }
+
     fun setProximityWake(on: Boolean) {
         logi("setProximityWake: $on")
         settings.proximityWakeEnabled = on

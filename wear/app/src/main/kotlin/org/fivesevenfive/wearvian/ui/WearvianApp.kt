@@ -36,6 +36,7 @@ fun WearvianApp(
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit = { _, _ -> },
     onProximityWakeChange: (Boolean) -> Unit = {},
+    onStartPassive: () -> Unit = {},
     onReset: () -> Unit,
 ) {
     // Refresh on every resume so state stays correct after the key is turned off from the
@@ -44,7 +45,7 @@ fun WearvianApp(
 
     // The BONDED control surface is its own full-screen vertical pager (ControlScreens.kt).
     if (state.phase == Phase.BONDED) {
-        ControlScreens(state, onTogglePresence, onCommand, onProximityWakeChange)
+        ControlScreens(state, onTogglePresence, onCommand, onProximityWakeChange, onStartPassive)
         return
     }
 
