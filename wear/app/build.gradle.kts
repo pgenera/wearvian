@@ -24,8 +24,8 @@ android {
         targetSdk = 34       // foreground-service types are required at 34+
         // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
         // Must stay unique across BOTH apps and only ever increase.
-        versionCode = 1005
-        versionName = "0.2.5"
+        versionCode = 1006
+        versionName = "0.3.0"
     }
 
     signingConfigs {
