@@ -53,6 +53,11 @@
             android:name=".service.VehicleProximityReceiver"
             android:exported="false" />
 
+        <!-- "Off" action on the presence notification: disarm the key + stop the service. -->
+        <receiver
+            android:name=".service.KeyOffReceiver"
+            android:exported="false" />
+
         <!-- Quick lock/unlock/key tile. Lock/unlock run in-process (no app UI);
              the key control launches MainActivity. -->
         <service

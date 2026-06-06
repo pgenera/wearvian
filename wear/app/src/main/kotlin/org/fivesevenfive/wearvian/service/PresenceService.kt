@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.service
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,6 +11,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -53,12 +57,17 @@ class PresenceService : Service() {
     private val keyManager = KeyManager()
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     private var wakeLock: PowerManager.WakeLock? = null
-    private var loopJob: Job? = null
+    private var loopJob: Job? = null   // owns the BLE work (sessions + scan); torn down when locked
     private var notifJob: Job? = null
     private var idleJob: Job? = null
+    private var lockJob: Job? = null
+    private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /** Set when we stop *on purpose* to idle passively — keeps the proximity wake armed. */
     @Volatile private var goingPassive = false
+
+    /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
+    @Volatile private var locked = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -68,34 +77,93 @@ class PresenceService : Service() {
         goingPassive = false
         ProximityWake.disarm(this)
         startAsForeground()
-        if (wakeLock == null) {
-            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wearvian:presence")
-                .apply { acquire() }
-            DebugLog.add("presence: wake lock acquired")
-        }
         val enrollment = EnrollmentStore(this).load()
         if (enrollment == null) {
             DebugLog.add("presence: not enrolled; stopping")
             stopSelf()
             return START_NOT_STICKY
         }
-        if (loopJob?.isActive == true) {
+        // lockJob is the "service is already running" marker (loopJob can be inactive while locked).
+        if (lockJob?.isActive == true) {
             DebugLog.add("presence: already running; ignoring duplicate start")
             return START_STICKY
         }
         isRunning = true
-        loopJob = scope.launch { presenceLoop(enrollment) }
+        // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
+        // restores it on unlock.
+        locked = keyguard?.isDeviceLocked == true
+        if (locked) {
+            updateNotification(LOCKED_TEXT)
+        } else {
+            acquireWakeLock()
+            startBle()
+        }
         // Mirror the aggregate connection state into the ongoing notification, like the
-        // official app's "vehicle connected / disconnected" persistent notification.
+        // official app's "vehicle connected / disconnected" persistent notification — but
+        // while locked, hold the "locked" text instead of link state.
         if (notifJob?.isActive != true) {
-            notifJob = scope.launch { PresenceStatus.summary.collect { updateNotification(it) } }
+            notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked) updateNotification(it) } }
         }
         // Drop to passive (offloaded proximity wake) after a stretch with no link up.
-        if (idleJob?.isActive != true) {
-            idleJob = scope.launch { monitorIdle() }
-        }
+        if (idleJob?.isActive != true) idleJob = scope.launch { monitorIdle() }
+        // Tear down / restore BLE as the watch locks / unlocks.
+        if (lockJob?.isActive != true) lockJob = scope.launch { monitorLock() }
         return START_STICKY
+    }
+
+    /** Bring up the BLE work (sessions + sensor scan) as a single cancellable job. */
+    private fun startBle() {
+        if (loopJob?.isActive == true) return
+        val enrollment = EnrollmentStore(this).load() ?: return
+        loopJob = scope.launch { presenceLoop(enrollment) }
+    }
+
+    /** Tear down all BLE — cancels the loop and, via structured concurrency, every session. */
+    private suspend fun stopBle() {
+        loopJob?.cancelAndJoin()
+        loopJob = null
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wearvian:presence")
+                .apply { acquire() }
+            DebugLog.add("presence: wake lock acquired")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+        wakeLock = null
+    }
+
+    /**
+     * Anti-theft: while the watch is locked (removed from the wrist with a screen lock),
+     * tear down ALL BLE — no connections, no chatter, no wake lock — keeping the foreground
+     * service alive so we can rebuild instantly on unlock without an FGS-restart (which the
+     * Android-12 background limit can block). Poll-based: there's no reliable "device
+     * locked" broadcast.
+     */
+    private suspend fun monitorLock() {
+        while (true) {
+            val nowLocked = keyguard?.isDeviceLocked == true
+            if (nowLocked != locked) {
+                locked = nowLocked
+                if (nowLocked) {
+                    DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
+                    stopBle()
+                    releaseWakeLock()
+                    updateNotification(LOCKED_TEXT)
+                } else {
+                    DebugLog.add("presence: watch unlocked — restoring presence")
+                    acquireWakeLock()
+                    startBle()
+                    updateNotification(PresenceStatus.summary.value)
+                }
+            }
+            delay(LOCK_POLL_MS)
+        }
     }
 
     /**
@@ -123,6 +191,9 @@ class PresenceService : Service() {
     /** Drop to passive (arm the proximity wake + stop). @return true iff we went passive. */
     private fun goPassive(): Boolean {
         if (goingPassive) return true
+        // While locked, BLE is already torn down by monitorLock — don't arm a proximity
+        // wake; just keep the (cheap) foreground service alive until the watch is unlocked.
+        if (locked) return false
         if (!SettingsStore(this).proximityWakeEnabled) {
             DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
             return false
@@ -142,29 +213,32 @@ class PresenceService : Service() {
         return true
     }
 
-    private suspend fun presenceLoop(enrollment: Enrollment) {
+    // Runs as [loopJob]. Sessions are launched as CHILDREN (structured concurrency) so
+    // cancelling loopJob (e.g. on lock) tears down every session too.
+    private suspend fun presenceLoop(enrollment: Enrollment) = coroutineScope {
+        val bleScope = this
         DebugLog.add("presence: loop start for ${enrollment.vin}")
         val sharedSecret = runCatching { keyManager.sharedSecret(enrollment.vehiclePublicKey) }
-            .getOrElse { DebugLog.add("presence: ECDH failed — ${it.message}"); return }
+            .getOrElse { DebugLog.add("presence: ECDH failed — ${it.message}"); return@coroutineScope }
         val started = HashSet<String>()
-        val addresses = VehicleAddressStore(this)
+        val addresses = VehicleAddressStore(this@PresenceService)
 
         // PRIMARY phone-key (the bonded device).
         adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }?.let { primary ->
             started.add(primary.address)
             addresses.add(primary.address) // remember for the proximity-wake filters
-            scope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK", primary = true).runForever(scope) }
+            bleScope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK", primary = true).runForever(bleScope) }
         } ?: DebugLog.add("presence: no bonded ${RivianBle.DEVICE_NAME}")
 
         // Location sensors: scan by the vehicle's VAS id and open a session per new device.
         val svc = vehicleServiceUuid(enrollment.vasVehicleId)
         if (svc == null) {
             DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}'; no sensor sessions")
-            return
+            return@coroutineScope
         }
-        while (scope.isActive) {
+        while (bleScope.isActive) {
             runCatching {
-                val hits = SensorScanner(this).discover(svc)
+                val hits = SensorScanner(this@PresenceService).discover(svc)
                 // Connect strongest-RSSI (closest) sensors first — they matter most for
                 // inside-cabin localization and are the most reliable to bring up.
                 hits.sortedByDescending { it.rssi }.forEach { hit ->
@@ -173,7 +247,7 @@ class PresenceService : Service() {
                         val label = sensorLabel(hit.name)
                         DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
                         val dev = adapter.getRemoteDevice(hit.address)
-                        scope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(scope) }
+                        bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
                         // Stagger connects — Android BLE can't reliably do several
                         // concurrent connect/discover attempts at once.
                         delay(STAGGER_MS)
@@ -221,6 +295,14 @@ class PresenceService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // "Off" action — turns the key off, stops the service, clears the notification.
+        val offIntent = PendingIntent.getBroadcast(
+            this, 2, Intent(this, KeyOffReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val offAction = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_launcher_foreground), "Off", offIntent,
+        ).build()
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.presence_notification_title))
             .setContentText(state)
@@ -228,6 +310,7 @@ class PresenceService : Service() {
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true) // updates frequently — never buzz/re-alert
+            .addAction(offAction)
             .build()
     }
 
@@ -264,6 +347,9 @@ class PresenceService : Service() {
         private const val STAGGER_MS = 1_500L
         /** No link UP for this long → drop to passive (offloaded proximity wake). */
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
+        /** How often to check the watch lock state (no reliable "device locked" broadcast). */
+        private const val LOCK_POLL_MS = 2_000L
+        private const val LOCKED_TEXT = "Watch locked · key paused"
 
         @Volatile
         var isRunning = false
