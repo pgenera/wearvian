@@ -4,6 +4,7 @@ import org.fivesevenfive.wearvian.crypto.RivianCrypto
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /**
  * Structural + self-consistency tests for the reverse-engineered active-command and
@@ -66,5 +67,26 @@ class ActiveCommandFramesTest {
         assertEquals(37, hb.size)
         assertContentEquals(ActiveCommandFrames.le32(0), hb.copyOf(4))
         assertEquals(0x80.toByte(), hb[4])
+    }
+
+    @Test
+    fun decryptInboundRecoversStatusPayload() {
+        // Build an inbound STATUS-style frame the way the vehicle would (same key/AAD
+        // as a command, an arbitrary status payload) and confirm decryptInbound recovers it.
+        val payload = ByteArray(40) { (it * 3 + 11).toByte() }
+        val iv = ByteArray(ActiveCommandFrames.IV_LEN) { (it + 0x90).toByte() }
+        val ct = RivianCrypto.aesGcmEncrypt(
+            ActiveCommandFrames.aesKey(sharedSecret), iv, ActiveCommandFrames.aad(pNonce, vNonce), payload,
+        )
+        val frame = byteArrayOf(ActiveCommandFrames.TYPE_VEHICLE_STATUS, ActiveCommandFrames.VERSION_1) + iv + ct
+        assertContentEquals(payload, ActiveCommandFrames.decryptInbound(sharedSecret, pNonce, vNonce, frame))
+    }
+
+    @Test
+    fun decryptInboundReturnsNullOnShortFrameOrBadKey() {
+        assertNull(ActiveCommandFrames.decryptInbound(sharedSecret, pNonce, vNonce, ByteArray(5)))
+        val frame = ActiveCommandFrames.activeCommandFrame(sharedSecret, pNonce, vNonce, 0, ActiveCommandFrames.Cmd.LOCK_ALL)
+        val wrongSecret = ByteArray(32) { (it + 1).toByte() }
+        assertNull(ActiveCommandFrames.decryptInbound(wrongSecret, pNonce, vNonce, frame))
     }
 }

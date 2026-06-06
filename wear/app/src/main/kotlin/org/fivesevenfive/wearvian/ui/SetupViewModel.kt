@@ -8,8 +8,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
+import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
@@ -38,6 +40,9 @@ data class SetupUiState(
      *  tri-state: off / active (running) / passive (armed but power-saving). */
     val keyArmed: Boolean = false,
 )
+
+/** How long a command tap throbs when routed to the live session (fire-and-forget). */
+private const val COMMAND_INFLIGHT_MS = 1_200L
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
 class SetupViewModel(app: Application) : AndroidViewModel(app) {
@@ -183,8 +188,18 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(inFlight = _state.value.inFlight + commandCode)
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
+                if (PresenceService.isRunning) {
+                    // Live session up: ride it so presence-gated closures (charge-port,
+                    // windows, liftgate) are accepted, and use its running counter. The
+                    // PRIMARY VehicleSession sends on its next heartbeat tick (~300 ms).
+                    CommandBus.submit(commandCode, label)
+                    delay(COMMAND_INFLIGHT_MS) // brief throb; the send is fire-and-forget on the session
+                } else {
+                    // Key off / no session: one-shot connect→handshake→command. Fine for
+                    // lock/unlock (the security module answers half-asleep).
+                    withContext(Dispatchers.IO) {
+                        ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
+                    }
                 }
             } finally {
                 _state.value = _state.value.copy(inFlight = _state.value.inFlight - commandCode)

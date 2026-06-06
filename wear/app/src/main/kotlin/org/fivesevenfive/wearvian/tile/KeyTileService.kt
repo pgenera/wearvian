@@ -29,6 +29,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
+import org.fivesevenfive.wearvian.ble.CommandBus
+import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.store.EnrollmentStore
@@ -157,6 +159,12 @@ class KeyTileService : TileService() {
         }
         logi("tile: dispatch $label")
         DebugLog.add("tile: $label tapped")
+        // If the presence session is up, ride it (running counter + presence-gated
+        // commands) instead of opening a second GATT connection to the same device.
+        if (PresenceService.isRunning) {
+            CommandBus.submit(code, label)
+            return
+        }
         val ctx = applicationContext
         scope.launch {
             ActiveCommandManager(ctx, KeyManager()).sendCommand(enrollment, code, label)

@@ -25,8 +25,15 @@ import java.security.SecureRandom
 object ActiveCommandFrames {
 
     const val TYPE_ACTIVE_CMD_REQUEST: Byte = 0x16
+    // Inbound frame types the vehicle notifies on char 0x20 during a live session
+    // (decoded 2026-06-06, docs/passive-entry-protocol.md). Same wrapping as the
+    // outbound command frame: [type][0x01][12B IV][AES-128-GCM ct+tag].
+    const val TYPE_ACTIVE_CMD_RESPONSE: Byte = 0x17 // CommandReturnValue ack, one per command
+    const val TYPE_VEHICLE_STATUS: Byte = 0x18      // streamed lock/closure/charge state
     const val VERSION_1: Byte = 0x01
     const val IV_LEN = 12
+    /** Smallest decryptable inbound frame: type + version + IV + GCM tag. */
+    const val MIN_FRAME_LEN = 2 + IV_LEN + 16
 
     /** `q60/a` CONSTANT_B — the fixed input to the AES-key HMAC. */
     val CONSTANT_B: ByteArray =
@@ -115,6 +122,25 @@ object ActiveCommandFrames {
         val pt = activeCommandPlaintext(sharedSecret, pNonce, vNonce, counter, commandCode)
         val ct = RivianCrypto.aesGcmEncrypt(aesKey(sharedSecret), iv, aad(pNonce, vNonce), pt)
         return byteArrayOf(TYPE_ACTIVE_CMD_REQUEST, VERSION_1) + iv + ct
+    }
+
+    /**
+     * Decrypt an inbound 0x20 frame the vehicle notifies during a live session — a
+     * command response (0x17) or a vehicle-status report (0x18). Wrapping mirrors the
+     * outbound command: `[type][0x01][12B IV][AES-128-GCM ct+tag]`, same AES key and
+     * AAD. Returns the plaintext, or null if the frame is too short or the GCM tag
+     * doesn't verify (wrong key / not actually an encrypted frame). Lets the watch
+     * read closure/lock state from its own session instead of needing a phone snoop.
+     */
+    fun decryptInbound(
+        sharedSecret: ByteArray, pNonce: ByteArray, vNonce: ByteArray, frame: ByteArray,
+    ): ByteArray? {
+        if (frame.size < MIN_FRAME_LEN) return null
+        val iv = frame.copyOfRange(2, 2 + IV_LEN)
+        val ct = frame.copyOfRange(2 + IV_LEN, frame.size)
+        return runCatching {
+            RivianCrypto.aesGcmDecrypt(aesKey(sharedSecret), iv, aad(pNonce, vNonce), ct)
+        }.getOrNull()
     }
 
     /** PASSIVE_ENTRY heartbeat frame written (unencrypted) to char 0x1b (37 bytes). */
