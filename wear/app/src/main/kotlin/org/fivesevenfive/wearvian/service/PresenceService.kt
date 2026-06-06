@@ -300,10 +300,11 @@ class PresenceService : Service() {
             this, 2, Intent(this, KeyOffReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // Just the "Off" icon action — Wear OS already adds its own "Open app" button from
-        // the content intent, so a second open action would be redundant.
+        // Just the power-off icon action — Wear OS already adds its own "Open app" button
+        // from the content intent. Blank title so the button renders as the icon alone
+        // (the title is what the platform draws as button text).
         val offAction = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_notif_power), "Off", offIntent,
+            Icon.createWithResource(this, R.drawable.ic_notif_power), "", offIntent,
         ).build()
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.presence_notification_title))
