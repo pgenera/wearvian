@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Text
+import androidx.wear.compose.material.TimeText
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.service.VehicleStatus
@@ -131,6 +132,9 @@ fun ControlScreens(
                 }
             }
         }
+        // Curved hours:minutes along the top of the home screen, like Wear fitness apps. The
+        // default time source follows the watch's 12h/24h system setting. Home page only.
+        if (pager.currentPage == 0) TimeText()
         PageDots(pager.currentPage, Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
     }
 }
@@ -319,25 +323,23 @@ private fun ClosureRow(
             Spacer(Modifier.width(5.dp))
             Text(name, color = Color.White, fontSize = 13.sp)
         }
-        // Which command each arrow fires. Normally up=open / down=close; windows are inverted
-        // ([upOpens]=false) because raising a window closes it — so up=close, down=open. In both
-        // cases the lit button is the actionable one (the press that changes the current state).
-        val upCode = if (upOpens) openCode else closeCode
-        val upLabel = if (upOpens) openLabel else closeLabel
-        val downCode = if (upOpens) closeCode else openCode
-        val downLabel = if (upOpens) closeLabel else openLabel
+        // One arrow button, by the role it fires (open vs close). The lit (actionable) button is
+        // the one whose press would change the current state: `open != opens` is true exactly for
+        // the open button when closed and the close button when open.
+        @Composable
+        fun arrow(glyph: ImageVector, opens: Boolean) {
+            val code = if (opens) openCode else closeCode
+            RoundIcon(glyph, if (opens) "Open $name" else "Close $name", Color.White, CLOSURE_BTN,
+                busy = code in inFlight, active = stateKnown && open != opens) {
+                onCommand(code, if (opens) openLabel else closeLabel)
+            }
+        }
+        // Normally up=open / down=close; windows are inverted ([upOpens]=false) because raising a
+        // window closes it — so up=close, down=open.
         Spacer(Modifier.width(10.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowUp, if (upOpens) "Open $name" else "Close $name",
-            Color.White, CLOSURE_BTN,
-            busy = upCode in inFlight, active = stateKnown && (if (upOpens) !open else open)) {
-            onCommand(upCode, upLabel)
-        }
+        arrow(Icons.Filled.KeyboardArrowUp, opens = upOpens)
         Spacer(Modifier.width(8.dp))
-        RoundIcon(Icons.Filled.KeyboardArrowDown, if (upOpens) "Close $name" else "Open $name",
-            Color.White, CLOSURE_BTN,
-            busy = downCode in inFlight, active = stateKnown && (if (upOpens) open else !open)) {
-            onCommand(downCode, downLabel)
-        }
+        arrow(Icons.Filled.KeyboardArrowDown, opens = !upOpens)
     }
 }
 
