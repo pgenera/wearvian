@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -15,6 +14,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.Scaffold
@@ -37,7 +38,9 @@ fun WearvianApp(
     onProximityWakeChange: (Boolean) -> Unit = {},
     onReset: () -> Unit,
 ) {
-    LaunchedEffect(Unit) { onRefresh() }
+    // Refresh on every resume so state stays correct after the key is turned off from the
+    // notification (or anything changes while the app was backgrounded), not just on launch.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { onRefresh() }
 
     // The BONDED control surface is its own full-screen vertical pager (ControlScreens.kt).
     if (state.phase == Phase.BONDED) {
