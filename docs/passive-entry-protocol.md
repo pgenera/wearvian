@@ -518,3 +518,37 @@ regressed earlier).
   fields (lock, charge-port, windows, frunk, liftgate) is the next step — needs our own session so we
   hold the key; the official app's frames are encrypted under its key and can't be read offline.
 - Final validation is on-vehicle (we hold the key; the car is the oracle) — unchanged constraint.
+
+---
+
+## 2026-06-06 (pm) — command counter is a separate "csn" (decompile-confirmed)
+
+On-vehicle test of the command-via-session build: the vehicle terminated the link
+(disconnect status `0x13`) within ~100–270 ms of **every** command, no `17 01` ack — the
+command frames were rejected. The build fed the running **heartbeat** counter (74, 10, 12…)
+into the command HMAC. The decompile shows why:
+
+- **Commands and heartbeats use independent counters.** Command builder `em/f0.f`:
+  `int i = tVar.r; tVar.r = i + 1;` — the command sequence number **`csn`** (`l60.x.r`,
+  logged as `csn=` in `l60.t.b`). Heartbeats use a different field (`l60/i0` builds the
+  PASSIVE_ENTRY request with `j0Var.k`). Both feed the same HMAC preimage shape
+  (`pNonce ‖ vNonce ‖ le32(counter) ‖ payload`, `jh/a.i0` branch 2 vs 3) but from
+  separate counter spaces.
+- **csn init by connection type** (`l60.x` ctor / `a()` reset, table `l60.v`):
+  `LEGACY → 0`, `PRE_CCC → 1`, `CCC → 1`. Our Gen-1 link is **LEGACY** (no CCC link
+  encryption), so **csn starts at 0**, +1 per command, reset on each fresh nonce handshake.
+- This is why the proven one-shot (single command, csn=0) always worked, and why feeding
+  the heartbeat counter broke it. Fix: `VehicleSession` keeps a dedicated `commandCounter`
+  (csn), 0-based, reset per reconnect.
+
+Also confirmed: `s60/i0` message types `ActiveCMDRequest=0x16`, `ActiveCMDResponse=0x17`,
+`VehicleStatus=0x18`; inbound decrypt `s60/e.a` = `IV=bytes[2..14]`, `ct+tag=bytes[14..]`,
+AES-128-GCM, AAD=`pNonce⊕vNonce` — byte-identical to our `ActiveCommandFrames.decryptInbound`.
+
+**Open thread — 20-byte vs 114-byte VehicleStatus.** Our session only ever receives 20-byte
+`18 01` frames; the official app only ever receives 114-byte ones. A 20-byte frame is too
+short to be a valid GCM VehicleStatus (20−2−12 = 6 < 16-byte tag) — the official decrypt
+would fail on it too. So our session is getting a different/"lesser" status stream than the
+official app's, persistently (not just during command rejection). Cause not yet found;
+candidates: a status-subscription/request step we skip (the app subscribes `0x1c`
+CHAR_VEHICLE_STATUS; we deliberately don't), or a session-class difference. Chase next.

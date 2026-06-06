@@ -76,11 +76,14 @@ class VehicleSession(
     /** Last decrypted STATUS plaintext — log only on change so closure transitions stand out. */
     private var lastStatusHex: String? = null
     /**
-     * Active-command counter — SEPARATE from the heartbeat counter. On-vehicle (2026-06-06)
-     * the vehicle rejected commands carrying the running heartbeat counter (e.g. 74) and
-     * terminated the link (status 0x13), while the proven one-shot path uses counter=0. So
-     * 0x1b heartbeats and 0x20 commands keep independent counter spaces; commands run
-     * 0,1,2,… per connection. Reset on reconnect.
+     * Active-command sequence number ("csn") — SEPARATE from the heartbeat counter, and the
+     * value bound into each command's HMAC preimage. Confirmed in the decompile: the command
+     * builder uses `tVar.r` (`em/f0.f`: `int i = tVar.r; tVar.r = i + 1`) while heartbeats use
+     * a different field (`j0Var.k`). `csn` is init'd by connection type (`l60.x`): LEGACY → 0,
+     * PRE_CCC/CCC → 1, reset on session clear. Our Gen-1 link is LEGACY (no CCC encryption), so
+     * csn starts at 0, +1 per command, reset per (re)connect (each does a fresh nonce handshake).
+     * The earlier build fed the heartbeat counter here (74, 1, 10…); the vehicle failed the csn
+     * check and dropped the link (status 0x13) on every command.
      */
     private var commandCounter = 0
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
