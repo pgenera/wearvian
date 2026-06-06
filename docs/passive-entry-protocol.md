@@ -552,3 +552,32 @@ would fail on it too. So our session is getting a different/"lesser" status stre
 official app's, persistently (not just during command rejection). Cause not yet found;
 candidates: a status-subscription/request step we skip (the app subscribes `0x1c`
 CHAR_VEHICLE_STATUS; we deliberately don't), or a session-class difference. Chase next.
+
+---
+
+## 2026-06-06 (pm) — VehicleStatus DECODED via 0x1c (hypothesis confirmed)
+
+Subscribing CHAR_VEHICLE_STATUS (0x1c) PRIMARY-only/post-auth (branch
+`wearvian-vehicle-status-0x1c`) WORKED — `subscribe=true`, no link breakage, and the vehicle
+streamed **plaintext, structured** status frames (the rich stream we never got on 0x20). The
+"missing subscription" hypothesis was correct: our old blanket drop of 0x1c (451fc90, to fix the
+in-the-clear sensors) also killed the legitimate PRIMARY status subscription.
+
+Frame = `[le32 counter (resets per reconnect)] ‖ [16-byte plaintext status]`. Decoded by correlating
+deduped frames against a scripted on-vehicle action sequence (unlock, charge-port, frunk, lights,
+4 windows in order, driver door close/open, lock):
+
+| status byte | field | notes |
+|---|---|---|
+| `[0]` | lock/wake | `0x11` locked&asleep → `0x10` awake/unlocked (flipped at unlock) |
+| `[1]` hi nibble | asleep flag | `0xf*` asleep → `0x0*` awake; reverts after lock |
+| `[1]` bit `0x08` | **driver door** | 1=closed, 0=open (matched door close→open) |
+| `[2]` hi nibble | asleep flag | `0xa*` asleep → `0x0*` awake |
+| `[2]` bits `0x08`,`0x04` | **frunk + charge-port** | two closure bits; which-is-which TBD (needs a clean per-closure pass) |
+| `[3]` 4 bits | **windows** | `0x08`=driver, `0x04`=passenger, `0x02`=driver-rear, `0x01`=pass-rear; 1=closed. `0x0f`=all closed. Matched 4 windows in exact order. |
+| `[4..15]` | static config | `00 41 11 18 28 01 00 50 78 00 00 00` unchanged this session |
+
+CONFIDENT: windows (`[3]`) + driver door (`[1]` bit 0x08). LIKELY: lock/sleep (`[0]` + `[1]`/`[2]`
+hi-nibbles), frunk/charge-port (`[2]`). NOT in this frame: exterior lights (no byte changed during
+L/R light toggles). The compact 20-byte 0x20 ack/status frames stayed undecryptable (the implicit-IV
+prober found no match) — but moot now that 0x1c gives plaintext status directly.
