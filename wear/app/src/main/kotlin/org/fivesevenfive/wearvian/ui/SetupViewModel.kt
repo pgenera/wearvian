@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.PairingManager
+import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
@@ -58,13 +59,22 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
             // Reflect the real foreground-service state so the toggle doesn't desync
             // when the UI recomposes (e.g. returning from the debug console).
-            e.bonded -> SetupUiState(
-                Phase.BONDED,
-                presenceRunning = PresenceService.isRunning,
-                proximityWakeEnabled = settings.proximityWakeEnabled,
-                deviceSecure = isDeviceSecure(),
-                keyArmed = settings.keyArmed,
-            )
+            e.bonded -> {
+                val running = PresenceService.isRunning
+                // Armed but the service isn't running → make "Key passive" real: register the
+                // offloaded proximity wake so the OS starts us when the car comes into range
+                // (and fires immediately if it's already nearby → flips to active).
+                if (settings.keyArmed && !running) {
+                    ProximityWake.armForVehicle(getApplication(), e.vasVehicleId)
+                }
+                SetupUiState(
+                    Phase.BONDED,
+                    presenceRunning = running,
+                    proximityWakeEnabled = settings.proximityWakeEnabled,
+                    deviceSecure = isDeviceSecure(),
+                    keyArmed = settings.keyArmed,
+                )
+            }
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
         }
     }

@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.ParcelUuid
 import org.fivesevenfive.wearvian.service.VehicleProximityReceiver
+import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.util.DebugLog
 import java.util.UUID
 
@@ -72,6 +73,10 @@ object ProximityWake {
         DebugLog.add("proximity: arm rc=$rc (${filters.size} filters)")
         return rc == 0
     }
+
+    /** Arm for a specific vehicle: filter on its VAS service UUID + the MACs we've learned. */
+    fun armForVehicle(context: Context, vasVehicleId: String): Boolean =
+        arm(context, RivianBle.vehicleServiceUuid(vasVehicleId), VehicleAddressStore(context).load())
 
     /** Cancel the offloaded scan (e.g. once presence is back up). */
     fun disarm(context: Context) {

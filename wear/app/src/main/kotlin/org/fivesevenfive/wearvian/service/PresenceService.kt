@@ -39,7 +39,6 @@ import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
-import java.util.UUID
 
 /**
  * Foreground service that maintains the drive-presence sessions. It runs one
@@ -199,10 +198,8 @@ class PresenceService : Service() {
             return false
         }
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
-        val svc = vehicleServiceUuid(enrollment.vasVehicleId)
-        val macs = VehicleAddressStore(this).load()
-        val armed = ProximityWake.arm(this, svc, macs)
-        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive; wake armed=$armed (svc=${svc != null} macs=${macs.size})")
+        val armed = ProximityWake.armForVehicle(this, enrollment.vasVehicleId)
+        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive; wake armed=$armed")
         if (!armed) {
             // Couldn't arm the wake — don't go dark; the loop retries later.
             DebugLog.add("presence: wake NOT armed — will retry")
@@ -231,7 +228,7 @@ class PresenceService : Service() {
         } ?: DebugLog.add("presence: no bonded ${RivianBle.DEVICE_NAME}")
 
         // Location sensors: scan by the vehicle's VAS id and open a session per new device.
-        val svc = vehicleServiceUuid(enrollment.vasVehicleId)
+        val svc = RivianBle.vehicleServiceUuid(enrollment.vasVehicleId)
         if (svc == null) {
             DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}'; no sensor sessions")
             return@coroutineScope
@@ -264,18 +261,6 @@ class PresenceService : Service() {
         else -> "PK2"
     }
 
-    /** Parse the vasVehicleId (dashed or 32-hex) into the service UUID the sensors advertise. */
-    private fun vehicleServiceUuid(vasVehicleId: String): UUID? = runCatching {
-        val s = vasVehicleId.trim()
-        if (s.contains("-")) {
-            UUID.fromString(s)
-        } else {
-            val h = s.lowercase().removePrefix("0x")
-            require(h.length == 32) { "not 32 hex chars" }
-            UUID.fromString("${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}")
-        }
-    }.getOrNull()
-
     private fun startAsForeground() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.presence_channel_name), NotificationManager.IMPORTANCE_LOW),
@@ -300,11 +285,10 @@ class PresenceService : Service() {
             this, 2, Intent(this, KeyOffReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // Just the power-off icon action — Wear OS already adds its own "Open app" button
-        // from the content intent. Blank title so the button renders as the icon alone
-        // (the title is what the platform draws as button text).
+        // "Off" action — turns the key off, stops the service, clears the notification.
+        // (Icon-only didn't render on Wear; keep the text label.)
         val offAction = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_notif_power), "", offIntent,
+            Icon.createWithResource(this, R.drawable.ic_notif_power), "Off", offIntent,
         ).build()
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.presence_notification_title))

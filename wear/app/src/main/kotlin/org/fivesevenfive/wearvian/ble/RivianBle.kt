@@ -26,6 +26,18 @@ object RivianBle {
     /** Standard Client Characteristic Configuration Descriptor. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+    /** Parse the vasVehicleId (dashed UUID or 32-hex) into the service UUID the sensors advertise. */
+    fun vehicleServiceUuid(vasVehicleId: String): UUID? = runCatching {
+        val s = vasVehicleId.trim()
+        if (s.contains("-")) {
+            UUID.fromString(s)
+        } else {
+            val h = s.lowercase().removePrefix("0x")
+            require(h.length == 32) { "not 32 hex chars" }
+            UUID.fromString("${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}")
+        }
+    }.getOrNull()
+
     /** Active-entry commands (used in milestone 2). */
     object Command {
         const val WAKE_VEHICLE = "WAKE_VEHICLE"
