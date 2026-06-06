@@ -51,6 +51,14 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
         fun spec(strongBox: Boolean) =
             KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_AGREE_KEY)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                // Layer 2 anti-theft: the key (and thus the initial ECDH) can only be used
+                // while the watch is unlocked. On Wear OS the device locks when removed from
+                // the wrist (with a screen lock set), so a stolen watch can't derive the
+                // shared secret to start a new session. Only applies to keys generated from
+                // now on; existing keys keep working (ensureKey generates only when absent).
+                // Runtime protection for an already-running session is Layer 1 (heartbeats
+                // gated on isDeviceLocked in VehicleSession / ActiveCommandManager).
+                .setUnlockedDeviceRequired(true)
                 .apply { if (strongBox) setIsStrongBoxBacked(true) }
                 .build()
 

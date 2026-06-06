@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.ble
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
@@ -41,8 +42,12 @@ class ActiveCommandManager(
     private var charWritten = CompletableDeferred<Boolean>()
     private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
 
+    private val keyguard = context.getSystemService(KeyguardManager::class.java)
+
     suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
+        // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
+        if (keyguard?.isDeviceLocked == true) error("watch locked — command blocked")
         val device = adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }
             ?: error("vehicle '${RivianBle.DEVICE_NAME}' not bonded")
         DebugLog.ble("·", "gatt", "connecting ${device.address}")

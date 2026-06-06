@@ -64,6 +64,7 @@ import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
+private val WARN = Color(0xFFFF6B6B)
 private const val PAGES = 4
 
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
@@ -117,7 +118,7 @@ fun ControlScreens(
                     0 -> KeyPage(state, onTogglePresence, onCommand)
                     1 -> ClosuresPage(state.inFlight, onCommand)
                     2 -> SignalPage(state.inFlight, onCommand)
-                    else -> SettingsPage(state.proximityWakeEnabled, onProximityWakeChange)
+                    else -> SettingsPage(state.proximityWakeEnabled, state.deviceSecure, onProximityWakeChange)
                 }
             }
         }
@@ -201,13 +202,21 @@ private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
 }
 
 @Composable
-private fun SettingsPage(proximityWakeOn: Boolean, onChange: (Boolean) -> Unit) {
+private fun SettingsPage(proximityWakeOn: Boolean, deviceSecure: Boolean, onChange: (Boolean) -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Header("Settings")
+        if (!deviceSecure) {
+            Text(
+                "⚠ No watch lock set — remove-from-wrist protection is OFF",
+                color = WARN,
+                fontSize = 10.sp,
+                textAlign = TextAlign.Center,
+            )
+        }
         Image(
             imageVector = if (proximityWakeOn) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
             contentDescription = if (proximityWakeOn) "Auto power-save on" else "Auto power-save off",

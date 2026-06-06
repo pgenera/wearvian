@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.ui
 
 import android.app.Application
+import android.app.KeyguardManager
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
@@ -30,6 +31,8 @@ data class SetupUiState(
     val inFlight: Set<Int> = emptySet(),
     /** Auto power-save (proximity wake) toggle, surfaced on the settings screen. */
     val proximityWakeEnabled: Boolean = true,
+    /** Whether the watch has a secure lock set; if not, the anti-theft gating can't engage. */
+    val deviceSecure: Boolean = true,
 )
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
@@ -56,6 +59,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 Phase.BONDED,
                 presenceRunning = PresenceService.isRunning,
                 proximityWakeEnabled = settings.proximityWakeEnabled,
+                deviceSecure = isDeviceSecure(),
             )
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
         }
@@ -163,6 +167,11 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      * Toggle auto power-save (proximity wake). Persisted; [PresenceService] reads it when
      * deciding whether to drop to passive. Takes effect on the next idle cycle.
      */
+    /** True iff the watch has a secure lock (PIN/pattern/password) — required for the
+     *  remove-from-wrist anti-theft gating to actually engage. */
+    private fun isDeviceSecure(): Boolean =
+        getApplication<Application>().getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
+
     fun setProximityWake(on: Boolean) {
         logi("setProximityWake: $on")
         settings.proximityWakeEnabled = on

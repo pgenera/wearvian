@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.ble
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -69,6 +70,7 @@ class VehicleSession(
     @Volatile private var latestRssi: Int = RSSI_DEFAULT
     private var inbound = 0
     private var cmdInbound = 0
+    private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
@@ -164,7 +166,26 @@ class VehicleSession(
 
             // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
+            var pausedForLock = false
             while (scope.isActive && sessionAlive) {
+                // Layer 1 anti-theft: while the watch is locked (e.g. removed from the wrist
+                // with a screen lock set), send NO authenticated heartbeats — the car loses
+                // presence and won't passively unlock/drive for whoever holds the watch. The
+                // GATT link stays up so presence resumes instantly on unlock. Protects keys
+                // both old and new (the shared secret is cached in memory, so the keystore
+                // key's unlocked-device requirement alone wouldn't stop an active session).
+                if (keyguard?.isDeviceLocked == true) {
+                    if (!pausedForLock) {
+                        pausedForLock = true
+                        DebugLog.add("$label: watch locked — pausing presence heartbeats")
+                    }
+                    delay(HEARTBEAT_PERIOD_MS)
+                    continue
+                }
+                if (pausedForLock) {
+                    pausedForLock = false
+                    DebugLog.add("$label: watch unlocked — resuming heartbeats")
+                }
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
                 writeChar(g, readChar, hb, hbWriteType)
