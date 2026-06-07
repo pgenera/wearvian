@@ -1,6 +1,19 @@
 # wearvian — WearOS Rivian phone key (BLE), milestone 1
 
-> ## ⚠️ Update — 2026-05-30 (read first)
+> ## ⚠️ This document is historical (read first)
+>
+> **Milestone 1 is complete and confirmed on-vehicle (2026-06-07, v0.4.1).** The watch does
+> passive entry + drive, lock/unlock, frunk + liftgate, and live lock/closure status, fully
+> offline from its own BLE radio. This file is the *original* M1 design and is kept for the
+> protocol constants and rationale below; it does **not** describe the current build in two
+> respects (enrollment moved to the companion app; the BLE protocol was reverse-engineered well
+> past what's written here). For the live picture see:
+> - **`docs/passive-entry-protocol.md`** — the actual handshake, presence/heartbeat session,
+>   active-command crypto, and the decoded `0x1c` status byte map.
+> - **`docs/proximity-wake.md`** — M2 passive idle + auto-wake.
+> - **`docs/next-steps.md`** — current backlog.
+>
+> ### Enrollment — 2026-05-30 change (still current)
 >
 > The architecture below described a "standalone auth webapp + QR/nonce handoff" for enrollment.
 > **That has been replaced and removed.** Current state:
@@ -25,8 +38,9 @@
 >
 > 3. **Build status:** ✅ `wear/core-crypto/` tests pass; ✅ `wear/` watch app builds to a debug
 >    APK; ✅ the companion app builds to a debug APK. Toolchain: JDK 21 + Android SDK 35 (the
->    machine default JDK 25 is too new for Gradle/AGP — build with JDK 21). What remains is
->    on-vehicle validation (enroll → bond → drive-by-proximity).
+>    machine default JDK 25 is too new for Gradle/AGP — build with JDK 21). On-vehicle validation
+>    (enroll → handshake → drive-by-proximity, plus active commands and live status) is **done** —
+>    see the docs linked above.
 >
 > ---
 

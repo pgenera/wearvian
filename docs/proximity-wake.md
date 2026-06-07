@@ -1,5 +1,11 @@
 # Proximity wake — passive idle + auto-wake on approach (M2)
 
+> **Status: confirmed on-vehicle (2026-06-07).** The full active→passive→wake→active cycle
+> works on the R1S: after the idle timeout the service goes passive (wake lock released, BLE
+> torn down, notification reads "Passive · waiting for vehicle"), and the hardware-offloaded
+> scan auto-rebuilds the link on approach — with the app **not** foregrounded, the exact case
+> the dead-end paths below failed. Passive entry/drive work after the wake.
+
 Goal: make the mobile key something you leave on all day. When the car is away the app idles
 with the wake lock released (CPU can sleep) and **auto-rebuilds the link on approach**.
 
@@ -51,13 +57,14 @@ plain toggle with no association/dialog and works anywhere.
 - `store/SettingsStore.kt` — `proximityWakeEnabled` (default OFF).
 - `ui/ControlScreens.kt` — settings toggle + "Key passive" label driven by `PresenceService.passive`.
 
-## On-device test checklist (needs the vehicle)
-- [ ] Enable Auto power-save (anywhere — plain toggle, no dialog).
-- [ ] Active → walk away → after 5 min: log `→ passive (idle, service alive); proximity watch=true`,
-      notification reads "Passive · waiting for vehicle", notification **stays up**, wake lock released.
-- [ ] Walk back → `proximity hit … → wake` then `proximity wake → active`; passive unlock/drive work.
+## On-device test checklist (validated on-vehicle 2026-06-07)
+- [x] Enable Auto power-save (anywhere — plain toggle, no dialog).
+- [x] Active → walk away → after the idle timeout: log `→ passive (idle, service alive); proximity
+      watch=true`, notification reads "Passive · waiting for vehicle", notification **stays up**,
+      wake lock released.
+- [x] Walk back → `proximity hit … → wake` then `proximity wake → active`; passive unlock/drive work.
       **Key validation:** this fires with the app not foregrounded — the case the dead-end paths failed.
-- [ ] Turn the key off while passive → `watch stopped`, notification cleared.
+- [x] Turn the key off while passive → `watch stopped`, notification cleared.
 
 ## Tunables
 - `PresenceService.IDLE_TIMEOUT_MS` (5 min).

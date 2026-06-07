@@ -1,43 +1,62 @@
-# wearvian — next steps (as of 2026-06-05, v0.2.5)
+# wearvian — next steps (as of 2026-06-07, v0.4.1)
 
-`main` is tagged **v0.2.5** in both repos. The core phone key (passive entry, drive,
-lock/unlock, frunk, hatch) is **confirmed on-vehicle**. M2 proximity-wake and Play
-packaging are scaffolded but **not yet validated**.
+The watch app (`main`, versionCode 1008) is a working offline phone key, **confirmed
+on-vehicle**: passive entry + drive, lock/unlock, frunk + liftgate, live lock/closure
+status, the redesigned tile, and the M2 proximity active→passive→wake→active cycle all
+work on the R1S. What's left is packaging, a couple of small features, and two parked
+protocol unknowns.
+
+## Done since v0.2.5 (was "blocked on you" / backlog — now landed)
+- **M2 proximity wake — confirmed on-vehicle.** Full active→passive→wake→active cycle
+  works: after idle the service goes passive (wake lock released, BLE torn down) and the
+  hardware-offloaded scan restarts the link on approach without an FGS-start block. See
+  `docs/proximity-wake.md`.
+- **F5 live lock/closure status — done.** The `0x1c` plaintext status stream is decoded
+  (lock, doors, windows, frunk, liftgate — byte map in `docs/passive-entry-protocol.md`)
+  and drives the UI icon state.
+- **Liftgate (hatch) open/close** confirmed on-vehicle (`0x2a`/`0x2b`).
+- **Watch tile redesign** — hex layout (key in center + six icon controls: lock/unlock,
+  frunk open/close, hatch open/close), vehicle-state button shading, debounced live
+  refresh, screen-relative sizing, and a tile-chooser preview image.
+- **Last-known status when inactive** — closure/lock affordances persist in memory and
+  render dimmed (gray vs. white) when the key is inactive; RAM-only, never written to disk,
+  gone on process death.
+- **PK reconnect** — the dormant phone-key module now falls back to `autoConnect` after a
+  direct-connect timeout, fixing the "PK timeout" reconnect storm.
 
 ## Blocked on you (testing / accounts)
-1. **Test M2 proximity wake at the car** — the make-or-break question: after going
-   passive, does the OS's offloaded scan **restart the foreground service on approach**,
-   or do we hit `proximity: FGS start blocked`? Watch `adb logcat -s wearvian`. If blocked
-   → pivot the wake delivery to `CompanionDeviceManager` (idle-timer / MAC-learning halves
-   stay). Idle timeout is back to the production **5 min**; ask for a 90 s test build for
-   faster cycles. See `docs/proximity-wake.md`.
-2. **Play Store** — once the developer account exists: create the upload keystore
+1. **Play Store** — once the developer account exists: create the upload keystore
    (`keytool`), fill `keystore.properties` in both repos, `:app:bundleRelease` each, upload
    the **phone** + **Wear** AABs to one listing with Play App Signing. See
    `docs/play-store-packaging.md`.
 
 ## Code I can pick up (mostly unblocked)
-3. **Deep-sleep BLE wake (retry, carefully)** — a *separate, opt-in* path (don't touch the
+2. **Windows / charge-port over BLE** — request codes (`0x15`/`0x16`, `0x36`/`0x37`) are
+   byte-exact with the official app and answered with a `17 01` ack, but the vehicle doesn't
+   actuate on our one-shot connection. The 2026-06-06 sleeping-truck capture shows the app
+   sends these through a **live presence session** (sustained heartbeat/ranging) using the
+   running **csn** command counter, not an isolated connect. Fold command-sending into the
+   `PresenceService` heartbeat loop (dedicated 0-based `commandCounter`). Re-hidden in the UI
+   until this works. Details in `docs/passive-entry-protocol.md`.
+3. **Panic command** — add it (`0x07`/`0x34`) with a confirmation dialog (the one control
+   that needs a confirm before firing).
+4. **Deep-sleep BLE wake (retry, carefully)** — a *separate, opt-in* path (don't touch the
    proven command flow). Fix the regression cause: continue the command counter past the
-   heartbeat count (`counter = WAKE_BEATS`) instead of resetting to 0. Needs a genuine
-   deep-sleep repro to confirm. (Reverted attempt: commit 73a5218.)
-4. **F5 — live lock/closure status icons** — reflect real vehicle state in the UI. Gated on
-   an on-vehicle `0x1c` decode capture (tap lock/unlock/frunk while logging, correlate which
-   byte flips).
-5. **Panic command** — add it with a confirmation dialog (the one control that needs a
-   confirm before firing).
-6. **Monetization architecture** (only if pursuing a paid tier) — keep **free = offline**
+   heartbeat count instead of resetting to 0. Needs a genuine deep-sleep repro. (Reverted
+   attempt: commit 73a5218.)
+5. **Monetization architecture** (only if pursuing a paid tier) — keep **free = offline**
    with the clean no-INTERNET manifest; deliver **paid cloud features via a dynamic feature
-   module** that adds INTERNET on purchase, so the free privacy story stays intact. Decision
-   pending on exactly which feature/permission is gated.
+   module** that adds INTERNET on purchase, so the free privacy story stays intact.
 
 ## Parked / known limitations
-- **Windows (`0x15`/`0x16`) + charge-port (`0x36`/`0x37`)**: request codes are byte-correct
-  but the vehicle ignores them over BLE — hidden in the UI. Revisit with the `0x20`/`0x1c`
-  FAIL-vs-silence diagnostic to learn whether it's a state gate or a hard cloud-only block.
+- **Tile cold-start has no state shading.** The last-known status is RAM-only, so a tile
+  rendered after the process is killed shows no shading until the service is alive again.
+  Accepted trade-off of the no-disk decision.
+- **State of charge / range / charge limit are cloud-only** — confirmed absent from the BLE
+  `0x1c` stream. Any battery display goes through the companion / a future M4 cloud path.
 
 ## Housekeeping
-- Remove the stray runtime logs committed earlier in history (`wearvian-*.log`) and gitignore
-  them.
-- Delete the merged feature branches (`wearvian-m1-phone-key`, `wearvian-m2-proximity-wake`)
-  once `main` is confirmed canonical.
+- Delete the merged feature branches (`wearvian-m1-phone-key`, `wearvian-m2-proximity-wake`,
+  `wearvian-watch-lock`) once `main` is confirmed canonical.
+- `PLAN.md` is the original M1 design and is now historical (M1 is complete); the live
+  protocol reference is `docs/passive-entry-protocol.md`.
