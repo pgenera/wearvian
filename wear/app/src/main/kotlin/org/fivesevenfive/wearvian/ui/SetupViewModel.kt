@@ -9,12 +9,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
-import org.fivesevenfive.wearvian.ble.CompanionManager
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
@@ -34,12 +31,14 @@ data class SetupUiState(
     val presenceRunning: Boolean = false,
     /** Command codes currently being sent over BLE — drives the in-flight throb on each button. */
     val inFlight: Set<Int> = emptySet(),
-    /** Auto power-save (proximity wake) toggle, surfaced on the settings screen. */
-    val proximityWakeEnabled: Boolean = true,
+    /** Auto power-save toggle (stay-alive passive on idle), surfaced on the settings screen. */
+    val proximityWakeEnabled: Boolean = false,
     /** Whether the watch has a secure lock set; if not, the anti-theft gating can't engage. */
     val deviceSecure: Boolean = true,
-    /** Whether the mobile key is armed (intent). With [presenceRunning] this gives the
-     *  tri-state: off / active (running) / passive (armed but power-saving). */
+    /** Service is running but idling passively (BLE down, watching for the vehicle's approach). */
+    val presencePassive: Boolean = false,
+    /** Whether the mobile key is armed (intent). With [presenceRunning]/[presencePassive] this
+     *  gives the tri-state: off / active (running) / passive (idling, watching for approach). */
     val keyArmed: Boolean = false,
 )
 
@@ -53,28 +52,25 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsStore(app)
     private val keyManager = KeyManager()
     private val companion = CompanionEnrollmentClient(app)
-    private val cdm = CompanionManager(app)
 
     private val _state = mutableStateOf(SetupUiState())
     val state: State<SetupUiState> get() = _state
 
-    /**
-     * Emitted when enabling passive mode needs the one-time CDM association dialog. The Activity
-     * collects this, launches the system chooser, and reports back via [onAssociationConfirmed] /
-     * [onAssociationCancelled] (the ViewModel can't launch an IntentSender itself).
-     */
-    private val _associationRequest = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val associationRequest: SharedFlow<Unit> get() = _associationRequest
-
     init {
-        // Live tri-state: when the presence service starts/stops (e.g. the proximity wake
-        // brings it up on approach, or it idles to passive), reflect it on the BONDED
-        // screen without waiting for a resume. Re-read keyArmed so off/active/passive stay
-        // consistent (e.g. the notification "Off" both stops the service and disarms).
+        // Live tri-state: when the presence service starts/stops or flips active↔passive (auto-
+        // idle, or the proximity watch reviving it), reflect it on the BONDED screen without
+        // waiting for a resume. Re-read keyArmed so off/active/passive stay consistent.
         viewModelScope.launch {
             PresenceService.running.collect { running ->
                 if (_state.value.phase == Phase.BONDED) {
                     _state.value = _state.value.copy(presenceRunning = running, keyArmed = settings.keyArmed)
+                }
+            }
+        }
+        viewModelScope.launch {
+            PresenceService.passive.collect { passive ->
+                if (_state.value.phase == Phase.BONDED) {
+                    _state.value = _state.value.copy(presencePassive = passive)
                 }
             }
         }
@@ -91,16 +87,15 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
             // when the UI recomposes (e.g. returning from the debug console).
             e.bonded -> {
                 val running = PresenceService.isRunning
-                // Armed + passive enabled but not running → "Key passive": make sure CDM presence
-                // observation is live so the OS cold-starts us when the car comes into range.
-                if (settings.keyArmed && !running && settings.proximityWakeEnabled) {
-                    cdm.startObserving()
-                }
+                // Armed but the service isn't running (e.g. killed) → bring it back so the
+                // stay-alive passive watch is live; it idles itself if the car is away.
+                if (settings.keyArmed && !running) PresenceService.start(getApplication())
                 SetupUiState(
                     Phase.BONDED,
                     presenceRunning = running,
                     proximityWakeEnabled = settings.proximityWakeEnabled,
                     deviceSecure = isDeviceSecure(),
+                    presencePassive = PresenceService.passive.value,
                     keyArmed = settings.keyArmed,
                 )
             }
@@ -220,82 +215,38 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     fun setPresence(on: Boolean) {
         logi("setPresence: $on")
         settings.keyArmed = on // arm/disarm intent — survives auto power-save going passive
-        if (on) {
-            PresenceService.start(getApplication())
-        } else {
-            // Deactivating the key: stop OS presence observation so passive can't re-wake us.
-            cdm.stopObserving()
-            PresenceService.stop(getApplication())
-        }
+        if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
         _state.value = _state.value.copy(presenceRunning = on, keyArmed = on)
     }
 
-    /**
-     * Toggle auto power-save (proximity wake). Persisted; [PresenceService] reads it when
-     * deciding whether to drop to passive. Takes effect on the next idle cycle.
-     */
     /** True iff the watch has a secure lock (PIN/pattern/password) — required for the
      *  remove-from-wrist anti-theft gating to actually engage. */
     private fun isDeviceSecure(): Boolean =
         getApplication<Application>().getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
 
     /**
-     * Manually drop to passive now. Requires a CDM association (otherwise nothing would wake us):
-     * if missing, kick off the association dialog instead. Arms the key if it wasn't.
+     * Manually drop to passive now (settings button). Arms the key + enables power-save, then tells
+     * the running service to go passive immediately — or starts it straight into passive if it
+     * wasn't running. The live passive flow flips the UI to "Key passive".
      */
     fun startPassive() {
         store.load() ?: return
-        logi("startPassive: manual (associated=${cdm.isAssociated()})")
-        if (!cdm.isAssociated()) {
-            if (cdm.isSupported) _associationRequest.tryEmit(Unit)
-            return
-        }
+        logi("startPassive: manual")
         settings.keyArmed = true
-        cdm.startObserving()
         settings.proximityWakeEnabled = true
-        if (PresenceService.isRunning) PresenceService.goPassiveNow(getApplication())
+        PresenceService.goPassiveNow(getApplication())
         _state.value = _state.value.copy(keyArmed = true, proximityWakeEnabled = true)
     }
 
     /**
-     * Toggle auto power-save (passive mode). Enabling it requires a one-time CompanionDeviceManager
-     * association so the OS can wake us on approach: if not yet associated we ask the Activity to
-     * show the system dialog (via [associationRequest]) and only persist on confirm. Disabling stops
-     * OS presence observation.
+     * Toggle auto power-save (stay-alive passive). Persisted; [PresenceService] reads it when
+     * deciding whether to drop to passive after an idle stretch. Takes effect on the next idle
+     * cycle (no association / dialog — plain in-process scan).
      */
     fun setProximityWake(on: Boolean) {
-        logi("setProximityWake: $on (associated=${cdm.isAssociated()})")
-        if (on) {
-            if (!cdm.isSupported) {
-                logw("setProximityWake: CDM unsupported on this device — leaving off")
-                _state.value = _state.value.copy(proximityWakeEnabled = false)
-                return
-            }
-            if (cdm.isAssociated()) enablePassiveObserving() else _associationRequest.tryEmit(Unit)
-        } else {
-            cdm.stopObserving()
-            settings.proximityWakeEnabled = false
-            _state.value = _state.value.copy(proximityWakeEnabled = false)
-        }
-    }
-
-    /** Activity callback: the CDM association dialog was confirmed → start observing + persist on. */
-    fun onAssociationConfirmed() {
-        logi("onAssociationConfirmed")
-        enablePassiveObserving()
-    }
-
-    /** Activity callback: the CDM association dialog was cancelled/failed → leave passive off. */
-    fun onAssociationCancelled() {
-        logi("onAssociationCancelled")
-        settings.proximityWakeEnabled = false
-        _state.value = _state.value.copy(proximityWakeEnabled = false)
-    }
-
-    private fun enablePassiveObserving() {
-        cdm.startObserving()
-        settings.proximityWakeEnabled = true
-        _state.value = _state.value.copy(proximityWakeEnabled = true)
+        logi("setProximityWake: $on")
+        settings.proximityWakeEnabled = on
+        _state.value = _state.value.copy(proximityWakeEnabled = on)
     }
 
     /**
@@ -308,7 +259,6 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     fun reset() {
         logi("reset: clearing enrollment cache + stopping presence (KEEPING Keystore key)")
         settings.keyArmed = false
-        cdm.stopObserving()
         PresenceService.stop(getApplication())
         store.clear()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
@@ -323,7 +273,6 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     fun wipeIdentity() {
         logw("wipeIdentity: deleting Keystore key + enrollment — full re-key + re-enroll required")
         settings.keyArmed = false
-        cdm.stopObserving()
         PresenceService.stop(getApplication())
         store.clear()
         keyManager.deleteKey()

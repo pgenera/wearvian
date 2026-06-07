@@ -8,11 +8,10 @@ class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("wearvian_settings", Context.MODE_PRIVATE)
 
     /**
-     * Auto power-save: after a stretch with no vehicle link, drop to passive (release the
-     * wake lock, stop the foreground service). Re-waking on approach is handled by the OS via
-     * CompanionDeviceManager presence observation, which is allowlisted to cold-start our
-     * foreground service. **Default OFF** — enabling it triggers the one-time CDM association
-     * dialog (see [CompanionManager] / docs/proximity-wake.md).
+     * Auto power-save: after a stretch with no vehicle link, drop to passive — the foreground
+     * service + notification stay up but the wake lock is released and BLE is torn down, and an
+     * in-process offloaded scan watches for the car's approach to rebuild the link. **Default
+     * OFF.** See docs/proximity-wake.md.
      */
     var proximityWakeEnabled: Boolean
         get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, false)

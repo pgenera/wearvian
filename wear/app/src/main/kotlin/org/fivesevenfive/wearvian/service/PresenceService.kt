@@ -29,7 +29,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
-import org.fivesevenfive.wearvian.ble.CompanionManager
+import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
@@ -64,25 +64,34 @@ class PresenceService : Service() {
     private var lockJob: Job? = null
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
-    /** Set when we stop *on purpose* to idle passively (CDM presence-observation wakes us). */
-    @Volatile private var goingPassive = false
+    /**
+     * True while idling passively: the service + foreground notification STAY up, the wake lock
+     * is released and the BLE sessions are torn down, and a single hardware-offloaded scan watches
+     * for the vehicle. Because we never leave the foreground, [proximityCallback] can rebuild BLE
+     * on approach without a background FGS-start (which Android-12 blocks) — and without CDM, which
+     * Wear OS forbids 3p apps from using.
+     */
+    @Volatile private var passive = false
 
     /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
     @Volatile private var locked = false
 
+    /** In-process proximity watch: fires when the vehicle comes into range while [passive]. */
+    private val proximityCallback = object : android.bluetooth.le.ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+            DebugLog.add("presence: proximity hit ${result.device?.address} rssi=${result.rssi} → wake")
+            scope.launch { exitPassive() }
+        }
+        override fun onScanFailed(errorCode: Int) {
+            DebugLog.add("presence: proximity scan failed err=$errorCode")
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val goPassiveNow = intent?.action == ACTION_GO_PASSIVE
         logi("PresenceService: onStartCommand action=${intent?.action}")
-        // Manual "go passive now" from the settings button: arm the wake + stop.
-        if (intent?.action == ACTION_GO_PASSIVE) {
-            startAsForeground() // required since started via startForegroundService
-            DebugLog.add("presence: manual passive requested")
-            enterPassive()
-            return START_NOT_STICKY
-        }
-        // We're running now (possibly cold-started by CDM on approach).
-        goingPassive = false
         startAsForeground()
         val enrollment = EnrollmentStore(this).load()
         if (enrollment == null) {
@@ -92,29 +101,30 @@ class PresenceService : Service() {
         }
         // lockJob is the "service is already running" marker (loopJob can be inactive while locked).
         if (lockJob?.isActive == true) {
-            DebugLog.add("presence: already running; ignoring duplicate start")
+            when {
+                goPassiveNow -> { DebugLog.add("presence: manual passive (already running)"); enterPassive() }
+                passive -> { DebugLog.add("presence: start while passive → wake"); exitPassive() }
+                else -> DebugLog.add("presence: already running; ignoring duplicate start")
+            }
             return START_STICKY
         }
         _running.value = true
         // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
-        // restores it on unlock.
+        // restores it on unlock. Otherwise go straight to passive (manual button) or active.
         locked = keyguard?.isDeviceLocked == true
-        if (locked) {
-            updateNotification(LOCKED_TEXT)
-        } else {
-            acquireWakeLock()
-            startBle()
+        when {
+            locked -> updateNotification(LOCKED_TEXT)
+            goPassiveNow -> { DebugLog.add("presence: manual passive requested"); enterPassive() }
+            else -> { acquireWakeLock(); startBle() }
         }
-        // Mirror the aggregate connection state into the ongoing notification, like the
-        // official app's "vehicle connected / disconnected" persistent notification — but
-        // while locked, hold the "locked" text instead of link state.
-        if (notifJob?.isActive != true) {
-            notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked) updateNotification(it) } }
-        }
-        // Drop to passive (offloaded proximity wake) after a stretch with no link up.
-        if (idleJob?.isActive != true) idleJob = scope.launch { monitorIdle() }
+        // Mirror the aggregate connection state into the ongoing notification, like the official
+        // app's "vehicle connected / disconnected" persistent notification — but while locked or
+        // passive, hold that status text instead of link state.
+        notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive) updateNotification(it) } }
+        // Drop to passive (stay-alive + in-process proximity watch) after a stretch with no link.
+        idleJob = scope.launch { monitorIdle() }
         // Tear down / restore BLE as the watch locks / unlocks.
-        if (lockJob?.isActive != true) lockJob = scope.launch { monitorLock() }
+        lockJob = scope.launch { monitorLock() }
         return START_STICKY
     }
 
@@ -159,6 +169,7 @@ class PresenceService : Service() {
                 locked = nowLocked
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passive = false; _passive.value = false }
                     stopBle()
                     releaseWakeLock()
                     updateNotification(LOCKED_TEXT)
@@ -174,27 +185,34 @@ class PresenceService : Service() {
     }
 
     /**
-     * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), stop the foreground
-     * service so we idle at near-zero battery. The OS ([VehiclePresenceService] via CDM presence
-     * observation) cold-starts us again on approach. A reconnect within the window cancels it.
+     * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), drop to passive: keep
+     * the service + notification up but release the wake lock, tear down BLE, and let a single
+     * offloaded scan watch for the vehicle. We then block until [exitPassive] revives the link on
+     * approach, and resume watching for the next idle stretch.
      */
     private suspend fun monitorIdle() {
         while (true) {
             // Wait until no link is UP. Reading the flow (not a single collectLatest pass)
             // also recovers from a stale `connected==true` carried over a process restart.
             PresenceStatus.connected.first { !it }
+            if (passive) {
+                // Already idling (e.g. manual passive) — wait until the proximity watch revives us.
+                PresenceStatus.connected.first { it }
+                continue
+            }
             // Disconnected — go passive only if we stay disconnected for the whole window;
             // a reconnect within it cancels the attempt.
             val reconnected = withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } }
-            // If we stayed idle and successfully went passive, this scope ends. Otherwise (power-
-            // save off, or no CDM association to wake us) loop and retry rather than going dark.
-            if (reconnected == null && goPassive()) return
+            if (reconnected != null) continue // came back on its own
+            // Power-save off, or couldn't arm the scan → stay foreground-active and retry next cycle.
+            if (!goPassive()) continue
+            PresenceStatus.connected.first { it } // passive: block until the proximity watch wakes us
         }
     }
 
     /** Auto idle→passive: gated on power-save being on and not locked. @return true iff passive. */
     private fun goPassive(): Boolean {
-        if (goingPassive) return true
+        if (passive) return true
         // While locked, BLE is already torn down by monitorLock — don't go passive; just keep
         // the (cheap) foreground service alive until the watch is unlocked.
         if (locked) return false
@@ -207,23 +225,38 @@ class PresenceService : Service() {
     }
 
     /**
-     * Stop the service to idle passively; the OS cold-starts us on approach via CDM presence
-     * observation. Used by auto-idle AND the manual button. Refuses to go dark if there's no CDM
-     * association (nothing would wake us) — stays foreground instead.
+     * Enter passive idle WITHOUT stopping the service: tear down BLE, release the wake lock, and
+     * arm the in-process proximity watch. The foreground notification stays up (so we can rebuild
+     * on approach without a background FGS-start). Used by auto-idle AND the manual button.
      */
     private fun enterPassive(): Boolean {
-        if (goingPassive) return true
-        EnrollmentStore(this).load() ?: run { stopSelf(); return true }
-        val cdm = CompanionManager(this)
-        if (!cdm.isAssociated()) {
-            DebugLog.add("presence: passive requested but no CDM association — staying foreground")
-            return false
-        }
-        cdm.startObserving() // idempotent; ensure the OS will wake us on approach
-        DebugLog.add("presence: → passive (service stopping); CDM observing for approach")
-        goingPassive = true
-        stopSelf()
+        if (passive) return true
+        val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
+        passive = true
+        _passive.value = true
+        scope.launch { stopBle() }
+        releaseWakeLock()
+        val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
+        DebugLog.add("presence: → passive (idle, service alive); proximity watch=$watching")
+        updateNotification(PASSIVE_TEXT)
         return true
+    }
+
+    /** Proximity woke us (or unlock): leave passive — re-acquire the wake lock and rebuild BLE. */
+    private fun exitPassive() {
+        if (!passive) return
+        passive = false
+        _passive.value = false
+        ProximityWake.stopScan(this, proximityCallback)
+        if (locked) {
+            DebugLog.add("presence: proximity woke but watch locked — staying down")
+            updateNotification(LOCKED_TEXT)
+            return
+        }
+        acquireWakeLock()
+        startBle()
+        updateNotification(PresenceStatus.summary.value)
+        DebugLog.add("presence: proximity wake → active")
     }
 
     // Runs as [loopJob]. Sessions are launched as CHILDREN (structured concurrency) so
@@ -324,11 +357,11 @@ class PresenceService : Service() {
 
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
-        DebugLog.add("presence: stopping (passive=$goingPassive)")
+        DebugLog.add("presence: stopping")
         _running.value = false
-        // CDM presence observation lives in the OS independent of this service — it's set up /
-        // torn down by the passive toggle (and key deactivate) in SetupViewModel, not here, so a
-        // passive stop keeps us wakeable while a user deactivate has already stopped observing.
+        _passive.value = false
+        // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
+        ProximityWake.stopScan(this, proximityCallback)
         // Cancel the coroutine scope FIRST so the notification observer is gone before
         // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
         // standalone notification that outlives the service. Then remove the FG
@@ -348,16 +381,21 @@ class PresenceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
         private const val STAGGER_MS = 1_500L
-        /** No link UP for this long → drop to passive (offloaded proximity wake). */
+        /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). */
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
         /** How often to check the watch lock state (no reliable "device locked" broadcast). */
         private const val LOCK_POLL_MS = 2_000L
         private const val LOCKED_TEXT = "Watch locked · key paused"
+        private const val PASSIVE_TEXT = "Passive · waiting for vehicle"
 
         /** Live "is the presence service running" — observed by the UI for the active/passive flip. */
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running
         val isRunning: Boolean get() = _running.value
+
+        /** Live "is the service idling passively" (running, BLE down, scanning for approach). */
+        private val _passive = MutableStateFlow(false)
+        val passive: StateFlow<Boolean> = _passive
 
         const val ACTION_GO_PASSIVE = "org.fivesevenfive.wearvian.GO_PASSIVE"
 

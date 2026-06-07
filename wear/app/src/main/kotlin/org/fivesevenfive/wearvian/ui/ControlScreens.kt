@@ -128,7 +128,7 @@ fun ControlScreens(
                     0 -> KeyPage(state, status, onTogglePresence, onCommand)
                     1 -> ClosuresPage(state.inFlight, status, onCommand)
                     2 -> SignalPage(state.inFlight, onCommand)
-                    else -> SettingsPage(state.proximityWakeEnabled, state.deviceSecure, onProximityWakeChange, onStartPassive)
+                    else -> SettingsPage(state, onProximityWakeChange, onStartPassive)
                 }
             }
         }
@@ -159,11 +159,12 @@ private fun KeyPage(
             diameter = 60.dp,
             onClick = { onTogglePresence(!armed) },
         )
-        // Tri-state: off → not armed; active → armed + service running; passive → armed
-        // but auto power-save dropped the service (still armed, wakes on approach).
+        // Tri-state: off → not armed; passive → armed but idling (service alive, BLE down,
+        // watching for the car's approach); active → armed + sessions up.
         Label(
             when {
                 !armed -> "Key off"
+                state.presencePassive -> "Key passive"
                 state.presenceRunning -> "Key active"
                 else -> "Key passive"
             },
@@ -256,18 +257,18 @@ private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
 
 @Composable
 private fun SettingsPage(
-    proximityWakeOn: Boolean,
-    deviceSecure: Boolean,
+    state: SetupUiState,
     onChange: (Boolean) -> Unit,
     onStartPassive: () -> Unit,
 ) {
+    val on = state.proximityWakeEnabled
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Header("Settings")
-        if (!deviceSecure) {
+        if (!state.deviceSecure) {
             Text(
                 "⚠ No watch lock set — remove-from-wrist protection is OFF",
                 color = WARN,
@@ -275,17 +276,28 @@ private fun SettingsPage(
                 textAlign = TextAlign.Center,
             )
         }
+        // Auto power-save: after an idle stretch the key drops to passive (notification stays up,
+        // wake lock released, watching for the car). Plain toggle — works anywhere.
         Image(
-            imageVector = if (proximityWakeOn) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
-            contentDescription = if (proximityWakeOn) "Auto power-save on" else "Auto power-save off",
-            modifier = Modifier.width(64.dp).height(40.dp).clickable { onChange(!proximityWakeOn) },
-            colorFilter = ColorFilter.tint(if (proximityWakeOn) GOLD else DIM),
+            imageVector = if (on) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
+            contentDescription = if (on) "Auto power-save on" else "Auto power-save off",
+            modifier = Modifier.width(64.dp).height(40.dp).clickable { onChange(!on) },
+            colorFilter = ColorFilter.tint(if (on) GOLD else DIM),
         )
-        Label("Auto power-save")
+        Text(
+            "Auto power save",
+            color = Color.White,
+            fontSize = 13.sp,
+            maxLines = 1,
+            softWrap = false,
+            textAlign = TextAlign.Center,
+        )
         Text(
             "Start passive mode",
             color = GOLD,
             fontSize = 12.sp,
+            maxLines = 1,
+            softWrap = false,
             textAlign = TextAlign.Center,
             modifier = Modifier.clickable { onStartPassive() }.padding(top = 4.dp),
         )
