@@ -594,6 +594,9 @@ prober found no match) — but moot now that 0x1c gives plaintext status directl
   other static bytes `[8]=0x28`,`[11]=0x50`,`[12]=0x78` unidentified (range/temp/limit?).
 - Full decode now: `[0]`=wake/sleep, `[1]`=doors, `[2]`=frunk/liftgate(/charge-port), `[3]`=windows,
   `[5]`=SoC?, rest static/unknown.
+  > **Superseded 2026-06-07:** `[5]`=SoC, `[7]`=cabin °C, `[8..9]`=range km are now confirmed (the
+  > "byte-identical across all sessions" note only held within one day's data). See the 2026-06-07
+  > section at the bottom of this file. This overturns the F1 "battery/range = cloud-only" call.
 
 ### Refinement 2 (2026-06-06, locks capture — decode essentially complete)
 - **LOCK** = high nibbles of `[1]` (0xf0) and `[2]` (0xa0): set=locked, clear=unlocked. Confirmed by two
@@ -607,3 +610,39 @@ prober found no match) — but moot now that 0x1c gives plaintext status directl
   GraphQL only, no BLE fields). Don't try to read battery from 0x1c.
 - Final 0x1c map: `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk0x08/liftgate0x04,
   `[3]`=windows, `[4..15]`=static config. Everything needed for status icons is here except charge-port (cloud).
+
+---
+
+## 2026-06-07 — 0x1c carries SoC, range, and cabin temp (supersedes "battery = cloud-only")
+
+A new on-vehicle capture (`sunday-status.log`) with **independent ground truth** — SoC 48.4%,
+range 137 mi, cabin 86°F, climate setpoint 69°F — cracked three telemetry bytes in the 16-byte
+status. The earlier "`[4..15]` byte-identical / battery is cloud-only" conclusion was an artifact
+of comparing only **same-day** sessions; across days these bytes move with the real values.
+
+Sunday status (`100f0c0f0030111edc00005078000000`) vs two documented prior captures:
+
+| byte | sunday | prior-A | prior-B | field | check |
+|------|--------|---------|---------|-------|-------|
+| `[5]` | 48 | 59 | 65 | **SoC, integer %** | sunday 48 == 48.4% ✓ |
+| `[7]` | 30 | 14 | 24 | **cabin temp, °C** | sunday 30 °C == 86 °F ✓ |
+| `[8..9]` (LE16) | 220 | 266 | 296 | **est. range, km** | sunday 220 km == 137 mi ✓ |
+| `[6]`,`[11]`,`[12]` | 17,80,120 | 17,80,120 | 17,80,120 | constant config | unchanged 3 days |
+
+**Independent cross-check (no unit assumption needed):** range_mi ÷ SoC% × 100 gives the implied
+full-charge range — 285 / 280 / 283 mi across the three captures. That they all land on ~282 mi
+(spot-on for an R1S) confirms `[5]`=SoC and `[8..9]`=range·km beyond the single ground-truth point.
+
+**Climate setpoint (69°F) NOT located.** The only constant-looking byte (`[6]`=0x11=17) never moved
+across three days when the setpoint surely did, so it's fixed config, not the setpoint. To find it,
+capture a frame **before and after deliberately changing the setpoint** (and the cabin/outside temps)
+so the changing byte is isolated — same correlate-the-diff method that cracked the closures.
+
+Implemented in `service/VehicleStatus.kt`: `State` now exposes `socPercent`, `cabinTempC`, `rangeKm`
+(null when the frame is too short), with a known-answer test (`VehicleStatusTest`) pinned to the
+Sunday frame. Charge **limit** is still absent (cloud only). UI wiring (a SoC/range/temp readout) is
+the easy follow-up.
+
+**Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
+`[3]`=windows, `[5]`=SoC %, `[6]`=const, `[7]`=cabin °C, `[8..9]`=range km (LE), `[11]`=const `0x50`,
+`[12]`=const `0x78`, `[4]`/`[10]`/`[13..15]`=unknown/zero, climate setpoint + charge-port = not here.

@@ -2,6 +2,7 @@ package org.fivesevenfive.wearvian.service
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,6 +69,41 @@ class VehicleStatusTest {
         assertTrue(s.anyDoorOpen)
         assertTrue(s.anyWindowOpen)
     }
+
+    @Test
+    fun decodesTelemetryFromRealSundayFrame() {
+        // Captured on-vehicle 2026-06-07 (sunday-status.log). Ground truth at capture time:
+        // SoC 48.4%, range 137 mi (= 220 km), cabin 86°F (= 30°C).
+        val frame = hex("01000000" + "100f0c0f0030111edc00005078000000")
+        VehicleStatus.update(frame)
+        val s = VehicleStatus.state.value
+        assertEquals(48, s.socPercent)
+        assertEquals(30, s.cabinTempC) // 30°C == 86°F
+        assertEquals(220, s.rangeKm)   // 220 km == 137 mi
+    }
+
+    @Test
+    fun rangeIsLittleEndian16Bit() {
+        // status[8]=0x0a, status[9]=0x01 → 0x010a = 266 km (a documented prior capture)
+        VehicleStatus.update(hex("00000000" + "10070c0f003b110e0a01005078000000"))
+        assertEquals(266, VehicleStatus.state.value.rangeKm)
+        assertEquals(59, VehicleStatus.state.value.socPercent)
+        assertEquals(14, VehicleStatus.state.value.cabinTempC)
+    }
+
+    @Test
+    fun telemetryIsNullWhenFrameTooShort() {
+        // 4-byte counter + only status[0..3]: closures decode, telemetry stays null.
+        VehicleStatus.update(frame(0x00, 0xff, 0xac, 0x0f))
+        val s = VehicleStatus.state.value
+        assertTrue(s.valid)
+        assertNull(s.socPercent)
+        assertNull(s.cabinTempC)
+        assertNull(s.rangeKm)
+    }
+
+    private fun hex(s: String): ByteArray =
+        s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     @Test
     fun shortFrameIsIgnored() {

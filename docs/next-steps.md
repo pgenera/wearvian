@@ -52,8 +52,11 @@ protocol unknowns.
 - **Tile cold-start has no state shading.** The last-known status is RAM-only, so a tile
   rendered after the process is killed shows no shading until the service is alive again.
   Accepted trade-off of the no-disk decision.
-- **State of charge / range / charge limit are cloud-only** — confirmed absent from the BLE
-  `0x1c` stream. Any battery display goes through the companion / a future M4 cloud path.
+- **SoC, range, and cabin temp ARE on BLE** (decoded 2026-06-07 from the `0x1c` stream —
+  `[5]`=SoC %, `[7]`=cabin °C, `[8..9]`=range km; see `docs/passive-entry-protocol.md`). The
+  parser exposes them; a UI readout is an easy follow-up. **Still cloud-only:** charge limit and
+  the climate **setpoint** (not found in the frame — needs a capture that changes it to isolate
+  the byte).
 
 ## Housekeeping
 - Delete the merged feature branches (`wearvian-m1-phone-key`, `wearvian-m2-proximity-wake`,
