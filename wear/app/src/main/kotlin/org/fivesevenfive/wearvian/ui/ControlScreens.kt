@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Luggage
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.ToggleOff
 import androidx.compose.material.icons.filled.ToggleOn
 import androidx.compose.material.icons.filled.VolumeUp
@@ -66,7 +67,7 @@ import androidx.wear.compose.material.TimeText
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.service.VehicleStatus
-import kotlin.math.roundToInt
+import org.fivesevenfive.wearvian.util.Units
 
 private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
@@ -206,6 +207,14 @@ private fun KeyPage(
                 color = if (status.live) WARN else DIM, fontSize = 10.sp, textAlign = TextAlign.Center,
             )
         }
+        // Cabin temperature, small and subtle — localized to the watch's units (°F/°C).
+        status.cabinTempC?.takeIf { status.valid }?.let { c ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(Icons.Filled.Thermostat, null, Modifier.size(11.dp), colorFilter = ColorFilter.tint(DIM))
+                Spacer(Modifier.width(3.dp))
+                Text(Units.temp(c), color = if (status.live) Color.White else DIM, fontSize = 10.sp)
+            }
+        }
     }
 }
 
@@ -266,9 +275,9 @@ private fun ChargeStatusPage(status: VehicleStatus.State) {
                 Spacer(Modifier.width(6.dp))
                 Text("${status.socPercent}%", color = primary, fontSize = 30.sp)
             }
-            // Estimated range — shown in miles (the decoded field is km; US app convention).
+            // Estimated range — localized to the watch's distance units (mi/km).
             status.rangeKm?.let { km ->
-                Text("${(km / 1.609344).roundToInt()} mi", color = primary, fontSize = 15.sp)
+                Text(Units.range(km), color = primary, fontSize = 15.sp)
             }
             // Charge state / live power. Gold while charging, red on a fault, dim otherwise.
             val (line, color) = when (status.chargeState) {
