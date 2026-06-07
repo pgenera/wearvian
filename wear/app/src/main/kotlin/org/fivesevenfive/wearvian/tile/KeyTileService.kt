@@ -267,16 +267,17 @@ class KeyTileService : TileService() {
         const val WHITE = 0xFFFFFFFF.toInt()
         const val BTN_BG = 0xFF1C1C1C.toInt()
         const val STALE = 0xFF9A9A9A.toInt() // app DIM gray — last-known (not live) state
-        // Button + glyph sizing. Kept compact so the hexagon fits inside the round face.
-        const val KEY_BTN_DP = 56f
-        const val CMD_BTN_DP = 44f
-        const val KEY_ICON_DP = 34f
-        const val CMD_ICON_DP = 24f
-        // Inter-button gaps: tight in the middle (around the big key), wider top/bottom so the
-        // outer six sit on a hex ring rather than a square.
-        const val MID_GAP = 6f
-        const val TOP_GAP = 28f
-        const val ROW_GAP = 6f
+        // Button + glyph sizing. Larger ring buttons (like Home Assistant's 7-circle tile),
+        // still fitting inside the round face — the top/bottom pair are the limiting corners.
+        const val KEY_BTN_DP = 60f
+        const val CMD_BTN_DP = 50f
+        const val KEY_ICON_DP = 36f
+        const val CMD_ICON_DP = 30f
+        // Inter-button gaps: tight all round so the six outer buttons pack close to the key on a
+        // hex ring (a small top/bottom gap keeps the pairs from touching).
+        const val MID_GAP = 4f
+        const val TOP_GAP = 10f
+        const val ROW_GAP = 2f
 
         // Process-lifetime scope so a queued command survives the TileService instance
         // being torn down between requests (BLE send takes a few seconds).

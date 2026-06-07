@@ -16,6 +16,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -24,12 +25,16 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ProximityWake
+import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
@@ -62,6 +67,7 @@ class PresenceService : Service() {
     private var notifJob: Job? = null
     private var idleJob: Job? = null
     private var lockJob: Job? = null
+    private var tileJob: Job? = null
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
@@ -125,6 +131,8 @@ class PresenceService : Service() {
         idleJob = scope.launch { monitorIdle() }
         // Tear down / restore BLE as the watch locks / unlocks.
         lockJob = scope.launch { monitorLock() }
+        // Keep the (background) tile's vehicle-state shading in sync, heavily debounced.
+        tileJob = scope.launch { refreshTileOnStatusChange() }
         return START_STICKY
     }
 
@@ -210,6 +218,22 @@ class PresenceService : Service() {
         }
     }
 
+    /**
+     * Refresh the tile when the vehicle state it draws actually changes — heavily debounced,
+     * because the 0x1c stream flickers fast (mid-unlock especially) and a tile update is
+     * expensive/rate-limited. Maps to only the fields the tile renders so changes it ignores
+     * (doors/windows) don't trigger churn, dedupes, then waits for the state to settle. Refreshes
+     * are no-ops while the app is foreground (see [TileRefresher]).
+     */
+    @OptIn(FlowPreview::class)
+    private suspend fun refreshTileOnStatusChange() {
+        VehicleStatus.state
+            .map { listOf(it.valid, it.live, it.locked, it.frunkOpen, it.liftgateOpen) }
+            .distinctUntilChanged()
+            .debounce(TILE_REFRESH_DEBOUNCE_MS)
+            .collect { TileRefresher.refresh(this) }
+    }
+
     /** Auto idle→passive: gated on power-save being on and not locked. @return true iff passive. */
     private fun goPassive(): Boolean {
         if (passive) return true
@@ -240,6 +264,7 @@ class PresenceService : Service() {
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         DebugLog.add("presence: → passive (idle, service alive); proximity watch=$watching")
         updateNotification(PASSIVE_TEXT)
+        TileRefresher.refresh(this) // active→passive: tile state changed
         return true
     }
 
@@ -258,6 +283,7 @@ class PresenceService : Service() {
         startBle()
         updateNotification(PresenceStatus.summary.value)
         DebugLog.add("presence: proximity wake → active")
+        TileRefresher.refresh(this) // passive→active: tile state changed
     }
 
     // Runs as [loopJob]. Sessions are launched as CHILDREN (structured concurrency) so
@@ -369,7 +395,8 @@ class PresenceService : Service() {
         // notification explicitly so deactivating the key clears it.
         scope.cancel()
         PresenceStatus.reset()
-        VehicleStatus.clear() // vehicle state is unknown once we stop listening
+        VehicleStatus.clear() // keep last-known state but mark it stale (no session confirming it)
+        TileRefresher.refresh(this) // active/passive→off: key no longer armed; refresh the tile
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
@@ -386,6 +413,8 @@ class PresenceService : Service() {
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
         /** How often to check the watch lock state (no reliable "device locked" broadcast). */
         private const val LOCK_POLL_MS = 2_000L
+        /** Settle time before refreshing the tile on a 0x1c change — the stream flickers fast. */
+        private const val TILE_REFRESH_DEBOUNCE_MS = 3_000L
         private const val LOCKED_TEXT = "Watch locked · key paused"
         private const val PASSIVE_TEXT = "Passive · waiting for vehicle"
 

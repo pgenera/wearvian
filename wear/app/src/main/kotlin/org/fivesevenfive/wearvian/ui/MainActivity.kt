@@ -23,6 +23,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
 import androidx.wear.compose.material.SwipeToDismissBox
+import org.fivesevenfive.wearvian.util.AppForeground
 import org.fivesevenfive.wearvian.util.logi
 
 class MainActivity : ComponentActivity() {
@@ -41,6 +42,17 @@ class MainActivity : ComponentActivity() {
 
     /** Set when launched from the tile's key control; consumed once we reach BONDED. */
     private val activateKeyRequest = mutableStateOf(false)
+
+    // Foreground flag gates tile refreshes (the tile is hidden behind the app while it's up).
+    override fun onStart() {
+        super.onStart()
+        AppForeground.inForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        AppForeground.inForeground = false
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

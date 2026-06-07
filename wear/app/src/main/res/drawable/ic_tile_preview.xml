@@ -12,58 +12,64 @@
         android:pathData="M0,50 a50,50 0 1,0 100,0 a50,50 0 1,0 -100,0 z" />
 
     <!-- six control buttons (dark) -->
-    <path android:fillColor="#FF1C1C1C" android:pathData="M21,24 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
-    <path android:fillColor="#FF1C1C1C" android:pathData="M57,24 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
-    <path android:fillColor="#FF1C1C1C" android:pathData="M10,50 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
-    <path android:fillColor="#FF1C1C1C" android:pathData="M68,50 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
-    <path android:fillColor="#FF1C1C1C" android:pathData="M21,76 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
-    <path android:fillColor="#FF1C1C1C" android:pathData="M57,76 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M21.4,20.4 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M52.6,20.4 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M6,50 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M68,50 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M21.4,79.6 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
+    <path android:fillColor="#FF1C1C1C" android:pathData="M52.6,79.6 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z" />
 
     <!-- center key (gold) -->
     <path android:fillColor="#FFFEDD5C" android:pathData="M35,50 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 z" />
 
     <!-- top: unlock (TL) / lock (TR) -->
-    <group android:scaleX="0.55" android:scaleY="0.55" android:translateX="25.4" android:translateY="17.4">
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="24.8" android:translateY="10.8">
         <path android:fillColor="#FFFFFFFF"
             android:pathData="M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6h1.9c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10c0,-1.1 -0.9,-2 -2,-2zM12,17c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2z" />
     </group>
-    <group android:scaleX="0.55" android:scaleY="0.55" android:translateX="61.4" android:translateY="17.4">
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="56" android:translateY="10.8">
         <path android:fillColor="#FFFFFFFF"
             android:pathData="M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10c0,-1.1 -0.9,-2 -2,-2zM12,17c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2zM15.1,8H8.9V6c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2z" />
     </group>
 
-    <!-- middle: frunk open (ML) / frunk close (MR) -->
-    <group android:scaleX="0.75" android:scaleY="0.75" android:translateX="12" android:translateY="41">
-        <path android:fillColor="#FFFFFFFF" android:pathData="M12,2 L19,7.5 L14.5,7.5 L14.5,12 L9.5,12 L9.5,7.5 L5,7.5 Z" />
-        <group android:rotation="-20" android:pivotX="18" android:pivotY="13.65">
-            <path android:fillColor="#FFFFFFFF" android:pathData="M5.6,12.9 H18.4 A0.6,0.6 0 0 1 19,13.5 V13.8 A0.6,0.6 0 0 1 18.4,14.4 H5.6 A0.6,0.6 0 0 1 5,13.8 V13.5 A0.6,0.6 0 0 1 5.6,12.9 Z" />
+    <!-- middle: frunk open (ML) / frunk close (MR) — MDI car + arrow -->
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="9.4" android:translateY="40.4">
+        <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="0">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M12,2 L19,7.5 L14.5,7.5 L14.5,12 L9.5,12 L9.5,7.5 L5,7.5 Z" />
         </group>
-        <path android:fillColor="#FFFFFFFF" android:pathData="M6.7,15 H17.3 A1.2,1.2 0 0 1 18.5,16.2 V20.8 A1.2,1.2 0 0 1 17.3,22 H6.7 A1.2,1.2 0 0 1 5.5,20.8 V16.2 A1.2,1.2 0 0 1 6.7,15 Z" />
+        <group android:scaleX="0.6" android:scaleY="0.6" android:translateX="4.8" android:translateY="8.4">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M5,11L6.5,6.5H17.5L19,11M17.5,16A1.5,1.5 0 0,1 16,14.5A1.5,1.5 0 0,1 17.5,13A1.5,1.5 0 0,1 19,14.5A1.5,1.5 0 0,1 17.5,16M6.5,16A1.5,1.5 0 0,1 5,14.5A1.5,1.5 0 0,1 6.5,13A1.5,1.5 0 0,1 8,14.5A1.5,1.5 0 0,1 6.5,16M18.92,6C18.72,5.42 18.16,5 17.5,5H6.5C5.84,5 5.28,5.42 5.08,6L3,12V20A1,1 0 0,0 4,21H5A1,1 0 0,0 6,20V19H18V20A1,1 0 0,0 19,21H20A1,1 0 0,0 21,20V12L18.92,6Z" />
+        </group>
     </group>
-    <group android:scaleX="0.75" android:scaleY="0.75" android:translateX="70" android:translateY="41">
-        <path android:fillColor="#FFFFFFFF" android:pathData="M9.5,2 H14.5 V6.5 H19 L12,12 L5,6.5 H9.5 Z" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M5.6,12.9 H18.4 A0.6,0.6 0 0 1 19,13.5 V13.8 A0.6,0.6 0 0 1 18.4,14.4 H5.6 A0.6,0.6 0 0 1 5,13.8 V13.5 A0.6,0.6 0 0 1 5.6,12.9 Z" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M6.7,15 H17.3 A1.2,1.2 0 0 1 18.5,16.2 V20.8 A1.2,1.2 0 0 1 17.3,22 H6.7 A1.2,1.2 0 0 1 5.5,20.8 V16.2 A1.2,1.2 0 0 1 6.7,15 Z" />
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="71.4" android:translateY="40.4">
+        <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="0">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M9.5,2 H14.5 V6.5 H19 L12,12 L5,6.5 H9.5 Z" />
+        </group>
+        <group android:scaleX="0.6" android:scaleY="0.6" android:translateX="4.8" android:translateY="8.4">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M5,11L6.5,6.5H17.5L19,11M17.5,16A1.5,1.5 0 0,1 16,14.5A1.5,1.5 0 0,1 17.5,13A1.5,1.5 0 0,1 19,14.5A1.5,1.5 0 0,1 17.5,16M6.5,16A1.5,1.5 0 0,1 5,14.5A1.5,1.5 0 0,1 6.5,13A1.5,1.5 0 0,1 8,14.5A1.5,1.5 0 0,1 6.5,16M18.92,6C18.72,5.42 18.16,5 17.5,5H6.5C5.84,5 5.28,5.42 5.08,6L3,12V20A1,1 0 0,0 4,21H5A1,1 0 0,0 6,20V19H18V20A1,1 0 0,0 19,21H20A1,1 0 0,0 21,20V12L18.92,6Z" />
+        </group>
     </group>
 
-    <!-- bottom: hatch open (BL) / hatch close (BR) -->
-    <group android:scaleX="0.75" android:scaleY="0.75" android:translateX="23" android:translateY="67">
-        <path android:fillColor="#FFFFFFFF" android:pathData="M12,2 L19,7.5 L14.5,7.5 L14.5,12 L9.5,12 L9.5,7.5 L5,7.5 Z" />
-        <group android:rotation="-20" android:pivotX="18" android:pivotY="13.65">
-            <path android:fillColor="#FFFFFFFF" android:pathData="M10,12.9 A2,2 0 0 0 14,12.9 Z" />
-            <path android:fillColor="#FFFFFFFF" android:pathData="M5.6,12.9 H18.4 A0.6,0.6 0 0 1 19,13.5 V13.8 A0.6,0.6 0 0 1 18.4,14.4 H5.6 A0.6,0.6 0 0 1 5,13.8 V13.5 A0.6,0.6 0 0 1 5.6,12.9 Z" />
+    <!-- bottom: hatch open (BL) / hatch close (BR) — MDI car-back + arrow -->
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="24.8" android:translateY="70">
+        <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="0">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M12,2 L19,7.5 L14.5,7.5 L14.5,12 L9.5,12 L9.5,7.5 L5,7.5 Z" />
         </group>
-        <path android:fillColor="#FFFFFFFF" android:pathData="M6.7,15 H17.3 A1.2,1.2 0 0 1 18.5,16.2 V20.8 A1.2,1.2 0 0 1 17.3,22 H6.7 A1.2,1.2 0 0 1 5.5,20.8 V16.2 A1.2,1.2 0 0 1 6.7,15 Z" />
+        <group android:scaleX="0.6" android:scaleY="0.6" android:translateX="4.8" android:translateY="8.4">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M6,11L7,7H17L18,11M18.92,6C18.71,5.4 18.14,5 17.5,5H6.5C5.86,5 5.29,5.4 5.08,6L3,12V20A1,1 0 0,0 4,21H5A1,1 0 0,0 6,20V18H18V20A1,1 0 0,0 19,21H20A1,1 0 0,0 21,20V12L18.92,6M7,16H5V14H7V16M19,16H17V14H19V16M14,16H10V14H14V16Z" />
+        </group>
     </group>
-    <group android:scaleX="0.75" android:scaleY="0.75" android:translateX="59" android:translateY="67">
-        <path android:fillColor="#FFFFFFFF" android:pathData="M9.5,2 H14.5 V6.5 H19 L12,12 L5,6.5 H9.5 Z" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M10,12.9 A2,2 0 0 0 14,12.9 Z" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M5.6,12.9 H18.4 A0.6,0.6 0 0 1 19,13.5 V13.8 A0.6,0.6 0 0 1 18.4,14.4 H5.6 A0.6,0.6 0 0 1 5,13.8 V13.5 A0.6,0.6 0 0 1 5.6,12.9 Z" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M6.7,15 H17.3 A1.2,1.2 0 0 1 18.5,16.2 V20.8 A1.2,1.2 0 0 1 17.3,22 H6.7 A1.2,1.2 0 0 1 5.5,20.8 V16.2 A1.2,1.2 0 0 1 6.7,15 Z" />
+    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="56" android:translateY="70">
+        <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="0">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M9.5,2 H14.5 V6.5 H19 L12,12 L5,6.5 H9.5 Z" />
+        </group>
+        <group android:scaleX="0.6" android:scaleY="0.6" android:translateX="4.8" android:translateY="8.4">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M6,11L7,7H17L18,11M18.92,6C18.71,5.4 18.14,5 17.5,5H6.5C5.86,5 5.29,5.4 5.08,6L3,12V20A1,1 0 0,0 4,21H5A1,1 0 0,0 6,20V18H18V20A1,1 0 0,0 19,21H20A1,1 0 0,0 21,20V12L18.92,6M7,16H5V14H7V16M19,16H17V14H19V16M14,16H10V14H14V16Z" />
+        </group>
     </group>
 
     <!-- center key glyph (black on gold) -->
-    <group android:scaleX="0.8" android:scaleY="0.8" android:translateX="40.4" android:translateY="40.4">
+    <group android:scaleX="0.85" android:scaleY="0.85" android:translateX="39.8" android:translateY="39.8">
         <path android:fillColor="#FF000000"
             android:pathData="M12.65,10C11.83,7.67 9.61,6 7,6c-3.31,0 -6,2.69 -6,6s2.69,6 6,6c2.61,0 4.83,-1.67 5.65,-4H17v4h4v-4h2v-4H12.65zM7,14c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2z" />
     </group>
