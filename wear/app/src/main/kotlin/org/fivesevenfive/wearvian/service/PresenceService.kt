@@ -235,6 +235,7 @@ class PresenceService : Service() {
         passive = true
         _passive.value = true
         scope.launch { stopBle() }
+        VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         DebugLog.add("presence: → passive (idle, service alive); proximity watch=$watching")

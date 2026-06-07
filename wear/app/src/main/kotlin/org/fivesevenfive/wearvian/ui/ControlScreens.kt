@@ -177,26 +177,29 @@ private fun KeyPage(
                 onCommand(Cmd.LOCK_ALL, "LOCK")
             }
         }
-        // Live lock state from the 0x1c stream, shown colorblind-safe: the padlock GLYPH
-        // differs (open vs closed shackle) AND it's spelled out — no reliance on color.
+        // Lock state from the 0x1c stream, shown colorblind-safe: the padlock GLYPH differs
+        // (open vs closed shackle) AND it's spelled out — no reliance on color. A stale
+        // (persisted, not currently confirmed) state renders gray instead of white.
         if (status.valid) {
+            val stateColor = if (status.live) Color.White else DIM
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
                     if (status.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
-                    null, Modifier.size(14.dp), colorFilter = ColorFilter.tint(Color.White),
+                    null, Modifier.size(14.dp), colorFilter = ColorFilter.tint(stateColor),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (status.locked) "Locked" else "Unlocked", color = Color.White, fontSize = 11.sp)
+                Text(if (status.locked) "Locked" else "Unlocked", color = stateColor, fontSize = 11.sp)
             }
         }
-        // Surface genuinely useful live state when we have it (text, not color).
+        // Surface genuinely useful state when we have it (text, not color). Live = red warning;
+        // stale = gray (last known, not confirmed), matching the dimmed affordances elsewhere.
         if (status.valid && (status.anyDoorOpen || status.anyWindowOpen)) {
             Text(
                 listOfNotNull(
                     if (status.anyDoorOpen) "door open" else null,
                     if (status.anyWindowOpen) "window open" else null,
                 ).joinToString(" · "),
-                color = WARN, fontSize = 10.sp, textAlign = TextAlign.Center,
+                color = if (status.live) WARN else DIM, fontSize = 10.sp, textAlign = TextAlign.Center,
             )
         }
     }
@@ -210,18 +213,20 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
     ) {
         Header("Closures")
         // Frunk/hatch/window open-state come from the 0x1c stream. Charge-port door state
-        // is NOT in that frame (cloud-only), so it has no live indicator.
+        // is NOT in that frame (cloud-only), so it has no live indicator. A stale (persisted)
+        // state still lights the actionable button, just dimmed (gray, via [stale]).
+        val stale = status.valid && !status.live
         ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
             "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
-            open = status.frunkOpen, stateKnown = status.valid)
+            open = status.frunkOpen, stateKnown = status.valid, stale = stale)
         ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
             "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
-            open = status.liftgateOpen, stateKnown = status.valid)
+            open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
         // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
         // now that commands ride the live session (the old one-shot path no-op'd them).
         ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
             "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand,
-            open = status.anyWindowOpen, stateKnown = status.valid, upOpens = false)
+            open = status.anyWindowOpen, stateKnown = status.valid, stale = stale, upOpens = false)
         // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
@@ -318,6 +323,7 @@ private fun ClosureRow(
     onCommand: (Int, String) -> Unit,
     open: Boolean = false,
     stateKnown: Boolean = false,
+    stale: Boolean = false,
     upOpens: Boolean = true,
 ) {
     // Category icon + label, then open/close. The leading cluster has a FIXED width so the
@@ -342,7 +348,8 @@ private fun ClosureRow(
         fun arrow(glyph: ImageVector, opens: Boolean) {
             val code = if (opens) openCode else closeCode
             RoundIcon(glyph, if (opens) "Open $name" else "Close $name", Color.White, CLOSURE_BTN,
-                busy = code in inFlight, active = stateKnown && open != opens) {
+                busy = code in inFlight, active = stateKnown && open != opens,
+                activeFill = if (stale) DIM else Color.White) {
                 onCommand(code, if (opens) openLabel else closeLabel)
             }
         }
@@ -383,6 +390,8 @@ private fun RoundIcon(
     diameter: androidx.compose.ui.unit.Dp,
     busy: Boolean = false,
     active: Boolean = false,
+    /** Fill used when [active]; white for live state, gray for a stale (persisted) one. */
+    activeFill: Color = Color.White,
     onClick: () -> Unit,
 ) {
     val alpha = if (busy) {
@@ -398,10 +407,11 @@ private fun RoundIcon(
         1f
     }
     // [active] = this button is the actionable one for the closure's current state: invert to a
-    // bright filled circle with a dark glyph. The fill is a luminance/contrast change (not a hue),
-    // so it reads regardless of color vision and highlights the press that will change state.
+    // filled circle with a dark glyph. The fill is a luminance/contrast change (not a hue), so it
+    // reads regardless of color vision and highlights the press that will change state. A stale
+    // (persisted) state fills gray instead of white, so it reads as "last known, not confirmed".
     Box(
-        Modifier.size(diameter).clip(CircleShape).background(if (active) Color.White else BTN_BG)
+        Modifier.size(diameter).clip(CircleShape).background(if (active) activeFill else BTN_BG)
             .clickable(enabled = !busy, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

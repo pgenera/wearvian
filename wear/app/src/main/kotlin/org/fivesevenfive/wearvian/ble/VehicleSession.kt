@@ -368,7 +368,7 @@ class VehicleSession(
      * status, but run the decrypt prober too in case it's encrypted.
      */
     private fun onVehicleStatus(value: ByteArray) {
-        VehicleStatus.update(value) // publish parsed lock/closure state to the UI
+        VehicleStatus.update(value) // publish parsed lock/closure state to the UI (in-memory)
         val hex = value.toHexString()
         if (hex == lastStatus1cHex) return
         lastStatus1cHex = hex

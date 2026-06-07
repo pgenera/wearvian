@@ -8,6 +8,13 @@ import kotlinx.coroutines.flow.StateFlow
  * PRIMARY [org.fivesevenfive.wearvian.ble.VehicleSession] receives (only the PRIMARY link
  * subscribes 0x1c). Lets the UI reflect real lock/closure state instead of guessing.
  *
+ * State lives **in memory only** — it survives the UI closing while the foreground-service
+ * process is alive (so reopening the app shows the last-known state), but is gone once the
+ * process is killed (and so never survives a reboot); nothing is written to disk. When there's
+ * no live session, [clear] keeps the last value but marks it [State.live]`=false` (stale). The UI
+ * shows the same affordances from a stale state, just dimmed (gray instead of white) to signal it
+ * isn't being confirmed right now.
+ *
  * Frame = `[le32 counter] ‖ [16-byte status]`; layout decoded on-vehicle 2026-06-06
  * (docs/passive-entry-protocol.md):
  *   status[0] bit0      = asleep
@@ -20,8 +27,10 @@ import kotlinx.coroutines.flow.StateFlow
 object VehicleStatus {
 
     data class State(
-        /** True once a 0x1c frame has been parsed this session (else fields are unknown). */
+        /** True once a 0x1c frame has been parsed (else fields are unknown). */
         val valid: Boolean = false,
+        /** True while a current session is confirming this state; false when stale (last-known). */
+        val live: Boolean = false,
         val asleep: Boolean = false,
         val locked: Boolean = false,
         val frunkOpen: Boolean = false,
@@ -33,7 +42,7 @@ object VehicleStatus {
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> get() = _state
 
-    /** Parse a raw 0x1c frame (`[le32 counter][16B status]`) and publish. */
+    /** Parse a raw 0x1c frame (`[le32 counter][16B status]`) and publish (live). */
     fun update(frame: ByteArray) {
         if (frame.size < 4 + 4) return // need at least status[0..3]
         fun s(i: Int) = frame[4 + i].toInt() and 0xff
@@ -41,6 +50,7 @@ object VehicleStatus {
         // even with a closure open). [1]'s high nibble flickers (0x7f) mid-unlock.
         _state.value = State(
             valid = true,
+            live = true,
             asleep = (s(0) and 0x01) != 0,
             locked = (s(2) and 0xf0) != 0,
             frunkOpen = (s(2) and 0x08) == 0,
@@ -50,8 +60,12 @@ object VehicleStatus {
         )
     }
 
-    /** Reset to unknown (presence stopped / no session). */
+    /**
+     * Session stopped: keep the last-known state but mark it stale, so the UI keeps showing the
+     * same affordances dimmed rather than blanking out. No-op if we never had a state.
+     */
     fun clear() {
-        _state.value = State()
+        val cur = _state.value
+        if (cur.valid && cur.live) _state.value = cur.copy(live = false)
     }
 }
