@@ -6,7 +6,9 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -19,10 +21,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
 import androidx.wear.compose.material.SwipeToDismissBox
+import org.fivesevenfive.wearvian.ble.CompanionManager
 import org.fivesevenfive.wearvian.util.logi
 
 class MainActivity : ComponentActivity() {
@@ -37,6 +39,18 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             logi("permissions result: $grants")
+        }
+
+    // Activity-scoped VM — same instance Compose resolves via the local ViewModelStore.
+    private val setupVm: SetupViewModel by viewModels()
+    private val companion by lazy { CompanionManager(this) }
+
+    // Launches the CDM association chooser (passive mode's one-time setup) and reports the
+    // outcome back to the VM, which only persists "passive on" once the user confirms.
+    private val associationLauncher =
+        registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            if (result.resultCode == RESULT_OK) setupVm.onAssociationConfirmed()
+            else setupVm.onAssociationCancelled()
         }
 
     /** Set when launched from the tile's key control; consumed once we reach BONDED. */
@@ -58,8 +72,21 @@ class MainActivity : ComponentActivity() {
         intent?.removeExtra(EXTRA_ACTIVATE_KEY) // consume — don't re-activate on recreate
 
         setContent {
-            val vm: SetupViewModel = viewModel()
+            val vm = setupVm
             val state by vm.state
+            // Enabling passive mode asks us to show the CDM association dialog; launch its
+            // IntentSender and let the VM's result callbacks persist (or revert) the toggle.
+            LaunchedEffect(Unit) {
+                vm.associationRequest.collect {
+                    companion.requestAssociation(
+                        onPending = { sender ->
+                            associationLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                        },
+                        onCreated = { vm.onAssociationConfirmed() },
+                        onError = { vm.onAssociationCancelled() },
+                    )
+                }
+            }
             // The tile's key control launches us with EXTRA_ACTIVATE_KEY to also start
             // the mobile key. Activate once we're bonded (setPresence is idempotent).
             val activate by activateKeyRequest

@@ -29,7 +29,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
-import org.fivesevenfive.wearvian.ble.ProximityWake
+import org.fivesevenfive.wearvian.ble.CompanionManager
 import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
@@ -64,7 +64,7 @@ class PresenceService : Service() {
     private var lockJob: Job? = null
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
-    /** Set when we stop *on purpose* to idle passively — keeps the proximity wake armed. */
+    /** Set when we stop *on purpose* to idle passively (CDM presence-observation wakes us). */
     @Volatile private var goingPassive = false
 
     /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
@@ -81,9 +81,8 @@ class PresenceService : Service() {
             enterPassive()
             return START_NOT_STICKY
         }
-        // We're running now (possibly woken by proximity) — clear any armed offloaded scan.
+        // We're running now (possibly cold-started by CDM on approach).
         goingPassive = false
-        ProximityWake.disarm(this)
         startAsForeground()
         val enrollment = EnrollmentStore(this).load()
         if (enrollment == null) {
@@ -175,11 +174,9 @@ class PresenceService : Service() {
     }
 
     /**
-     * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), arm the
-     * hardware-offloaded proximity wake and stop the foreground service so we idle at
-     * near-zero battery. [VehicleProximityReceiver] brings us back on approach.
-     * [kotlinx.coroutines.flow.collectLatest] cancels the countdown the moment a link
-     * comes up.
+     * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), stop the foreground
+     * service so we idle at near-zero battery. The OS ([VehiclePresenceService] via CDM presence
+     * observation) cold-starts us again on approach. A reconnect within the window cancels it.
      */
     private suspend fun monitorIdle() {
         while (true) {
@@ -189,9 +186,8 @@ class PresenceService : Service() {
             // Disconnected — go passive only if we stay disconnected for the whole window;
             // a reconnect within it cancels the attempt.
             val reconnected = withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } }
-            // If we stayed idle and successfully went passive, this scope ends. If goPassive
-            // couldn't arm (BT off) or power-save is off, loop and retry rather than spinning
-            // foreground forever with no further attempt.
+            // If we stayed idle and successfully went passive, this scope ends. Otherwise (power-
+            // save off, or no CDM association to wake us) loop and retry rather than going dark.
             if (reconnected == null && goPassive()) return
         }
     }
@@ -199,8 +195,8 @@ class PresenceService : Service() {
     /** Auto idle→passive: gated on power-save being on and not locked. @return true iff passive. */
     private fun goPassive(): Boolean {
         if (goingPassive) return true
-        // While locked, BLE is already torn down by monitorLock — don't arm a proximity
-        // wake; just keep the (cheap) foreground service alive until the watch is unlocked.
+        // While locked, BLE is already torn down by monitorLock — don't go passive; just keep
+        // the (cheap) foreground service alive until the watch is unlocked.
         if (locked) return false
         if (!SettingsStore(this).proximityWakeEnabled) {
             DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
@@ -210,17 +206,21 @@ class PresenceService : Service() {
         return enterPassive()
     }
 
-    /** Arm the proximity wake and stop the service (used by auto-idle AND the manual button). */
+    /**
+     * Stop the service to idle passively; the OS cold-starts us on approach via CDM presence
+     * observation. Used by auto-idle AND the manual button. Refuses to go dark if there's no CDM
+     * association (nothing would wake us) — stays foreground instead.
+     */
     private fun enterPassive(): Boolean {
         if (goingPassive) return true
-        val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
-        val armed = ProximityWake.armForVehicle(this, enrollment.vasVehicleId)
-        DebugLog.add("presence: → passive; wake armed=$armed")
-        if (!armed) {
-            // Couldn't arm the wake — don't go dark; (auto path retries later).
-            DebugLog.add("presence: wake NOT armed")
+        EnrollmentStore(this).load() ?: run { stopSelf(); return true }
+        val cdm = CompanionManager(this)
+        if (!cdm.isAssociated()) {
+            DebugLog.add("presence: passive requested but no CDM association — staying foreground")
             return false
         }
+        cdm.startObserving() // idempotent; ensure the OS will wake us on approach
+        DebugLog.add("presence: → passive (service stopping); CDM observing for approach")
         goingPassive = true
         stopSelf()
         return true
@@ -326,9 +326,9 @@ class PresenceService : Service() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping (passive=$goingPassive)")
         _running.value = false
-        // If we're idling passively on purpose, KEEP the offloaded proximity wake armed
-        // so we get woken on approach. Any other stop (user deactivated the key) cancels it.
-        if (!goingPassive) ProximityWake.disarm(this)
+        // CDM presence observation lives in the OS independent of this service — it's set up /
+        // torn down by the passive toggle (and key deactivate) in SetupViewModel, not here, so a
+        // passive stop keeps us wakeable while a user deactivate has already stopped observing.
         // Cancel the coroutine scope FIRST so the notification observer is gone before
         // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
         // standalone notification that outlives the service. Then remove the FG

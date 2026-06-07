@@ -5,6 +5,9 @@
          (and the phone bundle, which lacks this feature, to phones). -->
     <uses-feature android:name="android.hardware.type.watch" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Passive mode wakes us via CompanionDeviceManager presence observation (optional —
+         the app works without it; only auto power-save needs it). -->
+    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
     <!-- BLE: we connect to a known device by name and never derive physical
          location, so we assert neverForLocation and avoid the location permission. -->
@@ -19,6 +22,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Keep the CPU running so the presence heartbeat keeps streaming with the screen off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Passive mode: let CompanionDeviceManager observe the phone key's presence and
+         cold-start our foreground service when it appears (FGS-start allowlisted). -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
 
     <application
         android:allowBackup="false"
@@ -47,11 +55,16 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
-        <!-- Woken by the OS (offloaded BLE scan PendingIntent) when the vehicle's beacon
-             comes into range while we idle passively; restarts PresenceService. -->
-        <receiver
-            android:name=".service.VehicleProximityReceiver"
-            android:exported="false" />
+        <!-- Bound by the OS when the associated phone key comes into range while we idle
+             passively; cold-starts PresenceService (FGS-start allowlisted). -->
+        <service
+            android:name=".service.VehiclePresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
 
         <!-- "Off" action on the presence notification: disarm the key + stop the service. -->
         <receiver

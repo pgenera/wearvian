@@ -9,11 +9,13 @@ class SettingsStore(context: Context) {
 
     /**
      * Auto power-save: after a stretch with no vehicle link, drop to passive (release the
-     * wake lock, stop the foreground service) and re-arm via the offloaded proximity scan.
-     * Default on. See docs/proximity-wake.md.
+     * wake lock, stop the foreground service). Re-waking on approach is handled by the OS via
+     * CompanionDeviceManager presence observation, which is allowlisted to cold-start our
+     * foreground service. **Default OFF** — enabling it triggers the one-time CDM association
+     * dialog (see [CompanionManager] / docs/proximity-wake.md).
      */
     var proximityWakeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, true)
+        get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, false)
         set(value) = prefs.edit().putBoolean(KEY_PROXIMITY_WAKE, value).apply()
 
     /**
