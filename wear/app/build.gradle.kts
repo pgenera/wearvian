@@ -65,6 +65,14 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests {
+            // Stub android.* calls (e.g. android.util.Log via util/Log.kt) return defaults
+            // instead of throwing, so framework-free logic can be unit-tested on the JVM.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -101,4 +109,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json on the unit-test classpath (the android.jar stub would otherwise be
+    // mocked away by returnDefaultValues), so EnrollmentContract JSON round-trips work.
+    testImplementation("org.json:json:20240303")
 }
