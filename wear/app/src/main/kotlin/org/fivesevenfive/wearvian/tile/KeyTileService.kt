@@ -89,35 +89,48 @@ class KeyTileService : TileService() {
         // once we have state; the fill is white when live, gray when stale (last-known).
         fun actionable(changes: Boolean) = st.valid && changes
 
+        // Size the whole hex to the actual face so it fills the watch (fixed dp looked small on
+        // larger screens). Fractions are tuned so the top/bottom pair — the limiting corners —
+        // stay inside the round face, while the key↔ring gap is preserved (not crowded).
+        val cfg = requestParams.deviceConfiguration
+        val dim = minOf(cfg.screenWidthDp, cfg.screenHeightDp).toFloat().let { if (it > 0f) it else FALLBACK_DIM }
+        val cmdBtn = dim * CMD_BTN_FRAC
+        val keyBtn = dim * KEY_BTN_FRAC
+        val cmdIcon = cmdBtn * CMD_ICON_FRAC
+        val keyIcon = keyBtn * KEY_ICON_FRAC
+        val midGap = dim * MID_GAP_FRAC
+        val topGap = dim * TOP_GAP_FRAC
+        val rowGap = dim * ROW_GAP_FRAC
+
         val grid = Column.Builder()
             .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
             // top: unlock / lock
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, actionable(st.locked), st.live))
-                    .addContent(Spacer.Builder().setWidth(dp(TOP_GAP)).build())
-                    .addContent(commandButton(ID_LOCK, ICON_LOCK, actionable(!st.locked), st.live))
+                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, actionable(st.locked), st.live, cmdBtn, cmdIcon))
+                    .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
+                    .addContent(commandButton(ID_LOCK, ICON_LOCK, actionable(!st.locked), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
-            .addContent(Spacer.Builder().setHeight(dp(ROW_GAP)).build())
+            .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
             // middle: frunk open / KEY / frunk close
             .addContent(
                 Row.Builder()
                     .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
-                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, actionable(!st.frunkOpen), st.live))
-                    .addContent(Spacer.Builder().setWidth(dp(MID_GAP)).build())
-                    .addContent(keyButton(keyArmed))
-                    .addContent(Spacer.Builder().setWidth(dp(MID_GAP)).build())
-                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, actionable(st.frunkOpen), st.live))
+                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, actionable(!st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
+                    .addContent(keyButton(keyArmed, keyBtn, keyIcon))
+                    .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
+                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, actionable(st.frunkOpen), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
-            .addContent(Spacer.Builder().setHeight(dp(ROW_GAP)).build())
+            .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
             // bottom: hatch open / hatch close
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, actionable(!st.liftgateOpen), st.live))
-                    .addContent(Spacer.Builder().setWidth(dp(TOP_GAP)).build())
-                    .addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live))
+                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, actionable(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
+                    .addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
             .build()
@@ -158,7 +171,7 @@ class KeyTileService : TileService() {
      * intent carries [MainActivity.EXTRA_ACTIVATE_KEY], which the app acts on). Gold
      * when the key is already armed.
      */
-    private fun keyButton(armed: Boolean): Button {
+    private fun keyButton(armed: Boolean, sizeDp: Float, iconDp: Float): Button {
         val launch = Clickable.Builder()
             .setId(ID_KEY)
             .setOnClick(
@@ -179,8 +192,8 @@ class KeyTileService : TileService() {
         val bg = if (armed) GOLD else BTN_BG
         val glyph = if (armed) BLACK else WHITE // gold circle → black glyph for contrast
         return Button.Builder(this, launch)
-            .setCustomContent(iconElement(ICON_KEY, KEY_ICON_DP, glyph))
-            .setSize(dp(KEY_BTN_DP))
+            .setCustomContent(iconElement(ICON_KEY, iconDp, glyph))
+            .setSize(dp(sizeDp))
             .setButtonColors(ButtonColors(bg, glyph))
             .build()
     }
@@ -190,7 +203,9 @@ class KeyTileService : TileService() {
      * [actionable] (its press would change the vehicle's current state) it's filled — white if
      * [live], gray if stale — with a dark glyph, exactly like the app's closure buttons.
      */
-    private fun commandButton(id: String, icon: String, actionable: Boolean, live: Boolean): Button {
+    private fun commandButton(
+        id: String, icon: String, actionable: Boolean, live: Boolean, sizeDp: Float, iconDp: Float,
+    ): Button {
         val click = Clickable.Builder()
             .setId(id)
             .setOnClick(ActionBuilders.LoadAction.Builder().build())
@@ -202,8 +217,8 @@ class KeyTileService : TileService() {
         }
         val glyph = if (actionable) BLACK else WHITE
         return Button.Builder(this, click)
-            .setCustomContent(iconElement(icon, CMD_ICON_DP, glyph))
-            .setSize(dp(CMD_BTN_DP))
+            .setCustomContent(iconElement(icon, iconDp, glyph))
+            .setSize(dp(sizeDp))
             .setButtonColors(ButtonColors(fill, glyph))
             .build()
     }
@@ -267,17 +282,18 @@ class KeyTileService : TileService() {
         const val WHITE = 0xFFFFFFFF.toInt()
         const val BTN_BG = 0xFF1C1C1C.toInt()
         const val STALE = 0xFF9A9A9A.toInt() // app DIM gray — last-known (not live) state
-        // Button + glyph sizing. Larger ring buttons (like Home Assistant's 7-circle tile),
-        // still fitting inside the round face — the top/bottom pair are the limiting corners.
-        const val KEY_BTN_DP = 60f
-        const val CMD_BTN_DP = 50f
-        const val KEY_ICON_DP = 36f
-        const val CMD_ICON_DP = 30f
-        // Inter-button gaps: tight all round so the six outer buttons pack close to the key on a
-        // hex ring (a small top/bottom gap keeps the pairs from touching).
-        const val MID_GAP = 4f
-        const val TOP_GAP = 10f
-        const val ROW_GAP = 2f
+        // Sizing as fractions of the face's min dimension, so the hex fills any watch (fixed dp
+        // looked small on larger screens). Tuned so the top/bottom pair — the limiting corners —
+        // stay inside the circle; see the geometry note in onTileRequest. The key↔ring gap
+        // (MID_GAP_FRAC) is kept comfortable so the ring grows outward, not into the key.
+        const val FALLBACK_DIM = 200f // if the device reports no screen size
+        const val CMD_BTN_FRAC = 0.27f
+        const val KEY_BTN_FRAC = 0.30f
+        const val CMD_ICON_FRAC = 0.62f // of the button
+        const val KEY_ICON_FRAC = 0.60f
+        const val MID_GAP_FRAC = 0.03f
+        const val TOP_GAP_FRAC = 0.018f
+        const val ROW_GAP_FRAC = 0.012f
 
         // Process-lifetime scope so a queued command survives the TileService instance
         // being torn down between requests (BLE send takes a few seconds).
