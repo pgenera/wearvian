@@ -1,0 +1,21 @@
+<!-- Hatch OPEN: bold up arrow + suitcase (box + handle) with the lid tilted ajar. Original art. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <!-- up arrow (open) -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2 L19,7.5 L14.5,7.5 L14.5,12 L9.5,12 L9.5,7.5 L5,7.5 Z" />
+    <!-- handle + lid, hinged at the right and tilted up = ajar -->
+    <group android:rotation="-20" android:pivotX="18" android:pivotY="13.65">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M10,12.9 A2,2 0 0 0 14,12.9 Z" />
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M5.6,12.9 H18.4 A0.6,0.6 0 0 1 19,13.5 V13.8 A0.6,0.6 0 0 1 18.4,14.4 H5.6 A0.6,0.6 0 0 1 5,13.8 V13.5 A0.6,0.6 0 0 1 5.6,12.9 Z" />
+    </group>
+    <!-- suitcase body -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M6.7,15 H17.3 A1.2,1.2 0 0 1 18.5,16.2 V20.8 A1.2,1.2 0 0 1 17.3,22 H6.7 A1.2,1.2 0 0 1 5.5,20.8 V16.2 A1.2,1.2 0 0 1 6.7,15 Z" />
+</vector>

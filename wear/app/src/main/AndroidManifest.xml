@@ -64,7 +64,7 @@
             </intent-filter>
             <meta-data
                 android:name="androidx.wear.tiles.PREVIEW"
-                android:resource="@drawable/ic_tile_key" />
+                android:resource="@drawable/ic_tile_preview" />
         </service>
 
     </application>

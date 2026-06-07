@@ -4,12 +4,15 @@ import androidx.concurrent.futures.ResolvableFuture
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
 import androidx.wear.protolayout.DimensionBuilders.dp
+import androidx.wear.protolayout.DimensionBuilders.expand
+import androidx.wear.protolayout.LayoutElementBuilders.Box
 import androidx.wear.protolayout.LayoutElementBuilders.ColorFilter
 import androidx.wear.protolayout.LayoutElementBuilders.Column
 import androidx.wear.protolayout.LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER
 import androidx.wear.protolayout.LayoutElementBuilders.Image
 import androidx.wear.protolayout.LayoutElementBuilders.Row
 import androidx.wear.protolayout.LayoutElementBuilders.Spacer
+import androidx.wear.protolayout.LayoutElementBuilders.VERTICAL_ALIGN_CENTER
 import androidx.wear.protolayout.ModifiersBuilders.Clickable
 import androidx.wear.protolayout.ResourceBuilders.AndroidImageResourceByResId
 import androidx.wear.protolayout.ResourceBuilders.ImageResource
@@ -17,8 +20,6 @@ import androidx.wear.protolayout.ResourceBuilders.Resources
 import androidx.wear.protolayout.TimelineBuilders.Timeline
 import androidx.wear.protolayout.material.Button
 import androidx.wear.protolayout.material.ButtonColors
-import androidx.wear.protolayout.material.ButtonDefaults
-import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders.Tile
 import androidx.wear.tiles.TileService
@@ -31,6 +32,7 @@ import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.service.PresenceService
+import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.store.EnrollmentStore
@@ -40,12 +42,27 @@ import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
 
 /**
- * A Wear Tile mirroring page 0 of the app (key + unlock + lock). Tapping a control:
- *  - **Key** launches the full app (to activate/deactivate the mobile key).
- *  - **Unlock / Lock** fire the BLE command in-process via a `LoadAction` — the tile
- *    reloads, the command runs in the background, and the app UI never opens.
+ * A Wear Tile: the key in the center, ringed by six controls — unlock/lock, frunk open/close,
+ * hatch open/close — laid out as a hexagon:
  *
- * Lock/unlock dispatch reuses [ActiveCommandManager] (the same path the app uses) on a
+ * ```
+ *        unlock        lock
+ *   frunk‹open›  KEY  frunk‹close›
+ *        hatch‹open›  hatch‹close›
+ * ```
+ *
+ * Tapping a control:
+ *  - **Key** launches the full app (carrying [MainActivity.EXTRA_ACTIVATE_KEY] to arm the key).
+ *  - **Any command** fires the BLE command in-process via a `LoadAction` — the tile reloads, the
+ *    command runs in the background, and the app UI never opens.
+ *
+ * The controls carry over the app's vehicle-state treatment: the *actionable* button for each
+ * pair (the one whose press would change state) is filled — white when the state is live
+ * (a session is confirming it), gray when it's the last-known (stale) state, and plain dark
+ * when state is unknown. State comes from the in-process [VehicleStatus] (same process as the
+ * presence service / app), so the tile reflects whatever the app would show.
+ *
+ * Command dispatch reuses [ActiveCommandManager] (the same path the app uses) on a
  * process-lifetime scope so it survives this service instance being recycled between
  * tile requests. See docs/passive-entry-protocol.md.
  */
@@ -58,26 +75,59 @@ class KeyTileService : TileService() {
         when (requestParams.currentState.lastClickableId) {
             ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")
             ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
+            ID_FRUNK_OPEN -> dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
+            ID_FRUNK_CLOSE -> dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
+            ID_HATCH_OPEN -> dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
+            ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE")
         }
 
-        // Gold when the key is armed (active OR passively power-saving), not only while
-        // the service is currently running.
-        val keyActive = SettingsStore(this).keyArmed
-        val layout = PrimaryLayout.Builder(requestParams.deviceConfiguration)
-            .setContent(
-                Column.Builder()
-                    .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
-                    .addContent(keyButton(keyActive))
-                    .addContent(Spacer.Builder().setHeight(dp(10f)).build())
-                    .addContent(
-                        Row.Builder()
-                            .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK))
-                            .addContent(Spacer.Builder().setWidth(dp(12f)).build())
-                            .addContent(commandButton(ID_LOCK, ICON_LOCK))
-                            .build(),
-                    )
+        // Gold when the key is armed (active OR passively power-saving), not only while running.
+        val keyArmed = SettingsStore(this).keyArmed
+        // Vehicle state for the actionable-button fill (same source/semantics as the app).
+        val st = VehicleStatus.state.value
+        // A button is actionable when pressing it would change the current state. Only meaningful
+        // once we have state; the fill is white when live, gray when stale (last-known).
+        fun actionable(changes: Boolean) = st.valid && changes
+
+        val grid = Column.Builder()
+            .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
+            // top: unlock / lock
+            .addContent(
+                Row.Builder()
+                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, actionable(st.locked), st.live))
+                    .addContent(Spacer.Builder().setWidth(dp(TOP_GAP)).build())
+                    .addContent(commandButton(ID_LOCK, ICON_LOCK, actionable(!st.locked), st.live))
                     .build(),
             )
+            .addContent(Spacer.Builder().setHeight(dp(ROW_GAP)).build())
+            // middle: frunk open / KEY / frunk close
+            .addContent(
+                Row.Builder()
+                    .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
+                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, actionable(!st.frunkOpen), st.live))
+                    .addContent(Spacer.Builder().setWidth(dp(MID_GAP)).build())
+                    .addContent(keyButton(keyArmed))
+                    .addContent(Spacer.Builder().setWidth(dp(MID_GAP)).build())
+                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, actionable(st.frunkOpen), st.live))
+                    .build(),
+            )
+            .addContent(Spacer.Builder().setHeight(dp(ROW_GAP)).build())
+            // bottom: hatch open / hatch close
+            .addContent(
+                Row.Builder()
+                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, actionable(!st.liftgateOpen), st.live))
+                    .addContent(Spacer.Builder().setWidth(dp(TOP_GAP)).build())
+                    .addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live))
+                    .build(),
+            )
+            .build()
+
+        val layout = Box.Builder()
+            .setWidth(expand())
+            .setHeight(expand())
+            .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
+            .addContent(grid)
             .build()
 
         val tile = Tile.Builder()
@@ -95,6 +145,10 @@ class KeyTileService : TileService() {
             .addIdToImageMapping(ICON_KEY, drawable(R.drawable.ic_tile_key))
             .addIdToImageMapping(ICON_UNLOCK, drawable(R.drawable.ic_tile_unlock))
             .addIdToImageMapping(ICON_LOCK, drawable(R.drawable.ic_tile_lock))
+            .addIdToImageMapping(ICON_FRUNK_OPEN, drawable(R.drawable.ic_tile_frunk_open))
+            .addIdToImageMapping(ICON_FRUNK_CLOSE, drawable(R.drawable.ic_tile_frunk_close))
+            .addIdToImageMapping(ICON_HATCH_OPEN, drawable(R.drawable.ic_tile_hatch_open))
+            .addIdToImageMapping(ICON_HATCH_CLOSE, drawable(R.drawable.ic_tile_hatch_close))
             .build()
         return immediate(res)
     }
@@ -102,9 +156,9 @@ class KeyTileService : TileService() {
     /**
      * The key control: launches the app **and** activates the mobile key (the launch
      * intent carries [MainActivity.EXTRA_ACTIVATE_KEY], which the app acts on). Gold
-     * when the key is already active.
+     * when the key is already armed.
      */
-    private fun keyButton(active: Boolean): Button {
+    private fun keyButton(armed: Boolean): Button {
         val launch = Clickable.Builder()
             .setId(ID_KEY)
             .setOnClick(
@@ -122,25 +176,35 @@ class KeyTileService : TileService() {
                     .build(),
             )
             .build()
-        val bg = if (active) GOLD else BTN_BG
-        val glyph = if (active) BLACK else WHITE // gold circle → black glyph for contrast
+        val bg = if (armed) GOLD else BTN_BG
+        val glyph = if (armed) BLACK else WHITE // gold circle → black glyph for contrast
         return Button.Builder(this, launch)
             .setCustomContent(iconElement(ICON_KEY, KEY_ICON_DP, glyph))
-            .setSize(ButtonDefaults.LARGE_SIZE)
+            .setSize(dp(KEY_BTN_DP))
             .setButtonColors(ButtonColors(bg, glyph))
             .build()
     }
 
-    /** A lock/unlock control: fires the command in-process via LoadAction (no app UI). */
-    private fun commandButton(id: String, icon: String): Button {
+    /**
+     * A command control: fires its command in-process via LoadAction (no app UI). When
+     * [actionable] (its press would change the vehicle's current state) it's filled — white if
+     * [live], gray if stale — with a dark glyph, exactly like the app's closure buttons.
+     */
+    private fun commandButton(id: String, icon: String, actionable: Boolean, live: Boolean): Button {
         val click = Clickable.Builder()
             .setId(id)
             .setOnClick(ActionBuilders.LoadAction.Builder().build())
             .build()
+        val fill = when {
+            !actionable -> BTN_BG
+            live -> WHITE
+            else -> STALE
+        }
+        val glyph = if (actionable) BLACK else WHITE
         return Button.Builder(this, click)
-            .setCustomContent(iconElement(icon, CMD_ICON_DP, WHITE))
-            .setSize(ButtonDefaults.LARGE_SIZE)
-            .setButtonColors(ButtonColors(BTN_BG, WHITE))
+            .setCustomContent(iconElement(icon, CMD_ICON_DP, glyph))
+            .setSize(dp(CMD_BTN_DP))
+            .setButtonColors(ButtonColors(fill, glyph))
             .build()
     }
 
@@ -182,20 +246,37 @@ class KeyTileService : TileService() {
         ResolvableFuture.create<T>().apply { set(value) }
 
     private companion object {
-        const val RESOURCES_VERSION = "1"
+        // Bumped when the resource (icon) set changes so the system refreshes the tile images.
+        const val RESOURCES_VERSION = "2"
         const val ID_KEY = "key"
         const val ID_UNLOCK = "cmd_unlock"
         const val ID_LOCK = "cmd_lock"
+        const val ID_FRUNK_OPEN = "cmd_frunk_open"
+        const val ID_FRUNK_CLOSE = "cmd_frunk_close"
+        const val ID_HATCH_OPEN = "cmd_hatch_open"
+        const val ID_HATCH_CLOSE = "cmd_hatch_close"
         const val ICON_KEY = "ic_key"
         const val ICON_UNLOCK = "ic_unlock"
         const val ICON_LOCK = "ic_lock"
+        const val ICON_FRUNK_OPEN = "ic_frunk_open"
+        const val ICON_FRUNK_CLOSE = "ic_frunk_close"
+        const val ICON_HATCH_OPEN = "ic_hatch_open"
+        const val ICON_HATCH_CLOSE = "ic_hatch_close"
         const val GOLD = 0xFFFEDD5C.toInt()
         const val BLACK = 0xFF000000.toInt()
         const val WHITE = 0xFFFFFFFF.toInt()
         const val BTN_BG = 0xFF1C1C1C.toInt()
-        // Explicit glyph sizes — bigger than Material's default tile-button icon.
-        const val KEY_ICON_DP = 38f
-        const val CMD_ICON_DP = 34f
+        const val STALE = 0xFF9A9A9A.toInt() // app DIM gray — last-known (not live) state
+        // Button + glyph sizing. Kept compact so the hexagon fits inside the round face.
+        const val KEY_BTN_DP = 56f
+        const val CMD_BTN_DP = 44f
+        const val KEY_ICON_DP = 34f
+        const val CMD_ICON_DP = 24f
+        // Inter-button gaps: tight in the middle (around the big key), wider top/bottom so the
+        // outer six sit on a hex ring rather than a square.
+        const val MID_GAP = 6f
+        const val TOP_GAP = 28f
+        const val ROW_GAP = 6f
 
         // Process-lifetime scope so a queued command survives the TileService instance
         // being torn down between requests (BLE send takes a few seconds).
