@@ -93,20 +93,34 @@ class VehicleSession(
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
+        // PRIMARY can go dormant when the car's parked — a direct connect keeps missing its
+        // rare advertisements and times out (status: "Timed out waiting for 10000 ms"). After a
+        // connect failure, fall back to an autoConnect=true background reconnect for PK: the
+        // controller completes it from the accept list whenever PK next advertises, with no
+        // connect window and no direct-connect slot to contend. Reset on a successful connect so
+        // an awake PK (and the sensors, which advertise actively) still get the fast direct path.
+        var connectFailures = 0
         while (scope.isActive) {
-            runCatching { runOnce(scope) }
+            val established = runCatching { runOnce(scope, autoConnect = primary && connectFailures > 0) }
                 .onFailure { DebugLog.add("$label: session ended — ${it.message}") }
+                .getOrDefault(false)
+            connectFailures = if (established) 0 else connectFailures + 1
             if (scope.isActive) delay(RECONNECT_BACKOFF_MS)
         }
     }
 
-    private suspend fun runOnce(scope: CoroutineScope) {
+    /** @return true iff the GATT connection was established (auth/heartbeat may still fail after). */
+    private suspend fun runOnce(scope: CoroutineScope, autoConnect: Boolean): Boolean {
         reset()
+        var established = false
         PresenceStatus.set(label, PresenceStatus.Link.CONNECTING)
-        DebugLog.ble("·", label, "connecting ${device.address}")
-        val g = device.connectGatt(context, false, gattCallback)
+        DebugLog.ble("·", label, "connecting ${device.address}${if (autoConnect) " (autoConnect)" else ""}")
+        val g = device.connectGatt(context, autoConnect, gattCallback)
         try {
-            withTimeout(CONNECT_MS) { connected.await() }
+            // autoConnect has no bounded connect window — it completes whenever the peer next
+            // advertises, so await without a timeout (still cancelled if the scope tears down).
+            if (autoConnect) connected.await() else withTimeout(CONNECT_MS) { connected.await() }
+            established = true
             PresenceStatus.set(label, PresenceStatus.Link.CONNECTED)
             DebugLog.ble("·", label, "connected")
             g.discoverServices()
@@ -260,6 +274,7 @@ class VehicleSession(
             runCatching { g.disconnect() }
             runCatching { g.close() }
         }
+        return established
     }
 
     private fun reset() {
