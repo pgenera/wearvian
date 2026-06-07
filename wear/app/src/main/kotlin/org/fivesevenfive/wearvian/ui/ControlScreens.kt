@@ -25,6 +25,8 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -64,12 +66,13 @@ import androidx.wear.compose.material.TimeText
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.service.VehicleStatus
+import kotlin.math.roundToInt
 
 private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private val WARN = Color(0xFFFF6B6B)
-private const val PAGES = 4
+private const val PAGES = 5
 
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
 private val CLOSURE_BTN = 42.dp
@@ -81,7 +84,7 @@ private val LABEL_W = 78.dp
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
  * swipe or the rotary crown. Pure-black OLED field, high-contrast white iconography
  * (Material vectors tinted white). Page 0 = key + lock/unlock; page 1 = closures;
- * page 2 = security & lights.
+ * page 2 = charge/range status; page 3 = security & lights; page 4 = settings.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -127,7 +130,8 @@ fun ControlScreens(
                 when (page) {
                     0 -> KeyPage(state, status, onTogglePresence, onCommand)
                     1 -> ClosuresPage(state.inFlight, status, onCommand)
-                    2 -> SignalPage(state.inFlight, onCommand)
+                    2 -> ChargeStatusPage(status)
+                    3 -> SignalPage(state.inFlight, onCommand)
                     else -> SettingsPage(state, onProximityWakeChange, onStartPassive)
                 }
             }
@@ -230,6 +234,62 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
         // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
         ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
+    }
+}
+
+/**
+ * Read-only charge/range status from the 0x1c stream: state of charge, estimated range, and —
+ * when plugged in — the charge state and live charging power. A stale (persisted, not currently
+ * confirmed) reading dims to gray, matching the affordance treatment on the other pages.
+ */
+@Composable
+private fun ChargeStatusPage(status: VehicleStatus.State) {
+    Column(
+        Modifier.fillMaxSize().padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Header("Charge")
+        if (!status.valid || status.socPercent == null) {
+            Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
+        } else {
+            val live = status.live
+            val primary = if (live) Color.White else DIM
+            val charging = status.chargeState == VehicleStatus.ChargeState.CHARGING
+            // State of charge, with a battery icon that bolts + golds while charging.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    if (charging) Icons.Filled.BatteryChargingFull else Icons.Filled.BatteryFull,
+                    null, Modifier.size(26.dp),
+                    colorFilter = ColorFilter.tint(if (charging && live) GOLD else primary),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("${status.socPercent}%", color = primary, fontSize = 30.sp)
+            }
+            // Estimated range — shown in miles (the decoded field is km; US app convention).
+            status.rangeKm?.let { km ->
+                Text("${(km / 1.609344).roundToInt()} mi", color = primary, fontSize = 15.sp)
+            }
+            // Charge state / live power. Gold while charging, red on a fault, dim otherwise.
+            val (line, color) = when (status.chargeState) {
+                VehicleStatus.ChargeState.CHARGING ->
+                    "Charging · ${"%.1f".format(status.chargePowerKw ?: 0.0)} kW" to (if (live) GOLD else DIM)
+                VehicleStatus.ChargeState.PLUGGED_IDLE -> "Plugged in" to primary
+                VehicleStatus.ChargeState.STARTING -> "Starting…" to primary
+                VehicleStatus.ChargeState.FAULT -> "Check charger" to (if (live) WARN else DIM)
+                VehicleStatus.ChargeState.UNPLUGGED -> "Unplugged" to DIM
+                VehicleStatus.ChargeState.UNKNOWN -> null to primary
+            }
+            line?.let {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (charging) {
+                        Image(Icons.Filled.Bolt, null, Modifier.size(13.dp), colorFilter = ColorFilter.tint(color))
+                        Spacer(Modifier.width(2.dp))
+                    }
+                    Text(it, color = color, fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+            }
+        }
     }
 }
 
