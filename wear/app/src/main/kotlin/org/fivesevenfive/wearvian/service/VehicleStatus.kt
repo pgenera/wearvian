@@ -23,17 +23,32 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[2] hi-nibble = locked;  bit 0x08 = frunk, bit 0x04 = liftgate  (1=closed)
  *   status[3]           = windows (same bit layout as doors; 1=closed)
  *   status[5]           = state of charge, integer %        (decoded 2026-06-07)
+ *   status[6] lo-nibble = charge state enum                 (decoded 2026-06-07; see [ChargeState])
  *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
- *   status[8..9]        = estimated range, km, little-endian (decoded 2026-06-07)
- *   status[6],[11],[12] = constant config (0x11/0x50/0x78); charge-port + climate setpoint
- *                         are NOT here (setpoint unlocated; charge-port is cloud only)
+ *   status[8]           = estimated range, km (low byte; 220km==137mi). High byte UNLOCATED —
+ *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-power low
+ *                         byte). Correct above ~255km is unknown; needs a >158mi capture.
+ *   status[9..10]       = live charge power, raw LE16 count (decoded 2026-06-07). Ramps 0→~640
+ *                         with the charge; absolute kW scale UNCONFIRMED (≈×10 decawatts fits a
+ *                         plateau that kept climbing past the log; needs a calibrated reading).
+ *   status[11],[12]     = constant config (0x50/0x78); charge LIMIT + climate setpoint are NOT
+ *                         here (both cloud-only — setpoint never varied across captures)
  *
- * The telemetry trio (SoC/cabin/range) overturns the earlier "battery/range are cloud-only"
- * read: they ARE on BLE here. Today's ground truth pinned the units (48.4% → [5]=48;
- * 86°F=30°C → [7]=30; 137mi=220km → [8..9]=220), and three captures cross-check to a ~282-mi
- * full-charge range. Charge LIMIT still isn't in this frame (cloud only).
+ * The telemetry (SoC/cabin/range/charge) overturns the earlier "battery/range are cloud-only"
+ * read: they ARE on BLE here. Ground truth pinned SoC/cabin/range (48.4%→[5]=48; 86°F=30°C→[7]=30;
+ * 137mi=220km→[8]=220) and the charge-state enum (the failed/idle/charging narrative).
  */
 object VehicleStatus {
+
+    /** Charge state from status[6]'s low nibble (high nibble is a constant 0x1). */
+    enum class ChargeState {
+        UNKNOWN,      // not yet parsed / unrecognized code
+        UNPLUGGED,    // 0x_1
+        STARTING,     // 0x_2 — brief negotiating frame before charging
+        CHARGING,     // 0x_3 — actively charging (power ramps in [9..10])
+        PLUGGED_IDLE, // 0x_5 — cord connected, not charging (e.g. waiting for schedule)
+        FAULT,        // 0x_7 — charge fault ("check charger")
+    }
 
     data class State(
         /** True once a 0x1c frame has been parsed (else fields are unknown). */
@@ -50,9 +65,24 @@ object VehicleStatus {
         val socPercent: Int? = null,
         /** Cabin temperature in °C; null when not present in the frame. */
         val cabinTempC: Int? = null,
-        /** Estimated remaining range in km; null when not present in the frame. */
+        /**
+         * Estimated remaining range, km (low byte [8] only; 220==137mi). The high byte is
+         * unlocated, so this is only correct below ~255 km; null when not present in the frame.
+         */
         val rangeKm: Int? = null,
-    )
+        /** Plug/charge state; [ChargeState.UNKNOWN] when not present or unrecognized. */
+        val chargeState: ChargeState = ChargeState.UNKNOWN,
+        /**
+         * Live charge power in watts ([9..10] little-endian × 10 W/count); 0 while not charging,
+         * null when not present. The 10 W/count scale matches the app's 0.1-kW AC-power display
+         * (a captured ramp plateaued at 6.44 kW and was still climbing toward the user's 9.1 kW
+         * when the log ended). Use [chargePowerKw] for display.
+         */
+        val chargePowerW: Int? = null,
+    ) {
+        /** Live charge power in kW (one decimal mirrors the app); null when [chargePowerW] is null. */
+        val chargePowerKw: Double? get() = chargePowerW?.let { it / 1000.0 }
+    }
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> get() = _state
@@ -61,7 +91,7 @@ object VehicleStatus {
     fun update(frame: ByteArray) {
         if (frame.size < 4 + 4) return // need at least status[0..3]
         fun s(i: Int) = frame[4 + i].toInt() and 0xff
-        val hasTelemetry = frame.size >= 4 + 10 // need status[0..9] for SoC/temp/range
+        val hasTelemetry = frame.size >= 4 + 11 // need status[0..10] for SoC/temp/range/charge
         // [2] high nibble is the cleanest lock signal (set when locked; clear when unlocked,
         // even with a closure open). [1]'s high nibble flickers (0x7f) mid-unlock.
         _state.value = State(
@@ -75,8 +105,19 @@ object VehicleStatus {
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
             socPercent = if (hasTelemetry) s(5) else null,
             cabinTempC = if (hasTelemetry) s(7) else null,
-            rangeKm = if (hasTelemetry) s(8) or (s(9) shl 8) else null,
+            rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge power, not range high byte
+            chargeState = if (hasTelemetry) chargeStateOf(s(6)) else ChargeState.UNKNOWN,
+            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 10 else null,
         )
+    }
+
+    private fun chargeStateOf(b6: Int): ChargeState = when (b6 and 0x0f) {
+        0x1 -> ChargeState.UNPLUGGED
+        0x2 -> ChargeState.STARTING
+        0x3 -> ChargeState.CHARGING
+        0x5 -> ChargeState.PLUGGED_IDLE
+        0x7 -> ChargeState.FAULT
+        else -> ChargeState.UNKNOWN
     }
 
     /**

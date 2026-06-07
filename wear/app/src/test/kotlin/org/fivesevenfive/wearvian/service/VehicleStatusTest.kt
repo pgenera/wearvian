@@ -73,22 +73,37 @@ class VehicleStatusTest {
     @Test
     fun decodesTelemetryFromRealSundayFrame() {
         // Captured on-vehicle 2026-06-07 (sunday-status.log). Ground truth at capture time:
-        // SoC 48.4%, range 137 mi (= 220 km), cabin 86°F (= 30°C).
+        // SoC 48.4%, range 137 mi (= 220 km), cabin 86°F (= 30°C), unplugged, not charging.
         val frame = hex("01000000" + "100f0c0f0030111edc00005078000000")
         VehicleStatus.update(frame)
         val s = VehicleStatus.state.value
         assertEquals(48, s.socPercent)
         assertEquals(30, s.cabinTempC) // 30°C == 86°F
-        assertEquals(220, s.rangeKm)   // 220 km == 137 mi
+        assertEquals(220, s.rangeKm)   // 220 km == 137 mi (low byte [8])
+        assertEquals(VehicleStatus.ChargeState.UNPLUGGED, s.chargeState)
+        assertEquals(0, s.chargePowerW)
     }
 
     @Test
-    fun rangeIsLittleEndian16Bit() {
-        // status[8]=0x0a, status[9]=0x01 → 0x010a = 266 km (a documented prior capture)
-        VehicleStatus.update(hex("00000000" + "10070c0f003b110e0a01005078000000"))
-        assertEquals(266, VehicleStatus.state.value.rangeKm)
-        assertEquals(59, VehicleStatus.state.value.socPercent)
-        assertEquals(14, VehicleStatus.state.value.cabinTempC)
+    fun chargeStateEnumFromByte6() {
+        // [6] low nibble, real frames from the 2026-06-07 charge session:
+        VehicleStatus.update(hex("01000000" + "100f0c0f0030151adc00005078000000"))
+        assertEquals(VehicleStatus.ChargeState.PLUGGED_IDLE, VehicleStatus.state.value.chargeState) // 0x15
+        VehicleStatus.update(hex("01000000" + "11ffac0f0030171adc00005078000000"))
+        assertEquals(VehicleStatus.ChargeState.FAULT, VehicleStatus.state.value.chargeState) // 0x17 check-charger
+        VehicleStatus.update(hex("04000000" + "11ffac0f0030131adc1c005078000000"))
+        assertEquals(VehicleStatus.ChargeState.CHARGING, VehicleStatus.state.value.chargeState) // 0x13
+    }
+
+    @Test
+    fun chargePowerIsLittleEndianTimesTenWatts() {
+        // ctr=22 of the charge ramp: [9..10] = 0x0284 = 644 → 6440 W = 6.44 kW (a plateau that
+        // kept climbing toward 9.1 kW after the log ended). 10 W/count matches the app's 0.1-kW display.
+        VehicleStatus.update(hex("16000000" + "11ffac0f0030131adc84025078000000"))
+        val s = VehicleStatus.state.value
+        assertEquals(6440, s.chargePowerW)
+        assertEquals(6.44, s.chargePowerKw!!, 1e-9)
+        assertEquals(VehicleStatus.ChargeState.CHARGING, s.chargeState)
     }
 
     @Test
@@ -100,6 +115,8 @@ class VehicleStatusTest {
         assertNull(s.socPercent)
         assertNull(s.cabinTempC)
         assertNull(s.rangeKm)
+        assertNull(s.chargePowerW)
+        assertEquals(VehicleStatus.ChargeState.UNKNOWN, s.chargeState)
     }
 
     private fun hex(s: String): ByteArray =

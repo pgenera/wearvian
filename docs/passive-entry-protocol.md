@@ -594,9 +594,10 @@ prober found no match) — but moot now that 0x1c gives plaintext status directl
   other static bytes `[8]=0x28`,`[11]=0x50`,`[12]=0x78` unidentified (range/temp/limit?).
 - Full decode now: `[0]`=wake/sleep, `[1]`=doors, `[2]`=frunk/liftgate(/charge-port), `[3]`=windows,
   `[5]`=SoC?, rest static/unknown.
-  > **Superseded 2026-06-07:** `[5]`=SoC, `[7]`=cabin °C, `[8..9]`=range km are now confirmed (the
-  > "byte-identical across all sessions" note only held within one day's data). See the 2026-06-07
-  > section at the bottom of this file. This overturns the F1 "battery/range = cloud-only" call.
+  > **Superseded 2026-06-07:** `[5]`=SoC, `[7]`=cabin °C, `[8]`=range km, `[6]`lo=charge-state,
+  > `[9..10]`=charge power are now decoded (the "byte-identical across all sessions" note only held
+  > within one day's data). See the 2026-06-07 section at the bottom. Overturns the F1 "battery/range
+  > = cloud-only" call.
 
 ### Refinement 2 (2026-06-06, locks capture — decode essentially complete)
 - **LOCK** = high nibbles of `[1]` (0xf0) and `[2]` (0xa0): set=locked, clear=unlocked. Confirmed by two
@@ -626,23 +627,46 @@ Sunday status (`100f0c0f0030111edc00005078000000`) vs two documented prior captu
 |------|--------|---------|---------|-------|-------|
 | `[5]` | 48 | 59 | 65 | **SoC, integer %** | sunday 48 == 48.4% ✓ |
 | `[7]` | 30 | 14 | 24 | **cabin temp, °C** | sunday 30 °C == 86 °F ✓ |
-| `[8..9]` (LE16) | 220 | 266 | 296 | **est. range, km** | sunday 220 km == 137 mi ✓ |
-| `[6]`,`[11]`,`[12]` | 17,80,120 | 17,80,120 | 17,80,120 | constant config | unchanged 3 days |
+| `[8]` | 220 | 10 | 40 | **est. range, km** (low byte) | sunday 220 km == 137 mi ✓ |
+| `[6]` lo | 1 | 1 | 1 | charge state (see below) | moved later, same day |
 
-**Independent cross-check (no unit assumption needed):** range_mi ÷ SoC% × 100 gives the implied
-full-charge range — 285 / 280 / 283 mi across the three captures. That they all land on ~282 mi
-(spot-on for an R1S) confirms `[5]`=SoC and `[8..9]`=range·km beyond the single ground-truth point.
+> **Range is `[8]` only, NOT `[8..9]`.** The charge capture below proves `[9]` is the charge-power
+> low byte, so it can't also be range's high byte. The prior-A/B `[9]=01` values are unreliable
+> (early RE; possibly a tiny charge-power reading, not range), so the "266/280 km" and the
+> "~282 mi full-charge cross-check" are withdrawn. `[8]`=220 km matches sunday's 137 mi exactly;
+> range above ~255 km would need a high byte we haven't located (capture at >158 mi to find it).
 
-**Climate setpoint (69°F) NOT located.** The only constant-looking byte (`[6]`=0x11=17) never moved
-across three days when the setpoint surely did, so it's fixed config, not the setpoint. To find it,
-capture a frame **before and after deliberately changing the setpoint** (and the cabin/outside temps)
-so the changing byte is isolated — same correlate-the-diff method that cracked the closures.
+### Charge session (`sunday-status-plugged-in-and-charging.log`) — `[6]` and `[9..10]` decoded
 
-Implemented in `service/VehicleStatus.kt`: `State` now exposes `socPercent`, `cabinTempC`, `rangeKm`
-(null when the frame is too short), with a known-answer test (`VehicleStatusTest`) pinned to the
-Sunday frame. Charge **limit** is still absent (cloud only). UI wiring (a SoC/range/temp readout) is
-the easy follow-up.
+A capture across unplug → plug → fault → charge ramp, with the user's narrative as ground truth
+("charging failed at first / check charger, then ramped 2 kW → 9.1 kW, not sure I caught the end"):
+
+**`[6]` low nibble = charge-state enum** (high nibble constant `0x1`). Maps exactly to the narrative:
+
+| `[6]` | state | when |
+|-------|-------|------|
+| `0x11` | unplugged | Sunday |
+| `0x15` | plugged, not charging (waiting for schedule) | the 16:09 idle capture |
+| `0x17` | fault / "check charger" | the failed first attempt |
+| `0x12` | starting/negotiating (one transient frame) | "tried again" |
+| `0x13` | charging | the whole power ramp |
+
+It's an enum, not a bitfield (charging `0x_3` lacks the "plugged" bit that idle `0x_5` carries).
+
+**`[9..10]` (LE16) = live charge power, 10 W / count** (= raw ÷ 100 kW). The app shows AC power to
+0.1 kW, so the field's resolution is 10 W. The captured ramp climbed 0 → 644 and plateaued ~644 =
+**6.44 kW** — *not* the final 9.1 kW (raw 910); it was still ramping when the log ended, matching
+"not sure I caught the end." (A first cut mis-scaled this as ≈14 W/count by assuming 644 = 9.1 kW.)
+A same-instant (app-kW, raw) reading would confirm the ×10 to the digit. Only `[6]`,`[9]`,`[10]`
+move during charging; SoC/cabin/range hold steady, as expected.
+
+Implemented in `service/VehicleStatus.kt`: `State` exposes `socPercent`, `cabinTempC`, `rangeKm`
+(low byte), `chargeState` ([ChargeState] enum), and `chargePowerW` (+`chargePowerKw`), null on short
+frames, with known-answer tests (`VehicleStatusTest`) pinned to the real Sunday + charging frames.
+Charge **limit** and the climate **setpoint** are still absent (both cloud-only; the setpoint never
+varied across captures — to find it, capture before/after deliberately changing it).
 
 **Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
-`[3]`=windows, `[5]`=SoC %, `[6]`=const, `[7]`=cabin °C, `[8..9]`=range km (LE), `[11]`=const `0x50`,
-`[12]`=const `0x78`, `[4]`/`[10]`/`[13..15]`=unknown/zero, climate setpoint + charge-port = not here.
+`[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8]`=range km (low byte),
+`[9..10]`=charge power (×10 W), `[11]`=const `0x50`, `[12]`=const `0x78`, `[4]`/`[13..15]`=zero/unknown.
+Not in frame: charge limit, climate setpoint, charge-port door (all cloud-only).
