@@ -14,6 +14,10 @@ val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }
 }
 
+// Name output artifacts wearvian-<variant>.apk (e.g. wearvian-release.apk) instead of the
+// default app-<variant>.apk, so the sideload-test build is easy to pick out.
+base { archivesName.set("wearvian") }
+
 android {
     namespace = "org.fivesevenfive.wearvian"
     compileSdk = 35
@@ -56,9 +60,16 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Sign release builds when the keystore is present; otherwise leave unsigned
-            // (CI without secrets can still build, you just can't upload it).
-            if (keystorePropertiesFile.exists()) signingConfig = signingConfigs.getByName("release")
+            // Signing: use the real upload key when keystore.properties is present (for Play);
+            // otherwise fall back to the DEBUG key so the release is installable for local UI
+            // testing AND shares a signature with debug builds — `adb install -r` then swaps
+            // debug<->release in place without uninstalling, so the enrolled Keystore key
+            // survives (no re-enroll). A debug-key release must NEVER be uploaded to Play.
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

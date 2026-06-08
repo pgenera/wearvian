@@ -70,6 +70,21 @@ runtime:
   **debug-only**. The swipe-left BLE debug console stays in both for now.
 - To gate more later: read `BuildConfig.PRODUCTION` (false in debug, true in release).
 
+## Local sideload testing of the release build
+
+Until `keystore.properties` exists, the **release build signs with the debug key** (see the release
+`signingConfig` in `build.gradle.kts`). That makes it installable AND gives it the **same signature
+as your debug builds**, so:
+
+- `adb install -r app/build/outputs/apk/release/wearvian-release.apk` swaps a debug build for the
+  obfuscated release **in place** — no uninstall, so the watch's enrolled Keystore key survives and
+  you don't re-enroll. (Output is named `wearvian-release.apk` via `archivesName`.)
+- Switching back to a debug build the same way is also seamless.
+- **Caveat:** a build installed from the Play Store is re-signed by Google's app-signing key, so
+  switching between a Play build and any local build *will* require uninstall + re-enroll.
+- Once you create `keystore.properties`, the release auto-switches to the real upload key — a
+  debug-key release must **never** be uploaded to Play.
+
 ## Obfuscation (R8) — a courtesy to Rivian
 
 The release build runs **R8 minify + obfuscation** (`isMinifyEnabled = true`). This renames
