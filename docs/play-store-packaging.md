@@ -58,6 +58,37 @@ keyPassword=...
 Without `keystore.properties` the release build still compiles, just unsigned (fine for
 CI; you can't upload an unsigned bundle).
 
+## Debug vs production builds
+
+The **release** build type is "production" (what goes to Play); **debug** is the full
+development build. `BuildConfig.PRODUCTION` (`build.gradle.kts` build types) carries this at
+runtime:
+
+- **Production hides unfinished/experimental surfaces.** `ui/ControlScreens.kt` shows only the
+  working pager pages — **Key, Closures, Charge** — on production. The **Security & lights** page
+  (Gear Guard doesn't actuate yet) and the **Settings** page (proximity-wake, still unproven) are
+  **debug-only**. The swipe-left BLE debug console stays in both for now.
+- To gate more later: read `BuildConfig.PRODUCTION` (false in debug, true in release).
+
+## Obfuscation (R8) — a courtesy to Rivian
+
+The release build runs **R8 minify + obfuscation** (`isMinifyEnabled = true`). This renames
+classes/methods so the reverse-engineered Rivian protocol isn't trivially readable from the shipped
+APK. It's deliberately modest — the wire bytes are unchanged (the car still works), and a determined
+reader can still recover logic; the intent is to **not hand-publish Rivian's protocol** before
+talking to them, not hardened DRM. The rename map is written to
+`app/build/outputs/mapping/release/mapping.txt` (keep it for deobfuscating any crash reports).
+
+Notes:
+- **Heap:** R8 OOMs the Gradle daemon at 2 GiB, so `gradle.properties` sets `-Xmx4096m`. On a
+  memory-pressured host the release build can be slow (swapping).
+- **Lint:** `lintVitalRelease` runs on release. We disable the `InvalidFragmentVersionForActivityResult`
+  false positive (we use `ComponentActivity`/`activity-compose`, no Fragments).
+- The crypto is pure JCA (string algorithm ids), so obfuscation doesn't affect it; the only keep
+  rule is for `BluetoothGattCallback` subclasses (`proguard-rules.pro`).
+- **Runtime-test the release build before uploading** — R8 can break Compose/reflection paths that
+  only surface at runtime.
+
 ## Build the signed bundles
 ```sh
 # watch  -> wear/app/build/outputs/bundle/release/app-release.aab
