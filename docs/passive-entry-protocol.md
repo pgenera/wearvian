@@ -653,12 +653,12 @@ A capture across unplug → plug → fault → charge ramp, with the user's narr
 
 It's an enum, not a bitfield (charging `0x_3` lacks the "plugged" bit that idle `0x_5` carries).
 
-**`[9..10]` (LE16) = live charge power, 10 W / count** (= raw ÷ 100 kW). The app shows AC power to
-0.1 kW, so the field's resolution is 10 W. The captured ramp climbed 0 → 644 and plateaued ~644 =
-**6.44 kW** — *not* the final 9.1 kW (raw 910); it was still ramping when the log ended, matching
-"not sure I caught the end." (A first cut mis-scaled this as ≈14 W/count by assuming 644 = 9.1 kW.)
-A same-instant (app-kW, raw) reading would confirm the ×10 to the digit. Only `[6]`,`[9]`,`[10]`
-move during charging; SoC/cabin/range hold steady, as expected.
+**`[9..10]` (LE16) = live charge power, 1/64 kW per count** (= 15.625 W; `raw ÷ 64` kW). On-vehicle
+the app read **~10 kW** at the captured plateau (raw ~644 → 10.06 kW). A first cut read the 0.1-kW
+display as 10 W/count (`raw ÷ 100`), which showed 6.4 kW for the same frame — wrong by exactly
+`10 / 6.4 ≈ 100/64`, pinning the real scale to **1/64 kW** (a binary fixed-point, not decimal).
+(An even earlier cut guessed ≈14 W/count.) `644 / 64 = 10.06 kW`, `148 / 64 = 2.31 kW` (the ~2 kW
+ramp start). Only `[6]`,`[9]`,`[10]` move during charging; SoC/cabin/range hold steady, as expected.
 
 Implemented in `service/VehicleStatus.kt`: `State` exposes `socPercent`, `cabinTempC`, `rangeKm`
 (low byte), `chargeState` ([ChargeState] enum), and `chargePowerW` (+`chargePowerKw`), null on short
@@ -668,5 +668,5 @@ varied across captures — to find it, capture before/after deliberately changin
 
 **Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
 `[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8]`=range km (low byte),
-`[9..10]`=charge power (×10 W), `[11]`=const `0x50`, `[12]`=const `0x78`, `[4]`/`[13..15]`=zero/unknown.
+`[9..10]`=charge power (1/64 kW/count), `[11]`=const `0x50`, `[12]`=const `0x78`, `[4]`/`[13..15]`=zero/unknown.
 Not in frame: charge limit, climate setpoint, charge-port door (all cloud-only).

@@ -96,13 +96,13 @@ class VehicleStatusTest {
     }
 
     @Test
-    fun chargePowerIsLittleEndianTimesTenWatts() {
-        // ctr=22 of the charge ramp: [9..10] = 0x0284 = 644 → 6440 W = 6.44 kW (a plateau that
-        // kept climbing toward 9.1 kW after the log ended). 10 W/count matches the app's 0.1-kW display.
+    fun chargePowerIsLittleEndianInSixtyFourthsOfKw() {
+        // ctr=22 of the charge ramp: [9..10] = 0x0284 = 644 → 644/64 = 10.06 kW (the app read
+        // ~10 kW on-vehicle; 1/64 kW = 15.625 W per count → 644*1000/64 = 10062 W).
         VehicleStatus.update(hex("16000000" + "11ffac0f0030131adc84025078000000"))
         val s = VehicleStatus.state.value
-        assertEquals(6440, s.chargePowerW)
-        assertEquals(6.44, s.chargePowerKw!!, 1e-9)
+        assertEquals(10062, s.chargePowerW)
+        assertEquals(10.062, s.chargePowerKw!!, 1e-9)
         assertEquals(VehicleStatus.ChargeState.CHARGING, s.chargeState)
     }
 

@@ -28,9 +28,9 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[8]           = estimated range, km (low byte; 220km==137mi). High byte UNLOCATED —
  *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-power low
  *                         byte). Correct above ~255km is unknown; needs a >158mi capture.
- *   status[9..10]       = live charge power, raw LE16 count (decoded 2026-06-07). Ramps 0→~640
- *                         with the charge; absolute kW scale UNCONFIRMED (≈×10 decawatts fits a
- *                         plateau that kept climbing past the log; needs a calibrated reading).
+ *   status[9..10]       = live charge power, LE16 in 1/64 kW per count (= 15.625 W; decoded
+ *                         2026-06-07/08). raw 644 → 10.06 kW (on-vehicle the app read ~10 kW
+ *                         while a /100 scale wrongly showed 6.4 — the 100/64 ratio gives 1/64 kW).
  *   status[11],[12]     = constant config (0x50/0x78); charge LIMIT + climate setpoint are NOT
  *                         here (both cloud-only — setpoint never varied across captures)
  *
@@ -73,10 +73,10 @@ object VehicleStatus {
         /** Plug/charge state; [ChargeState.UNKNOWN] when not present or unrecognized. */
         val chargeState: ChargeState = ChargeState.UNKNOWN,
         /**
-         * Live charge power in watts ([9..10] little-endian × 10 W/count); 0 while not charging,
-         * null when not present. The 10 W/count scale matches the app's 0.1-kW AC-power display
-         * (a captured ramp plateaued at 6.44 kW and was still climbing toward the user's 9.1 kW
-         * when the log ended). Use [chargePowerKw] for display.
+         * Live charge power in watts ([9..10] little-endian × 1/64 kW = 15.625 W/count); 0 while
+         * not charging, null when not present. The 1/64-kW fixed-point scale is from on-vehicle
+         * truth (the app read ~10 kW where an earlier ×10-W/count scale wrongly showed 6.4 kW; the
+         * 10/6.4 ≈ 100/64 ratio pins it). Use [chargePowerKw] for display.
          */
         val chargePowerW: Int? = null,
     ) {
@@ -107,7 +107,7 @@ object VehicleStatus {
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge power, not range high byte
             chargeState = if (hasTelemetry) chargeStateOf(s(6)) else ChargeState.UNKNOWN,
-            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 10 else null,
+            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 1000 / 64 else null,
         )
     }
 
