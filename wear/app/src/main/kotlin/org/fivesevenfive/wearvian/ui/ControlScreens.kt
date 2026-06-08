@@ -65,6 +65,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import kotlinx.coroutines.launch
+import org.fivesevenfive.wearvian.BuildConfig
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.util.Units
@@ -73,7 +74,10 @@ private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private val WARN = Color(0xFFFF6B6B)
-private const val PAGES = 5
+
+/** Control-surface pages, in order. SIGNAL (Gear Guard — not working yet) and SETTINGS are
+ *  development-only; production builds show just the working trio. */
+private enum class Page { KEY, CLOSURES, CHARGE, SIGNAL, SETTINGS }
 
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
 private val CLOSURE_BTN = 42.dp
@@ -96,7 +100,15 @@ fun ControlScreens(
     onProximityWakeChange: (Boolean) -> Unit,
     onStartPassive: () -> Unit,
 ) {
-    val pager = rememberPagerState { PAGES }
+    // Production hides the unfinished/experimental pages (Security & lights — Gear Guard doesn't
+    // work yet — and Settings). Debug builds show everything. BuildConfig.PRODUCTION is constant.
+    val pages = remember {
+        buildList {
+            add(Page.KEY); add(Page.CLOSURES); add(Page.CHARGE)
+            if (!BuildConfig.PRODUCTION) { add(Page.SIGNAL); add(Page.SETTINGS) }
+        }
+    }
+    val pager = rememberPagerState { pages.size }
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
     var acc by remember { mutableFloatStateOf(0f) }
@@ -115,7 +127,7 @@ fun ControlScreens(
                     when {
                         acc > ROTARY_STEP -> {
                             acc = 0f
-                            scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(PAGES - 1)) }
+                            scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(pages.size - 1)) }
                         }
                         acc < -ROTARY_STEP -> {
                             acc = 0f
@@ -126,21 +138,21 @@ fun ControlScreens(
                 }
                 .focusRequester(focus)
                 .focusable(),
-        ) { page ->
+        ) { index ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                when (page) {
-                    0 -> KeyPage(state, status, onTogglePresence, onCommand)
-                    1 -> ClosuresPage(state.inFlight, status, onCommand)
-                    2 -> ChargeStatusPage(status)
-                    3 -> SignalPage(state.inFlight, onCommand)
-                    else -> SettingsPage(state, onProximityWakeChange, onStartPassive)
+                when (pages[index]) {
+                    Page.KEY -> KeyPage(state, status, onTogglePresence, onCommand)
+                    Page.CLOSURES -> ClosuresPage(state.inFlight, status, onCommand)
+                    Page.CHARGE -> ChargeStatusPage(status)
+                    Page.SIGNAL -> SignalPage(state.inFlight, onCommand)
+                    Page.SETTINGS -> SettingsPage(state, onProximityWakeChange, onStartPassive)
                 }
             }
         }
         // Curved hours:minutes along the top of the home screen, like Wear fitness apps. The
         // default time source follows the watch's 12h/24h system setting. Home page only.
-        if (pager.currentPage == 0) TimeText()
-        PageDots(pager.currentPage, Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
+        if (pages[pager.currentPage] == Page.KEY) TimeText()
+        PageDots(pager.currentPage, pages.size, Modifier.align(Alignment.CenterEnd).padding(end = 3.dp))
     }
 }
 
@@ -164,6 +176,15 @@ private fun KeyPage(
             diameter = 60.dp,
             onClick = { onTogglePresence(!armed) },
         )
+        // Cabin temperature, small and subtle just under the key — localized to the watch's
+        // units (°F/°C). Dims to gray when the reading is stale (last-known, not confirmed).
+        status.cabinTempC?.takeIf { status.valid }?.let { c ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(Icons.Filled.Thermostat, null, Modifier.size(11.dp), colorFilter = ColorFilter.tint(DIM))
+                Spacer(Modifier.width(3.dp))
+                Text(Units.temp(c), color = if (status.live) Color.White else DIM, fontSize = 10.sp)
+            }
+        }
         // Tri-state: off → not armed; passive → armed but idling (service alive, BLE down,
         // watching for the car's approach); active → armed + sessions up.
         Label(
@@ -206,14 +227,6 @@ private fun KeyPage(
                 ).joinToString(" · "),
                 color = if (status.live) WARN else DIM, fontSize = 10.sp, textAlign = TextAlign.Center,
             )
-        }
-        // Cabin temperature, small and subtle — localized to the watch's units (°F/°C).
-        status.cabinTempC?.takeIf { status.valid }?.let { c ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(Icons.Filled.Thermostat, null, Modifier.size(11.dp), colorFilter = ColorFilter.tint(DIM))
-                Spacer(Modifier.width(3.dp))
-                Text(Units.temp(c), color = if (status.live) Color.White else DIM, fontSize = 10.sp)
-            }
         }
     }
 }
@@ -499,13 +512,13 @@ private fun Header(text: String) =
 private fun Label(text: String) = Text(text, color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
 
 @Composable
-private fun PageDots(current: Int, modifier: Modifier) {
+private fun PageDots(current: Int, count: Int, modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        repeat(PAGES) { i ->
+        repeat(count) { i ->
             Box(Modifier.size(5.dp).clip(CircleShape).background(if (i == current) Color.White else Color(0xFF444444)))
         }
     }
 }
 
 // Rotary crown travel required to flip one page — larger = less twitchy paging.
-private const val ROTARY_STEP = 110f
+private const val ROTARY_STEP = 165f

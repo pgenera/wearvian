@@ -40,8 +40,18 @@ android {
     }
 
     buildTypes {
+        // PRODUCTION gates the published feature set + protocol exposure: the release build
+        // (Play Store) is production, debug is the full development build. Read at runtime via
+        // BuildConfig.PRODUCTION (e.g. ControlScreens hides unfinished pages on production).
+        debug {
+            buildConfigField("boolean", "PRODUCTION", "false")
+        }
         release {
-            isMinifyEnabled = false
+            buildConfigField("boolean", "PRODUCTION", "true")
+            // R8 shrink + obfuscate: renames classes/methods so the Rivian protocol isn't
+            // trivially readable from the shipped APK (the wire bytes are unchanged, so it
+            // stays functional). Modest by design — a courtesy to Rivian, not hardened DRM.
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -72,6 +82,12 @@ android {
             // instead of throwing, so framework-free logic can be unit-tested on the JVM.
             isReturnDefaultValues = true
         }
+    }
+
+    lint {
+        // We use ComponentActivity + activity-compose (no Fragments); this lintVital check flags
+        // a transitive androidx.fragment version we never use. False positive — don't fail release.
+        disable += "InvalidFragmentVersionForActivityResult"
     }
 }
 
