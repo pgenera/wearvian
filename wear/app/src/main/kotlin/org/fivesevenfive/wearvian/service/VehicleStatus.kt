@@ -28,9 +28,11 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[8]           = estimated range, km (low byte; 220km==137mi). High byte UNLOCATED —
  *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-power low
  *                         byte). Correct above ~255km is unknown; needs a >158mi capture.
- *   status[9..10]       = live charge power, LE16 in 1/64 kW per count (= 15.625 W; decoded
- *                         2026-06-07/08). raw 644 → 10.06 kW (on-vehicle the app read ~10 kW
- *                         while a /100 scale wrongly showed 6.4 — the 100/64 ratio gives 1/64 kW).
+ *   status[9..10]       = live charge power, LE16 in 1/70 kW per count (≈ 14.29 W; decoded
+ *                         2026-06-08). Two captures pin the divisor at ~70: Sunday raw 644 → app
+ *                         9.1 kW (644/70=9.2); Monday raw 692 → app 9.9 kW (692/70=9.89). The
+ *                         earlier /64 (which assumed the app read ~10 kW for raw 644) overshot by
+ *                         ~9% — it showed 10.8 kW where the app showed 9.9. Steps by 4 counts.
  *   status[11],[12]     = constant config (0x50/0x78); charge LIMIT + climate setpoint are NOT
  *                         here (both cloud-only — setpoint never varied across captures)
  *
@@ -73,10 +75,10 @@ object VehicleStatus {
         /** Plug/charge state; [ChargeState.UNKNOWN] when not present or unrecognized. */
         val chargeState: ChargeState = ChargeState.UNKNOWN,
         /**
-         * Live charge power in watts ([9..10] little-endian × 1/64 kW = 15.625 W/count); 0 while
-         * not charging, null when not present. The 1/64-kW fixed-point scale is from on-vehicle
-         * truth (the app read ~10 kW where an earlier ×10-W/count scale wrongly showed 6.4 kW; the
-         * 10/6.4 ≈ 100/64 ratio pins it). Use [chargePowerKw] for display.
+         * Live charge power in watts ([9..10] little-endian × 1/70 kW ≈ 14.29 W/count); 0 while
+         * not charging, null when not present. The 1/70-kW scale matches the official app across
+         * two captures (raw 644→9.1 kW, raw 692→9.9 kW); an earlier /64 overshot by ~9%. Use
+         * [chargePowerKw] for display.
          */
         val chargePowerW: Int? = null,
     ) {
@@ -107,7 +109,7 @@ object VehicleStatus {
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge power, not range high byte
             chargeState = if (hasTelemetry) chargeStateOf(s(6)) else ChargeState.UNKNOWN,
-            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 1000 / 64 else null,
+            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 1000 / 70 else null,
         )
     }
 

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Luggage
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.ToggleOff
@@ -176,25 +177,37 @@ private fun KeyPage(
             diameter = 60.dp,
             onClick = { onTogglePresence(!armed) },
         )
-        // Cabin temperature, small and subtle just under the key — localized to the watch's
-        // units (°F/°C). Dims to gray when the reading is stale (last-known, not confirmed).
-        status.cabinTempC?.takeIf { status.valid }?.let { c ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(Icons.Filled.Thermostat, null, Modifier.size(11.dp), colorFilter = ColorFilter.tint(DIM))
-                Spacer(Modifier.width(3.dp))
-                Text(Units.temp(c), color = if (status.live) Color.White else DIM, fontSize = 10.sp)
+        // Key status text, flanked by small telemetry: estimated range on the left, cabin temp on
+        // the right. The flanks live in the OUTER thirds of three equal-weight cells (empty middle),
+        // so each sits at a FIXED sixth-point — out near the bezel, ~a third closer to the edge than
+        // the half-cell quarter-points — and does NOT shift when the status text changes width; the
+        // status text is overlaid, centred on top and free to be full width. Nothing shows on a side
+        // we have no state for (localized °F/°C, mi/km; dimmed gray when stale).
+        Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    status.rangeKm?.takeIf { status.valid }?.let { km ->
+                        FlankStat(Icons.Filled.Route, Units.range(km), status.live)
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    status.cabinTempC?.takeIf { status.valid }?.let { c ->
+                        FlankStat(Icons.Filled.Thermostat, Units.temp(c), status.live)
+                    }
+                }
             }
+            // Tri-state: off → not armed; passive → armed but idling (service alive, BLE down,
+            // watching for the car's approach); active → armed + sessions up.
+            Label(
+                when {
+                    !armed -> "Key off"
+                    state.presencePassive -> "Key passive"
+                    state.presenceRunning -> "Key active"
+                    else -> "Key passive"
+                },
+            )
         }
-        // Tri-state: off → not armed; passive → armed but idling (service alive, BLE down,
-        // watching for the car's approach); active → armed + sessions up.
-        Label(
-            when {
-                !armed -> "Key off"
-                state.presencePassive -> "Key passive"
-                state.presenceRunning -> "Key active"
-                else -> "Key passive"
-            },
-        )
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             LabeledIcon(Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight) {
                 onCommand(Cmd.UNLOCK_ALL, "UNLOCK")
@@ -441,6 +454,17 @@ private fun ClosureRow(
         arrow(Icons.Filled.KeyboardArrowUp, opens = upOpens)
         Spacer(Modifier.width(8.dp))
         arrow(Icons.Filled.KeyboardArrowDown, opens = !upOpens)
+    }
+}
+
+/** A tiny stacked icon-over-value stat used to flank the key (range, cabin temp). The label
+ *  text whites when [live], grays when stale; the glyph stays dim so it reads as a quiet caption. */
+@Composable
+private fun FlankStat(icon: ImageVector, text: String, live: Boolean) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Image(icon, null, Modifier.size(12.dp), colorFilter = ColorFilter.tint(DIM))
+        Spacer(Modifier.height(2.dp))
+        Text(text, color = if (live) Color.White else DIM, fontSize = 10.sp, maxLines = 1, softWrap = false)
     }
 }
 

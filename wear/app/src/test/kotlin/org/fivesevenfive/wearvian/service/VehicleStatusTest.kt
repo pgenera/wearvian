@@ -96,14 +96,18 @@ class VehicleStatusTest {
     }
 
     @Test
-    fun chargePowerIsLittleEndianInSixtyFourthsOfKw() {
-        // ctr=22 of the charge ramp: [9..10] = 0x0284 = 644 → 644/64 = 10.06 kW (the app read
-        // ~10 kW on-vehicle; 1/64 kW = 15.625 W per count → 644*1000/64 = 10062 W).
+    fun chargePowerIsLittleEndianInSeventiethsOfKw() {
+        // Sunday charge ramp, [9..10] = 0x0284 = 644 → 644/70 = 9.2 kW (the app read ~9.1 kW;
+        // 1/70 kW ≈ 14.29 W per count → 644*1000/70 = 9200 W). Monday raw 692 → 9885 W = 9.9 kW
+        // also matched the app, pinning the divisor at ~70 (an earlier /64 overshot by ~9%).
         VehicleStatus.update(hex("16000000" + "11ffac0f0030131adc84025078000000"))
         val s = VehicleStatus.state.value
-        assertEquals(10062, s.chargePowerW)
-        assertEquals(10.062, s.chargePowerKw!!, 1e-9)
+        assertEquals(9200, s.chargePowerW)
+        assertEquals(9.2, s.chargePowerKw!!, 1e-9)
         assertEquals(VehicleStatus.ChargeState.CHARGING, s.chargeState)
+        // Monday peak the watch displayed as 10.8 (under /64); /70 brings it to the app's 9.9.
+        VehicleStatus.update(hex("16000000" + "11ffac0f00311318ddb4025078000000")) // raw 0x02b4=692
+        assertEquals(9885, VehicleStatus.state.value.chargePowerW)
     }
 
     @Test

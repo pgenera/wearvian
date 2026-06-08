@@ -653,18 +653,22 @@ A capture across unplug → plug → fault → charge ramp, with the user's narr
 
 It's an enum, not a bitfield (charging `0x_3` lacks the "plugged" bit that idle `0x_5` carries).
 
-**`[9..10]` (LE16) = live charge power, 1/64 kW per count** (= 15.625 W; `raw ÷ 64` kW). On-vehicle
-the app read **~10 kW** at the captured plateau (raw ~644 → 10.06 kW). A first cut read the 0.1-kW
-display as 10 W/count (`raw ÷ 100`), which showed 6.4 kW for the same frame — wrong by exactly
-`10 / 6.4 ≈ 100/64`, pinning the real scale to **1/64 kW** (a binary fixed-point, not decimal).
-(An even earlier cut guessed ≈14 W/count.) `644 / 64 = 10.06 kW`, `148 / 64 = 2.31 kW` (the ~2 kW
-ramp start). Only `[6]`,`[9]`,`[10]` move during charging; SoC/cabin/range hold steady, as expected.
+**`[9..10]` (LE16) = live charge power, 1/70 kW per count** (≈ 14.29 W; `raw ÷ 70` kW). Pinned to
+**~70** by matching the official app across two captures: Sunday raw 644 → app **9.1 kW**
+(`644/70 = 9.2`), Monday raw 692 → app **9.9 kW** (`692/70 = 9.89`). Earlier cuts were wrong: a
+`raw ÷ 100` (10 W/count) read 6.4 kW; a `raw ÷ 64` cut (which had assumed the app read ~10 kW for
+raw 644) read 10.8 kW where the app showed 9.9 — overshooting by ~9%, i.e. exactly the `70/64`
+ratio. The value steps by 4 counts. Only `[6]`,`[9]`,`[10]` move during charging; SoC/cabin/range
+hold steady, as expected. Decode any capture with `tools/decode_status.py LOG --power`.
 
 Implemented in `service/VehicleStatus.kt`: `State` exposes `socPercent`, `cabinTempC`, `rangeKm`
 (low byte), `chargeState` ([ChargeState] enum), and `chargePowerW` (+`chargePowerKw`), null on short
 frames, with known-answer tests (`VehicleStatusTest`) pinned to the real Sunday + charging frames.
-Charge **limit** and the climate **setpoint** are still absent (both cloud-only; the setpoint never
-varied across captures — to find it, capture before/after deliberately changing it).
+Charge **limit** and the climate **setpoint** are absent — both **cloud-only**. The limit is
+confirmed not present: a deliberate 70%→90% change (2026-06-08, `…change-soc-limit.log`) left the
+frame byte-identical except `[5]` SoC and `[8]` range (natural drift) — every other byte, including
+the unexplained constants `[11]=0x50`/`[12]=0x78`, was unchanged. The setpoint likewise never varied
+across captures. Neither is in 0x1c.
 
 **Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
 `[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8]`=range km (low byte),
