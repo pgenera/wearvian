@@ -25,7 +25,7 @@ android {
     defaultConfig {
         applicationId = "org.fivesevenfive.wearvian"
         minSdk = 33          // Wear OS 4+
-        targetSdk = 34       // foreground-service types are required at 34+
+        targetSdk = 35       // Play requires new apps to target API 35+ (FGS types since 34)
         // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
         // Must stay unique across BOTH apps and only ever increase.
         versionCode = 1008

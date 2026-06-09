@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 108 108">
+  <!-- Play high-res app icon (512x512). Matches the on-device adaptive icon: the wearvian key
+       glyph, here in brand gold on the companion's navy. Full-bleed square — Play applies its
+       own rounded mask + shadow. -->
+  <rect width="108" height="108" fill="#102A43"/>
+  <g transform="translate(54,54) scale(1.6) translate(-54,-54)" fill="#FEDD5C">
+    <path d="M54,32a14,14 0 1,0 0.01,0zM54,40a6,6 0 1,1 -0.01,0zM52,58h4v18h-4zM56,64h8v4h-8zM56,70h6v4h-6z"/>
+  </g>
+</svg>

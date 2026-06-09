@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <!-- Play feature graphic (1024x500). Fully opaque (no transparency). Gold key + wordmark on a
+       navy gradient, matching the app icon and the watch's gold accent. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B2236"/>
+      <stop offset="1" stop-color="#163A5A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="500" fill="url(#bg)"/>
+  <!-- key glyph (from the 108-space launcher path), scaled and centred-left -->
+  <g transform="translate(190,250) scale(3.4) translate(-54,-54)" fill="#FEDD5C">
+    <path d="M54,32a14,14 0 1,0 0.01,0zM54,40a6,6 0 1,1 -0.01,0zM52,58h4v18h-4zM56,64h8v4h-8zM56,70h6v4h-6z"/>
+  </g>
+  <text x="380" y="235" font-family="DejaVu Sans" font-size="104" font-weight="bold" fill="#FFFFFF">wearvian</text>
+  <text x="384" y="298" font-family="DejaVu Sans" font-size="33" fill="#FEDD5C">Offline Rivian phone key — on your watch</text>
+  <text x="384" y="345" font-family="DejaVu Sans" font-size="25" fill="#9FB3C8">No cloud · key never leaves the watch</text>
+</svg>
