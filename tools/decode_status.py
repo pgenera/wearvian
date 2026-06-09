@@ -71,6 +71,8 @@ import sys
 # on it. (The marker path doesn't need it — it just takes the trailing 16 bytes.)
 CONFIG_ANCHOR = "7800"
 
+# 0x_8 was observed once (2026-06-09, 20A capture) right at charge start with ETA raw 0;
+# semantics unidentified, so it deliberately isn't named here and prints as ?0x8.
 CHARGE_STATES = {1: "unplugged", 2: "starting", 3: "charging", 5: "plugged-idle", 7: "fault"}
 
 

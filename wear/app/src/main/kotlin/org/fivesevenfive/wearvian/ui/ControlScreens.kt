@@ -312,10 +312,11 @@ private fun ChargeStatusPage(status: VehicleStatus.State) {
                 Text(Units.range(km), color = primary, fontSize = 15.sp)
             }
             // Charge state. Gold while charging, red on a fault, dim otherwise. The frame carries
-            // time-to-limit (not power), so we show the ETA — e.g. "Charging · 5h 18m" — not kW.
+            // time-to-limit (not power — the BLE frame has no charge rate), so the ETA is the
+            // headline: "Charging · 5h 18m left". "left" disambiguates remaining from elapsed.
             val (line, color) = when (status.chargeState) {
                 VehicleStatus.ChargeState.CHARGING -> {
-                    val eta = status.chargeEtaSeconds?.takeIf { it > 0 }?.let { " · ${formatEta(it)}" } ?: ""
+                    val eta = status.chargeEtaSeconds?.takeIf { it > 0 }?.let { " · ${formatEta(it)} left" } ?: ""
                     "Charging$eta" to (if (live) GOLD else DIM)
                 }
                 VehicleStatus.ChargeState.PLUGGED_IDLE -> "Plugged in" to primary

@@ -741,5 +741,12 @@ on the calibration point: 44 A@70 % raw 654 → 174 min vs a physical 27 kWh / 9
 for taper/efficiency).
 
 Shipped: `VehicleStatus.State.chargeEtaSeconds = chargeTimeRaw × 16`; `ControlScreens` shows e.g.
-**"Charging · 5h 18m"** (via `formatEta`). The **limit %** itself is NOT in the frame (cloud-only),
-so the UI shows the remaining time without the target percentage.
+**"Charging · 5h 18m left"** (via `formatEta`). The **limit %** itself is NOT in the frame
+(cloud-only), so the UI shows the remaining time without the target percentage.
+
+**New unidentified charge-state code `0x_8`** (`[6]=0x18`): seen in the 20 A capture's first BLE
+session, right as the truck was starting to charge, with ETA raw 0 — some pre-charge/handshake
+state distinct from `0x_2` starting and `0x_5` plugged-idle. One observation, semantics unknown,
+so it maps to `ChargeState.UNKNOWN` (the UI shows SoC/range with no state line) and
+`decode_status.py` prints it as `?0x8`. Identify it by catching what the official app displays
+the next time it appears.

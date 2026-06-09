@@ -48,10 +48,12 @@ object VehicleStatus {
 
     /** Charge state from status[6]'s low nibble (high nibble is a constant 0x1). */
     enum class ChargeState {
-        UNKNOWN,      // not yet parsed / unrecognized code
+        UNKNOWN,      // not yet parsed / unrecognized code (0x_8 seen once at charge start, ETA 0
+                      // — semantics unidentified, so it intentionally maps here and the UI shows
+                      // no state line for it)
         UNPLUGGED,    // 0x_1
         STARTING,     // 0x_2 — brief negotiating frame before charging
-        CHARGING,     // 0x_3 — actively charging (time-to-complete counts down in [9..10])
+        CHARGING,     // 0x_3 — actively charging (ETA-to-limit counts down in [9..10])
         PLUGGED_IDLE, // 0x_5 — cord connected, not charging (e.g. waiting for schedule)
         FAULT,        // 0x_7 — charge fault ("check charger")
     }
