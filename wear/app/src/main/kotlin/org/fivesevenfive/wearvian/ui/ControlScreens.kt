@@ -28,19 +28,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Luggage
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Route
-import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.ToggleOff
 import androidx.compose.material.icons.filled.ToggleOn
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Window
 import androidx.compose.runtime.Composable
@@ -76,9 +77,9 @@ private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private val WARN = Color(0xFFFF6B6B)
 
-/** Control-surface pages, in order. SIGNAL (Gear Guard — not working yet) and SETTINGS are
- *  development-only; production builds show just the working trio. */
-private enum class Page { KEY, CLOSURES, CHARGE, SIGNAL, SETTINGS }
+/** Control-surface pages, in order. SETTINGS is development-only; everything else ships.
+ *  Climate lives on the CHARGE card; ALARM is the last shipping page. */
+private enum class Page { KEY, CLOSURES, CHARGE, ALARM, SETTINGS }
 
 /** Closure-row open/close button diameter — trimmed so the label fits beside it on the round face. */
 private val CLOSURE_BTN = 42.dp
@@ -90,7 +91,7 @@ private val LABEL_W = 78.dp
  * The BONDED control surface: a vertical pager of full-screen "cards", navigable by
  * swipe or the rotary crown. Pure-black OLED field, high-contrast white iconography
  * (Material vectors tinted white). Page 0 = key + lock/unlock; page 1 = closures;
- * page 2 = charge/range status; page 3 = security & lights; page 4 = settings.
+ * page 2 = charge/range + climate; page 3 = alarm; page 4 = settings (debug).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -101,12 +102,12 @@ fun ControlScreens(
     onProximityWakeChange: (Boolean) -> Unit,
     onStartPassive: () -> Unit,
 ) {
-    // Production hides the unfinished/experimental pages (Security & lights — Gear Guard doesn't
-    // work yet — and Settings). Debug builds show everything. BuildConfig.PRODUCTION is constant.
+    // Production shows the working cards; Settings stays debug-only (auto power-save defaults on,
+    // so there's nothing to toggle in production). BuildConfig.PRODUCTION is constant.
     val pages = remember {
         buildList {
-            add(Page.KEY); add(Page.CLOSURES); add(Page.CHARGE)
-            if (!BuildConfig.PRODUCTION) { add(Page.SIGNAL); add(Page.SETTINGS) }
+            add(Page.KEY); add(Page.CLOSURES); add(Page.CHARGE); add(Page.ALARM)
+            if (!BuildConfig.PRODUCTION) add(Page.SETTINGS)
         }
     }
     val pager = rememberPagerState { pages.size }
@@ -144,8 +145,8 @@ fun ControlScreens(
                 when (pages[index]) {
                     Page.KEY -> KeyPage(state, status, onTogglePresence, onCommand)
                     Page.CLOSURES -> ClosuresPage(state.inFlight, status, onCommand)
-                    Page.CHARGE -> ChargeStatusPage(status)
-                    Page.SIGNAL -> SignalPage(state.inFlight, onCommand)
+                    Page.CHARGE -> ChargeStatusPage(state.inFlight, status, onCommand)
+                    Page.ALARM -> AlarmPage(state.inFlight, onCommand)
                     Page.SETTINGS -> SettingsPage(state, onProximityWakeChange, onStartPassive)
                 }
             }
@@ -272,44 +273,40 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
     }
 }
 
-/**
- * Read-only charge/range status from the 0x1c stream: state of charge, estimated range, and —
- * when plugged in — the charge state and the time-to-limit ETA. A stale (persisted, not currently
- * confirmed) reading dims to gray, matching the affordance treatment on the other pages.
- */
 /** Round charge-ETA seconds to a compact "Xh Ym" / "Ym" string (the field's ~16 s/count → ~1-min res). */
 private fun formatEta(seconds: Int): String {
     val totalMin = (seconds + 30) / 60
     return if (totalMin >= 60) "${totalMin / 60}h ${totalMin % 60}m" else "${totalMin}m"
 }
 
+/**
+ * Charge + climate. Top half is read-only from the 0x1c stream — SoC, charge state, and the
+ * time-to-limit ETA when plugged. Bottom half is cabin preconditioning: fire-and-forget Start/Off
+ * (the frame has no climate-active bit, so no toggle), with the live cabin temperature as the
+ * footer stat beside range. Climate codes confirmed against the decompiled command registry:
+ * CABIN_PRECONDITION_ENABLE 0x19 / DISABLE 0x1a. Stale (persisted) readings dim to gray.
+ */
 @Composable
-private fun ChargeStatusPage(status: VehicleStatus.State) {
+private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, onCommand: (Int, String) -> Unit) {
     Column(
-        Modifier.fillMaxSize().padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Header("Charge")
-        if (!status.valid || status.socPercent == null) {
-            Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
-        } else {
-            val live = status.live
-            val primary = if (live) Color.White else DIM
-            val charging = status.chargeState == VehicleStatus.ChargeState.CHARGING
-            // State of charge, with a battery icon that bolts + golds while charging.
+        Header("Charge & climate")
+        val live = status.live
+        val primary = if (live) Color.White else DIM
+        val charging = status.chargeState == VehicleStatus.ChargeState.CHARGING
+        if (status.valid && status.socPercent != null) {
+            // SoC hero — battery icon bolts + golds while charging.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
                     if (charging) Icons.Filled.BatteryChargingFull else Icons.Filled.BatteryFull,
-                    null, Modifier.size(26.dp),
+                    null, Modifier.size(24.dp),
                     colorFilter = ColorFilter.tint(if (charging && live) GOLD else primary),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("${status.socPercent}%", color = primary, fontSize = 30.sp)
-            }
-            // Estimated range — localized to the watch's distance units (mi/km).
-            status.rangeKm?.let { km ->
-                Text(Units.range(km), color = primary, fontSize = 15.sp)
+                Text("${status.socPercent}%", color = primary, fontSize = 28.sp)
             }
             // Charge state. Gold while charging, red on a fault, dim otherwise. The frame carries
             // time-to-limit (not power — the BLE frame has no charge rate), so the ETA is the
@@ -328,40 +325,58 @@ private fun ChargeStatusPage(status: VehicleStatus.State) {
             line?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (charging) {
-                        Image(Icons.Filled.Bolt, null, Modifier.size(13.dp), colorFilter = ColorFilter.tint(color))
+                        Image(Icons.Filled.Bolt, null, Modifier.size(12.dp), colorFilter = ColorFilter.tint(color))
                         Spacer(Modifier.width(2.dp))
                     }
                     Text(it, color = color, fontSize = 12.sp, textAlign = TextAlign.Center)
                 }
             }
+        } else {
+            Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
+        }
+        // Climate: fire-and-forget cabin preconditioning (Start warms/cools; Off stops it).
+        Spacer(Modifier.height(2.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            LabeledIcon(Icons.Filled.PlayArrow, "Climate", GOLD, Cmd.CABIN_PRECONDITION_ENABLE in inFlight) {
+                onCommand(Cmd.CABIN_PRECONDITION_ENABLE, "CLIMATE_ON")
+            }
+            LabeledIcon(Icons.Filled.Stop, "Off", busy = Cmd.CABIN_PRECONDITION_DISABLE in inFlight) {
+                onCommand(Cmd.CABIN_PRECONDITION_DISABLE, "CLIMATE_OFF")
+            }
+        }
+        // Footer mini-stats: estimated range + live cabin temp (each hidden when unknown).
+        if (status.valid && (status.rangeKm != null || status.cabinTempC != null)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                status.rangeKm?.let { FlankStat(Icons.Filled.Route, Units.range(it), live) }
+                status.cabinTempC?.let { FlankStat(Icons.Filled.Thermostat, Units.temp(it), live) }
+            }
         }
     }
 }
 
+/**
+ * Panic alarm — sound or silence the vehicle's anti-theft alarm (horn + lights). Two deliberate
+ * buttons (no toggle: there's no alarm-state bit in the frame, and you have to swipe here to reach
+ * it, so it won't fire by accident). Codes confirmed against the decompiled registry:
+ * PANIC_ON 0x07 / PANIC_OFF 0x34.
+ */
 @Composable
-private fun SignalPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
+private fun AlarmPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Header("Security & lights")
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LabeledIcon(Icons.Filled.Shield, "Guard on", GOLD, Cmd.ENABLE_GEAR_GUARD in inFlight) {
-                onCommand(Cmd.ENABLE_GEAR_GUARD, "GEAR_GUARD_ON")
+        Header("Alarm")
+        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            LabeledIcon(Icons.Filled.Campaign, "Sound", WARN, Cmd.PANIC_ON in inFlight) {
+                onCommand(Cmd.PANIC_ON, "PANIC_ON")
             }
-            LabeledIcon(Icons.Filled.Shield, "Guard off", busy = Cmd.DISABLE_GEAR_GUARD in inFlight) {
-                onCommand(Cmd.DISABLE_GEAR_GUARD, "GEAR_GUARD_OFF")
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            LabeledIcon(Icons.Filled.Lightbulb, "Lights", busy = Cmd.FLASH_LIGHTS in inFlight) {
-                onCommand(Cmd.FLASH_LIGHTS, "FLASH_LIGHTS")
-            }
-            LabeledIcon(Icons.Filled.VolumeUp, "Sound", busy = Cmd.ACTIVATE_SOUND in inFlight) {
-                onCommand(Cmd.ACTIVATE_SOUND, "ACTIVATE_SOUND")
+            LabeledIcon(Icons.Filled.NotificationsOff, "Silence", busy = Cmd.PANIC_OFF in inFlight) {
+                onCommand(Cmd.PANIC_OFF, "PANIC_OFF")
             }
         }
+        Text("Vehicle alarm — horn & lights", color = DIM, fontSize = 10.sp, textAlign = TextAlign.Center)
     }
 }
 
