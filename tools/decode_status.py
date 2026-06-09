@@ -51,6 +51,7 @@ anchor on the 16-byte status and treat any leading bytes as the counter.
   status[1] hi-nibble locked; lo-nibble doors  (0x0f = all closed)
   status[2] hi-nibble locked; 0x08 frunk, 0x04 liftgate  (1 = closed)
   status[3] lo-nibble windows  (0x0f = all closed)
+  status[4]           climate/HVAC state: 0 off, 0x04 preconditioning starting, 0x08 running
   status[5]           state of charge, integer %
   status[6] lo-nibble charge-state enum  (1 unplugged, 2 starting, 3 charging,
                                           5 plugged-idle, 7 fault)
@@ -148,6 +149,7 @@ def decode_status(s):
         "hatch_open": (s[2] & 0x04) == 0,
         "door_open": (s[1] & 0x0F) != 0x0F,
         "window_open": (s[3] & 0x0F) != 0x0F,
+        "climate_on": bool(s[4] & 0x0C),  # [4]: 0 off, 0x04 starting, 0x08 running
         "soc_pct": s[5],
         "charge_state": CHARGE_STATES.get(s[6] & 0x0F, "?0x%x" % (s[6] & 0x0F)),
         "cabin_c": s[7],
@@ -208,8 +210,8 @@ def main(argv=None):
                     help="after the table, print a per-byte value summary")
     args = ap.parse_args(argv)
 
-    hdr = "%-6s %-4s %-12s %-5s %-6s %-8s %-8s %s" % (
-        "lock", "soc", "charge", "cabC", "rngkm", "t_raw", "eta", "closures")
+    hdr = "%-6s %-4s %-4s %-12s %-5s %-6s %-8s %-8s %s" % (
+        "lock", "soc", "clim", "charge", "cabC", "rngkm", "t_raw", "eta", "closures")
     print(hdr)
     print("-" * len(hdr))
 
@@ -233,9 +235,10 @@ def main(argv=None):
             last = key
             total += 1
             collected.append((path, s))
-            row = "%-6s %-4d %-12s %-5d %-6d %-8d %-8s %s" % (
+            row = "%-6s %-4d %-4s %-12s %-5d %-6d %-8d %-8s %s" % (
                 "locked" if d["locked"] else "open",
-                d["soc_pct"], d["charge_state"], d["cabin_c"], d["range_km"],
+                d["soc_pct"], "on" if d["climate_on"] else "-", d["charge_state"],
+                d["cabin_c"], d["range_km"],
                 d["charge_time_raw"], _eta(d["eta_min"]) if d["charge_time_raw"] else "-",
                 _closures(d))
             if args.raw:

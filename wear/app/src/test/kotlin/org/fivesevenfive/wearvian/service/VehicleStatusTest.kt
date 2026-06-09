@@ -96,6 +96,18 @@ class VehicleStatusTest {
     }
 
     @Test
+    fun climateOnFromByte4() {
+        // Real frames from the 2026-06-09 climate on→off capture. [4]: 0 off, 0x04 starting,
+        // 0x08 running; `& 0x0c` != 0 = on.
+        VehicleStatus.update(hex("02000000" + "11ffac0f0032151be50000147800800c")) // [4]=0x00 off
+        assertFalse(VehicleStatus.state.value.climateOn)
+        VehicleStatus.update(hex("04000000" + "11ffac0f0432151be50000147800800c")) // [4]=0x04 starting
+        assertTrue(VehicleStatus.state.value.climateOn)
+        VehicleStatus.update(hex("0a000000" + "11ffac0f0832151de50000147800800c")) // [4]=0x08 running
+        assertTrue(VehicleStatus.state.value.climateOn)
+    }
+
+    @Test
     fun chargeTimeIsLittleEndianAndInverselyTracksCurrent() {
         // Fixed-SoC (50%) amperage sweep 2026-06-09: [9..10] is charge time-to-limit (∝ 1/power),
         // NOT power. raw FALLS as current rises and raw×current ≈ const (~29k) — impossible for

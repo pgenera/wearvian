@@ -334,15 +334,23 @@ private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, on
         } else {
             Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
         }
-        // Climate: fire-and-forget cabin preconditioning (Start warms/cools; Off stops it).
+        // Climate: cabin preconditioning. status[4] tells us if it's running, so the Climate
+        // button fills (gold live / gray stale) while on — mirroring the closures' actionable
+        // highlight — and a status line confirms it in words. Off stops it.
         Spacer(Modifier.height(2.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            LabeledIcon(Icons.Filled.PlayArrow, "Climate", GOLD, Cmd.CABIN_PRECONDITION_ENABLE in inFlight) {
-                onCommand(Cmd.CABIN_PRECONDITION_ENABLE, "CLIMATE_ON")
-            }
+            LabeledIcon(
+                Icons.Filled.PlayArrow, "Climate", GOLD,
+                busy = Cmd.CABIN_PRECONDITION_ENABLE in inFlight,
+                active = status.valid && status.climateOn,
+                activeFill = if (live) GOLD else DIM,
+            ) { onCommand(Cmd.CABIN_PRECONDITION_ENABLE, "CLIMATE_ON") }
             LabeledIcon(Icons.Filled.Stop, "Off", busy = Cmd.CABIN_PRECONDITION_DISABLE in inFlight) {
                 onCommand(Cmd.CABIN_PRECONDITION_DISABLE, "CLIMATE_OFF")
             }
+        }
+        if (status.valid && status.climateOn) {
+            Text("Preconditioning", color = if (live) GOLD else DIM, fontSize = 10.sp, textAlign = TextAlign.Center)
         }
         // Footer mini-stats: estimated range + live cabin temp (each hidden when unknown).
         if (status.valid && (status.rangeKm != null || status.cabinTempC != null)) {
@@ -499,10 +507,12 @@ private fun LabeledIcon(
     label: String,
     tint: Color = Color.White,
     busy: Boolean = false,
+    active: Boolean = false,
+    activeFill: Color = Color.White,
     onClick: () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundIcon(icon, label, tint, 48.dp, busy = busy, onClick = onClick)
+        RoundIcon(icon, label, tint, 48.dp, busy = busy, active = active, activeFill = activeFill, onClick = onClick)
         Spacer(Modifier.height(3.dp))
         Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center)
     }

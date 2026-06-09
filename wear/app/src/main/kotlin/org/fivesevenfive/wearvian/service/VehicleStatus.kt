@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.StateFlow
  *                                                       0x02 rear-driver, 0x01 rear-pass; 1=closed)
  *   status[2] hi-nibble = locked;  bit 0x08 = frunk, bit 0x04 = liftgate  (1=closed)
  *   status[3]           = windows (same bit layout as doors; 1=closed)
+ *   status[4]           = climate/HVAC state (decoded 2026-06-09): 0 off, 0x04 preconditioning
+ *                         starting, 0x08 running. `& 0x0c` != 0 = climate on.
  *   status[5]           = state of charge, integer %        (decoded 2026-06-07)
  *   status[6] lo-nibble = charge state enum                 (decoded 2026-06-07; see [ChargeState])
  *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
@@ -69,6 +71,12 @@ object VehicleStatus {
         val liftgateOpen: Boolean = false,
         val anyDoorOpen: Boolean = false,
         val anyWindowOpen: Boolean = false,
+        /**
+         * Cabin preconditioning (climate) is running. status[4] is a dedicated HVAC-state byte (0
+         * with climate off across every charge/idle capture); a climate on→off capture showed it
+         * step 0 → 0x04 (starting) → 0x08 (running) → 0 (off). We treat `0x0c` (either bit) as on.
+         */
+        val climateOn: Boolean = false,
         /** State of charge, integer percent; null when the frame is too short to carry it. */
         val socPercent: Int? = null,
         /** Cabin temperature in °C; null when not present in the frame. */
@@ -115,6 +123,7 @@ object VehicleStatus {
             liftgateOpen = (s(2) and 0x04) == 0,
             anyDoorOpen = (s(1) and 0x0f) != 0x0f,
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
+            climateOn = frame.size >= 4 + 5 && (s(4) and 0x0c) != 0,
             socPercent = if (hasTelemetry) s(5) else null,
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge-time low byte, not range high byte
