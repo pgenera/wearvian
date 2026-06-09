@@ -274,9 +274,15 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
 
 /**
  * Read-only charge/range status from the 0x1c stream: state of charge, estimated range, and —
- * when plugged in — the charge state and live charging power. A stale (persisted, not currently
+ * when plugged in — the charge state and the time-to-limit ETA. A stale (persisted, not currently
  * confirmed) reading dims to gray, matching the affordance treatment on the other pages.
  */
+/** Round charge-ETA seconds to a compact "Xh Ym" / "Ym" string (the field's ~16 s/count → ~1-min res). */
+private fun formatEta(seconds: Int): String {
+    val totalMin = (seconds + 30) / 60
+    return if (totalMin >= 60) "${totalMin / 60}h ${totalMin % 60}m" else "${totalMin}m"
+}
+
 @Composable
 private fun ChargeStatusPage(status: VehicleStatus.State) {
     Column(
@@ -305,10 +311,13 @@ private fun ChargeStatusPage(status: VehicleStatus.State) {
             status.rangeKm?.let { km ->
                 Text(Units.range(km), color = primary, fontSize = 15.sp)
             }
-            // Charge state / live power. Gold while charging, red on a fault, dim otherwise.
+            // Charge state. Gold while charging, red on a fault, dim otherwise. The frame carries
+            // time-to-limit (not power), so we show the ETA — e.g. "Charging · 5h 18m" — not kW.
             val (line, color) = when (status.chargeState) {
-                VehicleStatus.ChargeState.CHARGING ->
-                    "Charging · ${"%.1f".format(status.chargePowerKw ?: 0.0)} kW" to (if (live) GOLD else DIM)
+                VehicleStatus.ChargeState.CHARGING -> {
+                    val eta = status.chargeEtaSeconds?.takeIf { it > 0 }?.let { " · ${formatEta(it)}" } ?: ""
+                    "Charging$eta" to (if (live) GOLD else DIM)
+                }
                 VehicleStatus.ChargeState.PLUGGED_IDLE -> "Plugged in" to primary
                 VehicleStatus.ChargeState.STARTING -> "Starting…" to primary
                 VehicleStatus.ChargeState.FAULT -> "Check charger" to (if (live) WARN else DIM)

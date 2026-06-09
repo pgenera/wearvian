@@ -30,9 +30,17 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual("10ffac0f0031181bdd00005078000000", frames[0].hex())
 
     def test_markerless_fallback(self):
-        # A bare hex run (no VEHICLE_STATUS marker) still decodes via the config-tail anchor.
+        # A bare hex run (no VEHICLE_STATUS marker) still decodes via the [12..13]=7800 anchor.
         frames = list(ds.extract_frames("blah 100f0c0f0030111edc00005078000000 blah"))
         self.assertEqual(1, len(frames))
+
+    def test_marker_decodes_varied_tail(self):
+        # Real 44A charging frame whose [11..15] tail is 14 78 00 80 0c (not the old 50 78 00 00 00);
+        # the marker path takes the trailing 16 bytes, so the tail variation doesn't matter.
+        line = "VEHICLE_STATUS 0900000011ffac0f0032131be39002147800800c"
+        frames = list(ds.extract_frames(line))
+        self.assertEqual(1, len(frames))
+        self.assertEqual("11ffac0f0032131be39002147800800c", frames[0].hex())
 
     def test_marker_not_double_counted(self):
         # The marker path and the fallback scan must not both yield the same frame.
@@ -53,15 +61,18 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual(30, d["cabin_c"])
         self.assertEqual(220, d["range_km"])
         self.assertEqual("unplugged", d["charge_state"])
-        self.assertEqual(0, d["power_raw"])
+        self.assertEqual(0, d["charge_time_raw"])
 
-    def test_charge_power_divisor_is_seventy(self):
-        # monday raw 692 -> 9.9 kW (the app's reading); sunday raw 644 -> ~9.2 kW. Divisor ~70.
-        s = bytes.fromhex("11ffac0f00311318ddb4025078000000")  # raw 0x02b4 = 692
-        d = ds.decode_status(s)
-        self.assertEqual(692, d["power_raw"])
-        self.assertAlmostEqual(9.886, d["power_kw"], places=2)
-        self.assertEqual("charging", d["charge_state"])
+    def test_charge_time_amperage_sweep(self):
+        # Fixed-SoC (50%) 2026-06-09 sweep: raw [9..10] falls as current rises, and raw*current
+        # is ~constant (~29k) -- proving the field is time-to-complete (∝ 1/power), not power.
+        a20 = ds.decode_status(bytes.fromhex("10ffac0f0032131be3d005147800800c"))  # 20A
+        a44 = ds.decode_status(bytes.fromhex("11ffac0f0032131be39002147800800c"))  # 44A
+        self.assertEqual(50, a20["soc_pct"])
+        self.assertEqual("charging", a20["charge_state"])
+        self.assertEqual(0x05d0, a20["charge_time_raw"])  # 1488
+        self.assertEqual(0x0290, a44["charge_time_raw"])  # 656
+        self.assertGreater(a20["charge_time_raw"], a44["charge_time_raw"])  # lower current -> more time
 
     def test_closure_bits(self):
         # [1]=0x0f unlocked + doors closed; [2]=0x04 frunk open, liftgate closed.

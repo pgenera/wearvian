@@ -630,8 +630,8 @@ Sunday status (`100f0c0f0030111edc00005078000000`) vs two documented prior captu
 | `[8]` | 220 | 10 | 40 | **est. range, km** (low byte) | sunday 220 km == 137 mi ✓ |
 | `[6]` lo | 1 | 1 | 1 | charge state (see below) | moved later, same day |
 
-> **Range is `[8]` only, NOT `[8..9]`.** The charge capture below proves `[9]` is the charge-power
-> low byte, so it can't also be range's high byte. The prior-A/B `[9]=01` values are unreliable
+> **Range is `[8]` only, NOT `[8..9]`.** The charge capture below proves `[9]` is the charge-time
+> low byte (see the 2026-06-09 correction), so it can't also be range's high byte. The prior-A/B `[9]=01` values are unreliable
 > (early RE; possibly a tiny charge-power reading, not range), so the "266/280 km" and the
 > "~282 mi full-charge cross-check" are withdrawn. `[8]`=220 km matches sunday's 137 mi exactly;
 > range above ~255 km would need a high byte we haven't located (capture at >158 mi to find it).
@@ -653,17 +653,21 @@ A capture across unplug → plug → fault → charge ramp, with the user's narr
 
 It's an enum, not a bitfield (charging `0x_3` lacks the "plugged" bit that idle `0x_5` carries).
 
+> **SUPERSEDED 2026-06-09 — `[9..10]` is charge TIME-to-complete, NOT power.** An amperage sweep
+> at fixed SoC refuted the power read entirely; see the "2026-06-09" section at the bottom. The
+> paragraph below is kept for history.
+
 **`[9..10]` (LE16) = live charge power, 1/70 kW per count** (≈ 14.29 W; `raw ÷ 70` kW). Pinned to
 **~70** by matching the official app across two captures: Sunday raw 644 → app **9.1 kW**
 (`644/70 = 9.2`), Monday raw 692 → app **9.9 kW** (`692/70 = 9.89`). Earlier cuts were wrong: a
 `raw ÷ 100` (10 W/count) read 6.4 kW; a `raw ÷ 64` cut (which had assumed the app read ~10 kW for
 raw 644) read 10.8 kW where the app showed 9.9 — overshooting by ~9%, i.e. exactly the `70/64`
 ratio. The value steps by 4 counts. Only `[6]`,`[9]`,`[10]` move during charging; SoC/cabin/range
-hold steady, as expected. Decode any capture with `tools/decode_status.py LOG --power`.
+hold steady, as expected. Decode any capture with `tools/decode_status.py LOG --charging`.
 
 Implemented in `service/VehicleStatus.kt`: `State` exposes `socPercent`, `cabinTempC`, `rangeKm`
-(low byte), `chargeState` ([ChargeState] enum), and `chargePowerW` (+`chargePowerKw`), null on short
-frames, with known-answer tests (`VehicleStatusTest`) pinned to the real Sunday + charging frames.
+(low byte), `chargeState` ([ChargeState] enum), and `chargeTimeRaw` (the field once mislabeled
+charge power — see 2026-06-09), null on short frames, with known-answer tests (`VehicleStatusTest`).
 Charge **limit** and the climate **setpoint** are absent — both **cloud-only**. The limit is
 confirmed not present: a deliberate 70%→90% change (2026-06-08, `…change-soc-limit.log`) left the
 frame byte-identical except `[5]` SoC and `[8]` range (natural drift) — every other byte, including
@@ -672,5 +676,70 @@ across captures. Neither is in 0x1c.
 
 **Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
 `[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8]`=range km (low byte),
-`[9..10]`=charge power (1/64 kW/count), `[11]`=const `0x50`, `[12]`=const `0x78`, `[4]`/`[13..15]`=zero/unknown.
-Not in frame: charge limit, climate setpoint, charge-port door (all cloud-only).
+`[9..10]`=**charge time-to-complete** (see 2026-06-09 below — NOT power), `[12]`=const `0x78`,
+`[4]`/`[11]`/`[13..15]`=config/unknown (NOT all constant — `[11]`,`[14]`,`[15]` vary by capture).
+Not in frame: charge limit, climate setpoint, charge-port door, **live charge power** (all cloud-only).
+
+---
+
+## 2026-06-09 — `[9..10]` is charge TIME-to-complete, not power (and there is no AC/DC selector)
+
+Three charging captures at a **fixed SoC (50%)**, taken at deliberately different EVSE current
+limits (`20A/28A/44A-charging.log`), settle the field. At constant SoC the energy-remaining is
+fixed, so charge **power** must *rise* with current — but the `[9..10]` value *falls*:
+
+| set current | steady `[9..10]` raw | `raw × current` |
+|-------------|----------------------|-----------------|
+| 20 A | ~1483 | 29 660 |
+| 28 A | ~1042 | 29 148 |
+| 44 A | ~654  | 28 776 |
+
+`raw × current ≈ constant` (~29 k) ⇒ the field is **∝ 1/power**, i.e. **time-to-complete**, which is
+impossible for a power reading. The 2026-06-07/08 "`raw ÷ 70` kW" fit and the separate "`raw ÷ 255`
+≈ 5.1 kW" anomaly were the *same* illusion: both prior sessions sat in the same ~9–10 kW band, where
+power and time are numerically degenerate, and neither varied current independently of power. The
+44 A steady raw 654 happening to give `654/70 ≈ 9.3 kW` ≈ the observed 9.7 kW is that same
+coincidence — it only "works" near ~9 kW.
+
+Consequences:
+- **There is no AC/DC charge-mode selector to find.** The long-standing hunt for the byte that
+  switches the "power scale" is closed: the field was never power, so there's nothing to select.
+- **Live charge power is not in this 16-byte frame at all.** Across the sweep, the *only* status
+  bytes that changed were `[9..10]` (time) and `[7]` (cabin temp drift); nothing tracks current.
+- **Target = the charge LIMIT, unit ≈ 16 s/count** (CONFIRMED). The field is time-to-limit (a
+  70→90 % limit change at fixed SoC/current jumped the raw 654→1184), and `raw × 16 = seconds`,
+  pinned to ~1 % by a direct app reading (90 % / 9.7 kW: raw ~1184 ↔ "5h 18m"). See the 2026-06-09
+  A/B section below. Shipped as `chargeEtaSeconds` + a "Charging · 5h 18m" ETA in the UI.
+- The `[11..15]` "config tail" is **not constant**: these charging frames end `14 78 00 80 0c`
+  vs the older `50 78 00 00 00`; only `[12]=0x78` (and `[13]=0x00`) holds. `decode_status.py`'s
+  marker path now takes the trailing 16 bytes; the fallback anchors on `[12..13]=7800`.
+
+Code: `VehicleStatus.State.chargePowerW`/`chargePowerKw` removed, replaced by `chargeTimeRaw` (raw
+count, no unit asserted); `ControlScreens` shows "Charging" with no kW figure; KATs in
+`VehicleStatusTest` + `tools/test_decode_status.py` pinned to the 20A/44A sweep frames.
+
+### A/B: the field tracks the charge LIMIT (target = limit, not 100 %)
+
+Same SoC (50 %) and current (44 A), only the **charge limit** changed (`44A-charging.log` @70 %
+vs `44A-90-percent-charging.log` @90 %):
+
+| limit | fill (from 50 %) | steady raw | raw/4 |
+|-------|------------------|------------|-------|
+| 70 %  | 20 %             | ~654       | 164   |
+| 90 %  | 40 %             | ~1184      | 296   |
+
+The raw **jumped** when the limit rose ⇒ the field is **time-to-limit**, not time-to-100 %. This
+reverses the earlier "time-to-full / limit-independent" guess.
+
+**Unit CONFIRMED: ≈ 16 s per raw count (raw × 16 = seconds-to-limit).** Pinned assumption-free by a
+direct app reading: at the 90 % limit / 9.7 kW, with raw ~1184, the official app showed **"5h 18m"**
+(318 min) → 318 × 60 / 1184 = **16.1 s/count**; the clean **16 s/count** gives 1184 × 16 = 18 944 s
+= 316 min, matching the app to **0.7 %**. (The interim "raw/4 ≈ minutes" guess was 296 min, 6.9 %
+off — discard it.) The field steps by 4 counts, i.e. ~64 s ≈ 1-min display resolution. Cross-check
+on the calibration point: 44 A@70 % raw 654 → 174 min vs a physical 27 kWh / 9.7 kW = 167 min for a
+20 % fill of the Gen-1 Large pack (135 kWh usable) — consistent (the app runs a touch over linear
+for taper/efficiency).
+
+Shipped: `VehicleStatus.State.chargeEtaSeconds = chargeTimeRaw × 16`; `ControlScreens` shows e.g.
+**"Charging · 5h 18m"** (via `formatEta`). The **limit %** itself is NOT in the frame (cloud-only),
+so the UI shows the remaining time without the target percentage.

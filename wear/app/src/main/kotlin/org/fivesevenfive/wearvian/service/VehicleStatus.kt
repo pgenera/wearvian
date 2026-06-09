@@ -26,13 +26,17 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[6] lo-nibble = charge state enum                 (decoded 2026-06-07; see [ChargeState])
  *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
  *   status[8]           = estimated range, km (low byte; 220km==137mi). High byte UNLOCATED —
- *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-power low
+ *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-time low
  *                         byte). Correct above ~255km is unknown; needs a >158mi capture.
- *   status[9..10]       = live charge power, LE16 in 1/70 kW per count (≈ 14.29 W; decoded
- *                         2026-06-08). Two captures pin the divisor at ~70: Sunday raw 644 → app
- *                         9.1 kW (644/70=9.2); Monday raw 692 → app 9.9 kW (692/70=9.89). The
- *                         earlier /64 (which assumed the app read ~10 kW for raw 644) overshot by
- *                         ~9% — it showed 10.8 kW where the app showed 9.9. Steps by 4 counts.
+ *   status[9..10]       = charge ETA to the set LIMIT, LE16, ≈ 16 s per count (NOT power). Proven
+ *                         by a fixed-SoC (50%) amperage sweep 2026-06-09 (20A→1483, 28A→1042,
+ *                         44A→654: falls as current rises, raw×current ≈ const ⇒ time ∝ 1/power,
+ *                         impossible for power) plus a 70%→90% limit A/B (raw 654→1184 ⇒ tracks the
+ *                         limit, not 100%). Scale pinned to ~1% by a direct app reading (90% limit,
+ *                         9.7 kW: raw ~1184 ↔ app "5h 18m"). The old "1/70 kW power" read was a
+ *                         coincidence — both prior captures sat in the same ~9–10 kW band where
+ *                         power and time are numerically degenerate. True charge POWER is not in
+ *                         this frame at all (no other byte tracks current across the sweep).
  *   status[11],[12]     = constant config (0x50/0x78); charge LIMIT + climate setpoint are NOT
  *                         here (both cloud-only — setpoint never varied across captures)
  *
@@ -47,7 +51,7 @@ object VehicleStatus {
         UNKNOWN,      // not yet parsed / unrecognized code
         UNPLUGGED,    // 0x_1
         STARTING,     // 0x_2 — brief negotiating frame before charging
-        CHARGING,     // 0x_3 — actively charging (power ramps in [9..10])
+        CHARGING,     // 0x_3 — actively charging (time-to-complete counts down in [9..10])
         PLUGGED_IDLE, // 0x_5 — cord connected, not charging (e.g. waiting for schedule)
         FAULT,        // 0x_7 — charge fault ("check charger")
     }
@@ -75,15 +79,19 @@ object VehicleStatus {
         /** Plug/charge state; [ChargeState.UNKNOWN] when not present or unrecognized. */
         val chargeState: ChargeState = ChargeState.UNKNOWN,
         /**
-         * Live charge power in watts ([9..10] little-endian × 1/70 kW ≈ 14.29 W/count); 0 while
-         * not charging, null when not present. The 1/70-kW scale matches the official app across
-         * two captures (raw 644→9.1 kW, raw 692→9.9 kW); an earlier /64 overshot by ~9%. Use
-         * [chargePowerKw] for display.
+         * Charge ETA to the set limit, raw LE16 count from status[9..10] (NOT power — see the
+         * class doc); 0 while not charging, null when not present. Use [chargeEtaSeconds] for a
+         * real duration. Kept raw because the scale is empirical.
          */
-        val chargePowerW: Int? = null,
+        val chargeTimeRaw: Int? = null,
     ) {
-        /** Live charge power in kW (one decimal mirrors the app); null when [chargePowerW] is null. */
-        val chargePowerKw: Double? get() = chargePowerW?.let { it / 1000.0 }
+        /**
+         * Estimated time to reach the charge LIMIT, in seconds (≈ 16 s per raw count). Time-to-
+         * limit, not to 100% — a 70%→90% limit A/B at fixed SoC/current jumped the raw 654→1184.
+         * The 16 s/count scale is pinned to ~1% by a direct app reading (90% limit, 9.7 kW: raw
+         * ~1184 ↔ app "5h 18m" = 318 min). null when [chargeTimeRaw] is null.
+         */
+        val chargeEtaSeconds: Int? get() = chargeTimeRaw?.let { it * 16 }
     }
 
     private val _state = MutableStateFlow(State())
@@ -107,9 +115,9 @@ object VehicleStatus {
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
             socPercent = if (hasTelemetry) s(5) else null,
             cabinTempC = if (hasTelemetry) s(7) else null,
-            rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge power, not range high byte
+            rangeKm = if (hasTelemetry) s(8) else null, // [9] is charge-time low byte, not range high byte
             chargeState = if (hasTelemetry) chargeStateOf(s(6)) else ChargeState.UNKNOWN,
-            chargePowerW = if (hasTelemetry) (s(9) or (s(10) shl 8)) * 1000 / 70 else null,
+            chargeTimeRaw = if (hasTelemetry) (s(9) or (s(10) shl 8)) else null,
         )
     }
 

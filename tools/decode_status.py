@@ -8,9 +8,8 @@ log and prints the decoded fields as a table, so a capture can be correlated aga
 what the official app showed without re-counting hex by hand.
 
 It is the Python mirror of `wear/app/.../service/VehicleStatus.kt`. Keep the two in
-sync: the byte layout in `decode_status()` and the `CHARGE_KW_DIVISOR` constant must
-match the Kotlin parser. The self-tests in `test_decode_status.py` pin both against
-real captured frames.
+sync: the byte layout in `decode_status()` must match the Kotlin parser. The self-tests
+in `test_decode_status.py` pin both against real captured frames.
 
 No third-party deps.
 
@@ -18,21 +17,21 @@ Usage:
     tools/decode_status.py LOG [LOG ...]      # decoded table (one row per frame)
     tools/decode_status.py LOG --unique       # collapse consecutive identical frames
     tools/decode_status.py LOG --raw          # also print the 16 raw status bytes
-    tools/decode_status.py LOG --power        # only frames that report charge power
-    tools/decode_status.py LOG --div 255      # recompute kW with a different divisor
-    tools/decode_status.py LOG --summary      # per-byte value summary (find the mode bit)
+    tools/decode_status.py LOG --charging     # only frames that are actively charging
+    tools/decode_status.py LOG --summary      # per-byte value summary
 
 ------------------------------------------------------------------------------
-Open investigation: the charge-power scale is mode-dependent
+RESOLVED 2026-06-09: `[9..10]` is charge TIME-to-complete, not power
 ------------------------------------------------------------------------------
-`[9..10]` (LE16) is NOT a single-scale power field. AC sessions fit raw/70 kW
-(raw 644->9.1, 692->9.9), but a later session read raw ~1295 while the app showed
-5.1 kW (raw/255). Same field, two scales -> a charge-MODE selector (AC vs DC, or
-phase/unit) lives in another byte. `--summary` exists to find it: run it on an
-AC-session log and a DC-session log and compare which byte(s) flip between them
-(prime suspects: [6] charge-state, [4], or the high bits of [10]). `--div` lets you
-test a candidate scale without editing code. Until the selector is known, the
-default divisor stays 70 (correct for AC); do NOT retune it from one number.
+A fixed-SoC (50%) amperage sweep settled it: 20A->1483, 28A->1042, 44A->654, i.e.
+the field FALLS as current rises and raw*current is ~constant (~29k) -- the signature
+of time ∝ 1/power. Power must RISE with current, so the field can't be power. The
+old "raw/70 kW" fit and the "raw/255 = 5.1 kW" anomaly were the same illusion: both
+captures sat in a power band where the time value numerically resembled the kW the app
+showed, so power and time were degenerate. There is NO AC/DC mode selector to find --
+true charge POWER is simply not in this 16-byte frame (no other byte tracks current).
+The unit/target of the time field (minutes? to 100% or to the limit?) is still
+unconfirmed; capture this raw alongside the app's "time to charge complete" to pin it.
 
 ------------------------------------------------------------------------------
 Capturing on the watch
@@ -57,9 +56,8 @@ anchor on the 16-byte status and treat any leading bytes as the counter.
                                           5 plugged-idle, 7 fault)
   status[7]           cabin temperature, deg C
   status[8]           estimated range, km (LOW byte only; high byte unlocated)
-  status[9..10]       live charge power, LE16, in 1/CHARGE_KW_DIVISOR kW per count
-                      (AC only -- scale is mode-dependent; see note above)
-  status[11..15]      config tail, constant 50 78 00 00 00 (used as the frame anchor)
+  status[9..10]       charge TIME-to-complete, LE16 (∝ 1/power; NOT power -- see above)
+  status[11..15]      config tail; only [12..13]=78 00 is constant ([11],[14],[15] vary)
 """
 
 import argparse
@@ -68,15 +66,10 @@ import sys
 
 # --- decode constants (keep in sync with VehicleStatus.kt) -------------------
 
-# Charge power is status[9..10] (LE16) in 1/DIVISOR kW per count, for AC charging.
-# Pinned to ~70 by two AC captures matched against the official app: raw 644 -> 9.1 kW,
-# raw 692 -> 9.9 kW. A later session fit raw/255 (~5.1 kW) -> the scale is mode-dependent
-# (see the module docstring); this default is the AC scale.
-CHARGE_KW_DIVISOR = 70
-
-# status[11..15] are a constant config tail; we anchor frame extraction on it so the
-# 16-byte status is located whether or not a counter prefixes it in the log line.
-CONFIG_TAIL = "5078000000"
+# status[12..13] == 0x78,0x00 is the only part of the [11..15] tail that has held across
+# every capture ([11], [14], [15] vary); the marker-less fallback anchors frame extraction
+# on it. (The marker path doesn't need it — it just takes the trailing 16 bytes.)
+CONFIG_ANCHOR = "7800"
 
 CHARGE_STATES = {1: "unplugged", 2: "starting", 3: "charging", 5: "plugged-idle", 7: "fault"}
 
@@ -89,10 +82,12 @@ def extract_frames(text):
     marker-less dump still decodes. If the *log* format changes, update MARKER_RE.
     """
     seen_spans = set()
-    # 1) canonical marker emitted by the watch's debug log.
+    # 1) canonical marker emitted by the watch's debug log. The marker carries the whole
+    #    frame ([le32 counter][16B status]), so the status is just the trailing 16 bytes —
+    #    no content anchor needed (the [11..15] tail is NOT constant across captures).
     marker_re = re.compile(r"VEHICLE_STATUS\s+([0-9a-fA-F]{32,})")
     for m in marker_re.finditer(text):
-        frame = _status_from_hex(m.group(1))
+        frame = _status_trailing(m.group(1))
         if frame is not None:
             seen_spans.add(m.span())
             yield frame
@@ -107,30 +102,43 @@ def extract_frames(text):
             yield frame
 
 
-def _status_from_hex(hexstr):
-    """Return the 16-byte status from a frame hex string, or None if it isn't one.
+def _status_trailing(hexstr):
+    """Return the 16-byte status from a marker frame, or None if it can't be one.
 
-    Anchors on the config tail: the status is the 32 hex chars ending at the tail.
-    Any leading hex is the le32 counter (ignored for decoding)."""
+    The marker always carries `[le32 counter][16B status]`, so the status is the last
+    16 bytes; any leading hex is the counter (ignored). Robust to the [11..15] tail
+    varying between captures (it does)."""
     hexstr = hexstr.lower()
-    idx = hexstr.rfind(CONFIG_TAIL)
-    if idx < 0:
-        return None
-    end = idx + len(CONFIG_TAIL)
-    start = end - 32  # status is 16 bytes
-    if start < 0:
+    if len(hexstr) < 32 or len(hexstr) % 2:
         return None
     try:
-        return bytes.fromhex(hexstr[start:end])
+        return bytes.fromhex(hexstr[-32:])
     except ValueError:
         return None
 
 
-def decode_status(s, divisor=CHARGE_KW_DIVISOR):
-    """Decode a 16-byte status into a dict. Mirrors VehicleStatus.update().
+def _status_from_hex(hexstr):
+    """Return the 16-byte status from a marker-less hex run, or None if it isn't one.
 
-    `divisor` scales the raw charge-power count to kW (default = the AC scale)."""
-    raw_power = s[9] | (s[10] << 8)
+    Anchors on status[12..13] == 0x78,0x00 (the one part of the [11..15] tail that has
+    held across every capture — [11], [14], [15] all vary). The status is the 16 bytes
+    whose byte 12 is that anchor; any leading hex is the le32 counter. Used only by the
+    fallback scan, which needs a *content* anchor to reject non-status hex runs."""
+    hexstr = hexstr.lower()
+    idx = hexstr.rfind(CONFIG_ANCHOR)
+    if idx < 0:
+        return None
+    start = idx - 24  # status[12] sits 12 bytes (24 hex) into the 16-byte status
+    if start < 0:
+        return None
+    try:
+        return bytes.fromhex(hexstr[start:start + 32])
+    except ValueError:
+        return None
+
+
+def decode_status(s):
+    """Decode a 16-byte status into a dict. Mirrors VehicleStatus.update()."""
     return {
         "asleep": bool(s[0] & 0x01),
         "locked": bool(s[2] & 0xF0),
@@ -142,9 +150,14 @@ def decode_status(s, divisor=CHARGE_KW_DIVISOR):
         "charge_state": CHARGE_STATES.get(s[6] & 0x0F, "?0x%x" % (s[6] & 0x0F)),
         "cabin_c": s[7],
         "range_km": s[8],
-        "power_raw": raw_power,
-        "power_kw": raw_power / divisor,
+        "charge_time_raw": s[9] | (s[10] << 8),  # ETA-to-limit (∝ 1/power), not power
+        "eta_min": (s[9] | (s[10] << 8)) * 16 / 60,  # ~16 s per count (pinned vs app "5h18m")
     }
+
+
+def _eta(minutes):
+    m = int(round(minutes))
+    return "%dh%02dm" % (m // 60, m % 60) if m >= 60 else "%dm" % m
 
 
 def _closures(d):
@@ -160,12 +173,11 @@ def _closures(d):
     return ",".join(bits) if bits else "-"
 
 
-def summarize(frames, div):
+def summarize(frames):
     """Print a per-byte value summary across all collected frames.
 
     `frames` is a list of (path, 16-byte status). Constant bytes are flagged; varying
-    ones list their value set. This is the tool for finding the AC/DC mode selector:
-    summarize an AC-session log and a DC-session log, then compare which byte flips.
+    ones list their value set -- handy for spotting which byte tracks a condition.
     """
     print()
     print("=== per-byte summary over %d frame(s) ===" % len(frames))
@@ -178,13 +190,10 @@ def summarize(frames, div):
         tag = "CONST" if len(vals) == 1 else "VARIES"
         shown = " ".join("%02x" % v for v in vals[:16]) + (" ..." if len(vals) > 16 else "")
         print("  [%2d] %-6s %s" % (i, tag, shown))
-    # Power-specific view: the raw [9..10] range and what it implies under candidate scales.
-    powers = sorted({(b[9] | (b[10] << 8)) for _, b in frames if (b[9] | (b[10] << 8)) > 0})
-    if powers:
-        lo, hi = powers[0], powers[-1]
-        print("  charge power raw [9..10]: %d distinct, range %d..%d" % (len(powers), lo, hi))
-        print("    under /%d (AC): %.2f..%.2f kW" % (div, lo / div, hi / div))
-        print("    under /255    : %.2f..%.2f kW   (the suspected DC/alt scale)" % (lo / 255, hi / 255))
+    times = sorted({(b[9] | (b[10] << 8)) for _, b in frames if (b[9] | (b[10] << 8)) > 0})
+    if times:
+        print("  charge-time raw [9..10]: %d distinct, range %d..%d (∝ 1/power, not power)"
+              % (len(times), times[0], times[-1]))
 
 
 def main(argv=None):
@@ -192,15 +201,13 @@ def main(argv=None):
     ap.add_argument("logs", nargs="+", help="log file(s) to scan")
     ap.add_argument("--unique", action="store_true", help="collapse consecutive identical decodes")
     ap.add_argument("--raw", action="store_true", help="also print the 16 raw status bytes")
-    ap.add_argument("--power", action="store_true", help="only frames reporting charge power > 0")
-    ap.add_argument("--div", type=int, default=CHARGE_KW_DIVISOR,
-                    help="charge-power divisor (kW = raw/div); default %(default)s (AC scale)")
+    ap.add_argument("--charging", action="store_true", help="only frames that are actively charging")
     ap.add_argument("--summary", action="store_true",
-                    help="after the table, print a per-byte value summary (finds the mode selector)")
+                    help="after the table, print a per-byte value summary")
     args = ap.parse_args(argv)
 
-    hdr = "%-6s %-4s %-12s %-5s %-6s %-7s %-6s %s" % (
-        "lock", "soc", "charge", "cabC", "rngkm", "kW", "raw", "closures")
+    hdr = "%-6s %-4s %-12s %-5s %-6s %-8s %-8s %s" % (
+        "lock", "soc", "charge", "cabC", "rngkm", "t_raw", "eta", "closures")
     print(hdr)
     print("-" * len(hdr))
 
@@ -215,8 +222,8 @@ def main(argv=None):
             print("! %s: %s" % (path, e), file=sys.stderr)
             continue
         for s in extract_frames(text):
-            d = decode_status(s, args.div)
-            if args.power and d["power_raw"] == 0:
+            d = decode_status(s)
+            if args.charging and d["charge_state"] != "charging":
                 continue
             key = s.hex()
             if args.unique and key == last:
@@ -224,17 +231,18 @@ def main(argv=None):
             last = key
             total += 1
             collected.append((path, s))
-            row = "%-6s %-4d %-12s %-5d %-6d %-7.2f %-6d %s" % (
+            row = "%-6s %-4d %-12s %-5d %-6d %-8d %-8s %s" % (
                 "locked" if d["locked"] else "open",
                 d["soc_pct"], d["charge_state"], d["cabin_c"], d["range_km"],
-                d["power_kw"], d["power_raw"], _closures(d))
+                d["charge_time_raw"], _eta(d["eta_min"]) if d["charge_time_raw"] else "-",
+                _closures(d))
             if args.raw:
                 row += "  " + " ".join("%02x" % b for b in s)
             print(row)
     print("-" * len(hdr))
-    print("%d frame(s)  (kW divisor=%d)" % (total, args.div))
+    print("%d frame(s)" % total)
     if args.summary and collected:
-        summarize(collected, args.div)
+        summarize(collected)
     return 0
 
 

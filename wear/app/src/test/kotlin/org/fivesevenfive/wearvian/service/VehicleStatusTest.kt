@@ -81,7 +81,7 @@ class VehicleStatusTest {
         assertEquals(30, s.cabinTempC) // 30°C == 86°F
         assertEquals(220, s.rangeKm)   // 220 km == 137 mi (low byte [8])
         assertEquals(VehicleStatus.ChargeState.UNPLUGGED, s.chargeState)
-        assertEquals(0, s.chargePowerW)
+        assertEquals(0, s.chargeTimeRaw)
     }
 
     @Test
@@ -96,18 +96,28 @@ class VehicleStatusTest {
     }
 
     @Test
-    fun chargePowerIsLittleEndianInSeventiethsOfKw() {
-        // Sunday charge ramp, [9..10] = 0x0284 = 644 → 644/70 = 9.2 kW (the app read ~9.1 kW;
-        // 1/70 kW ≈ 14.29 W per count → 644*1000/70 = 9200 W). Monday raw 692 → 9885 W = 9.9 kW
-        // also matched the app, pinning the divisor at ~70 (an earlier /64 overshot by ~9%).
-        VehicleStatus.update(hex("16000000" + "11ffac0f0030131adc84025078000000"))
+    fun chargeTimeIsLittleEndianAndInverselyTracksCurrent() {
+        // Fixed-SoC (50%) amperage sweep 2026-06-09: [9..10] is charge time-to-limit (∝ 1/power),
+        // NOT power. raw FALLS as current rises and raw×current ≈ const (~29k) — impossible for
+        // power, which must rise with current. See VehicleStatus class doc.
+        VehicleStatus.update(hex("01000000" + "10ffac0f0032131be3d005147800800c")) // 20A
+        val a20 = VehicleStatus.state.value
+        assertEquals(50, a20.socPercent)
+        assertEquals(VehicleStatus.ChargeState.CHARGING, a20.chargeState)
+        assertEquals(0x05d0, a20.chargeTimeRaw) // 1488 (little-endian d0 05)
+        VehicleStatus.update(hex("09000000" + "11ffac0f0032131be39002147800800c")) // 44A
+        val a44 = VehicleStatus.state.value
+        assertEquals(0x0290, a44.chargeTimeRaw) // 656 — higher current, less time
+    }
+
+    @Test
+    fun chargeEtaSecondsUsesSixteenSecondsPerCount() {
+        // Target = the charge LIMIT (a 70→90% A/B jumped raw 654→1184 at fixed SoC/current). The
+        // 16 s/count scale is pinned by an app reading: 90% limit, 9.7 kW, raw ~1184 ↔ "5h 18m".
+        VehicleStatus.update(hex("09000000" + "11ffac0f0032131be3a004147800800c")) // 90%, raw 0x04a0=1184
         val s = VehicleStatus.state.value
-        assertEquals(9200, s.chargePowerW)
-        assertEquals(9.2, s.chargePowerKw!!, 1e-9)
-        assertEquals(VehicleStatus.ChargeState.CHARGING, s.chargeState)
-        // Monday peak the watch displayed as 10.8 (under /64); /70 brings it to the app's 9.9.
-        VehicleStatus.update(hex("16000000" + "11ffac0f00311318ddb4025078000000")) // raw 0x02b4=692
-        assertEquals(9885, VehicleStatus.state.value.chargePowerW)
+        assertEquals(1184, s.chargeTimeRaw)
+        assertEquals(1184 * 16, s.chargeEtaSeconds) // 18944 s ≈ 5h 16m (app showed 5h 18m)
     }
 
     @Test
@@ -119,7 +129,7 @@ class VehicleStatusTest {
         assertNull(s.socPercent)
         assertNull(s.cabinTempC)
         assertNull(s.rangeKm)
-        assertNull(s.chargePowerW)
+        assertNull(s.chargeTimeRaw)
         assertEquals(VehicleStatus.ChargeState.UNKNOWN, s.chargeState)
     }
 
