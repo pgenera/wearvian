@@ -66,8 +66,10 @@ class PresenceService : Service() {
     private var loopJob: Job? = null   // owns the BLE work (sessions + scan); torn down when locked
     private var notifJob: Job? = null
     private var idleJob: Job? = null
+    private var stableJob: Job? = null // drops to passive when connected-but-idle (see monitorStableIdle)
     private var lockJob: Job? = null
     private var tileJob: Job? = null
+    private var departJob: Job? = null // debounces a MATCH_LOST before we treat the car as gone
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
@@ -82,11 +84,42 @@ class PresenceService : Service() {
     /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
     @Volatile private var locked = false
 
-    /** In-process proximity watch: fires when the vehicle comes into range while [passive]. */
+    /**
+     * In passive mode: false until we've confirmed (via a debounced MATCH_LOST) that the car has
+     * actually left range. While false, a FIRST_MATCH is just the car we're still parked beside —
+     * ignore it, or we'd snap straight back to active. Once true, the next FIRST_MATCH is a genuine
+     * return → wake. Set on [enterPassive] from whether a link is currently up (gone → true).
+     */
+    @Volatile private var seenDeparture = false
+
+    /**
+     * In-process proximity watch (passive mode). FIRST_MATCH = the car is in range; MATCH_LOST = its
+     * advertisement is no longer seen. We only wake on FIRST_MATCH once we've seen the car leave
+     * ([seenDeparture]); a MATCH_LOST arms that, after [DEPART_DEBOUNCE_MS] so a brief dropout while
+     * parked nearby doesn't count as leaving.
+     */
     private val proximityCallback = object : android.bluetooth.le.ScanCallback() {
         override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
-            DebugLog.add("presence: proximity hit ${result.device?.address} rssi=${result.rssi} → wake")
-            scope.launch { exitPassive() }
+            when (callbackType) {
+                android.bluetooth.le.ScanSettings.CALLBACK_TYPE_MATCH_LOST -> {
+                    if (departJob?.isActive == true) return // already counting down a departure
+                    DebugLog.add("presence: proximity lost ${result.device?.address} → arming return watch")
+                    departJob = scope.launch {
+                        delay(DEPART_DEBOUNCE_MS)
+                        seenDeparture = true
+                        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes")
+                    }
+                }
+                else -> { // CALLBACK_TYPE_FIRST_MATCH
+                    departJob?.cancel() // car is (back) in range — cancel any pending "it left"
+                    if (seenDeparture) {
+                        DebugLog.add("presence: proximity return ${result.device?.address} rssi=${result.rssi} → wake")
+                        scope.launch { exitPassive() }
+                    } else {
+                        DebugLog.add("presence: proximity hit ${result.device?.address} (parked nearby) → ignore")
+                    }
+                }
+            }
         }
         override fun onScanFailed(errorCode: Int) {
             DebugLog.add("presence: proximity scan failed err=$errorCode")
@@ -129,6 +162,8 @@ class PresenceService : Service() {
         notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive) updateNotification(it) } }
         // Drop to passive (stay-alive + in-process proximity watch) after a stretch with no link.
         idleJob = scope.launch { monitorIdle() }
+        // Also drop to passive while still connected but parked-idle (state steady for a while).
+        stableJob = scope.launch { monitorStableIdle() }
         // Tear down / restore BLE as the watch locks / unlocks.
         lockJob = scope.launch { monitorLock() }
         // Keep the (background) tile's vehicle-state shading in sync, heavily debounced.
@@ -177,7 +212,7 @@ class PresenceService : Service() {
                 locked = nowLocked
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passive = false; _passive.value = false }
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); departJob?.cancel(); passive = false; _passive.value = false }
                     stopBle()
                     releaseWakeLock()
                     updateNotification(LOCKED_TEXT)
@@ -219,6 +254,48 @@ class PresenceService : Service() {
     }
 
     /**
+     * Drop to passive while the car is STILL connected but nothing is happening: when the meaningful
+     * vehicle state (lock / closures / charge / asleep) holds steady for the timeout, we release the
+     * wake lock and tear down the sessions, watching via the offloaded scan instead — the same
+     * battery win as [monitorIdle], but for the "parked right next to it" case the disconnect-based
+     * idle never catches. Unlike [monitorIdle] this is ALWAYS-ON (no power-save gate): it costs no
+     * capability (commands fall back to a one-shot connect; the car wakes us on the depart→return
+     * cycle), it only stops the continuous heartbeat. Any meaningful change resets the timer, so the
+     * door you open as you walk up keeps the key active.
+     */
+    private suspend fun monitorStableIdle() {
+        while (true) {
+            delay(STABLE_CHECK_MS)
+            if (passive || locked) continue
+            val s = VehicleStatus.state.value
+            if (!s.valid || !s.live) continue // no confirmed state to judge stability from
+            val snap = stableSnapshot(s)
+            // Plugged in is a strong "home/long stay" signal → drop sooner; otherwise be conservative
+            // so a normal errand stop doesn't idle the key out from under the user.
+            val timeout = if (s.chargeState in PLUGGED_STATES) PARKED_PLUG_TIMEOUT_MS else PARKED_IDLE_TIMEOUT_MS
+            // Hold for `timeout`; break the instant anything meaningful changes. withTimeoutOrNull
+            // returns null iff the full window elapsed unchanged (→ go passive); non-null if we broke.
+            val changed = withTimeoutOrNull(timeout) {
+                while (true) {
+                    delay(STABLE_CHECK_MS)
+                    if (passive || locked) break
+                    val s2 = VehicleStatus.state.value
+                    if (!s2.valid || !s2.live || stableSnapshot(s2) != snap) break
+                }
+            }
+            if (changed == null && !passive && !locked) {
+                DebugLog.add("presence: state stable ${timeout / 60_000}m → passive (parked-idle)")
+                enterPassive()
+                PresenceStatus.connected.first { it } // block until reactivated (return / manual / unlock)
+            }
+        }
+    }
+
+    /** Fields that signal user activity; SoC / range / cabin-temp drift passively and are excluded. */
+    private fun stableSnapshot(s: VehicleStatus.State) =
+        listOf(s.locked, s.anyDoorOpen, s.anyWindowOpen, s.frunkOpen, s.liftgateOpen, s.chargeState, s.asleep)
+
+    /**
      * Refresh the tile when the vehicle state it draws actually changes — heavily debounced,
      * because the 0x1c stream flickers fast (mid-unlock especially) and a tile update is
      * expensive/rate-limited. Maps to only the fields the tile renders so changes it ignores
@@ -258,11 +335,16 @@ class PresenceService : Service() {
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
         passive = true
         _passive.value = true
+        departJob?.cancel()
+        // If no link is up the car is already gone → watch for its return immediately. If one is up
+        // (parked-idle, or the manual button while at the car) wait for a MATCH_LOST first, so the
+        // ever-present car doesn't snap us straight back to active via FIRST_MATCH.
+        seenDeparture = !PresenceStatus.connected.value
         scope.launch { stopBle() }
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
-        DebugLog.add("presence: → passive (idle, service alive); proximity watch=$watching")
+        DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching")
         updateNotification(PASSIVE_TEXT)
         TileRefresher.refresh(this) // active→passive: tile state changed
         return true
@@ -273,6 +355,7 @@ class PresenceService : Service() {
         if (!passive) return
         passive = false
         _passive.value = false
+        departJob?.cancel()
         ProximityWake.stopScan(this, proximityCallback)
         if (locked) {
             DebugLog.add("presence: proximity woke but watch locked — staying down")
@@ -389,6 +472,7 @@ class PresenceService : Service() {
         _passive.value = false
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
+        departJob?.cancel()
         // Cancel the coroutine scope FIRST so the notification observer is gone before
         // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
         // standalone notification that outlives the service. Then remove the FG
@@ -411,6 +495,19 @@ class PresenceService : Service() {
         private const val STAGGER_MS = 1_500L
         /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). */
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
+        /** How often [monitorStableIdle] samples vehicle state to judge "nothing's changed". */
+        private const val STABLE_CHECK_MS = 30_000L
+        /** Connected but state steady this long → drop to passive. Plugged in = strong stay signal. */
+        private const val PARKED_PLUG_TIMEOUT_MS = 5 * 60_000L
+        private const val PARKED_IDLE_TIMEOUT_MS = 15 * 60_000L
+        /** Debounce a MATCH_LOST before counting the car as gone, so a brief dropout isn't a "left". */
+        private const val DEPART_DEBOUNCE_MS = 30_000L
+        /** Charge states that mean the cord is connected (idle drops faster when plugged in). */
+        private val PLUGGED_STATES = setOf(
+            VehicleStatus.ChargeState.CHARGING,
+            VehicleStatus.ChargeState.PLUGGED_IDLE,
+            VehicleStatus.ChargeState.STARTING,
+        )
         /** How often to check the watch lock state (no reliable "device locked" broadcast). */
         private const val LOCK_POLL_MS = 2_000L
         /** Settle time before refreshing the tile on a 0x1c change — the stream flickers fast. */

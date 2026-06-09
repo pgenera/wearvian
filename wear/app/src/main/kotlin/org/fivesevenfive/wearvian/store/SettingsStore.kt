@@ -10,11 +10,12 @@ class SettingsStore(context: Context) {
     /**
      * Auto power-save: after a stretch with no vehicle link, drop to passive — the foreground
      * service + notification stay up but the wake lock is released and BLE is torn down, and an
-     * in-process offloaded scan watches for the car's approach to rebuild the link. **Default
-     * OFF.** See docs/proximity-wake.md.
+     * in-process offloaded scan watches for the car's approach to rebuild the link. **Default ON**
+     * (all builds) — the battery win is wanted out of the box; capability is preserved (passive
+     * commands fall back to a one-shot connect). See docs/proximity-wake.md.
      */
     var proximityWakeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, false)
+        get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, true)
         set(value) = prefs.edit().putBoolean(KEY_PROXIMITY_WAKE, value).apply()
 
     /**

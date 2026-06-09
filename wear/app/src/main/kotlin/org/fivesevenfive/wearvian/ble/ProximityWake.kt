@@ -27,8 +27,12 @@ object ProximityWake {
 
     /**
      * Arm an in-process offloaded scan for the vehicle: filters on the VAS service UUID (how the
-     * modules advertise) plus every MAC we've learned, low-power, first-match. Delivers to
-     * [callback]. Returns true iff the system accepted the scan.
+     * modules advertise) plus every MAC we've learned, low-power. Delivers FIRST_MATCH (the car came
+     * into range) AND MATCH_LOST (it went out of range) to [callback]; the caller decides what each
+     * means. The disconnect→passive path only acts on FIRST_MATCH (harmlessly ignoring MATCH_LOST);
+     * the idle-while-present path uses MATCH_LOST to learn the car has actually left before it treats
+     * a later FIRST_MATCH as a real return (so it doesn't snap back to active while parked nearby).
+     * Returns true iff the system accepted the scan.
      */
     fun scanForVehicle(context: Context, vasVehicleId: String, callback: ScanCallback): Boolean {
         val scanner = scanner(context) ?: run {
@@ -49,7 +53,9 @@ object ProximityWake {
         }
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-            .setCallbackType(ScanSettings.CALLBACK_TYPE_FIRST_MATCH)
+            // FIRST_MATCH | MATCH_LOST: the chip reports both when the car appears and when its
+            // advertisement is no longer seen, so the caller can tell "arrived" from "left".
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_FIRST_MATCH or ScanSettings.CALLBACK_TYPE_MATCH_LOST)
             .setMatchMode(ScanSettings.MATCH_MODE_STICKY)
             .setNumOfMatches(ScanSettings.MATCH_NUM_ONE_ADVERTISEMENT)
             .build()

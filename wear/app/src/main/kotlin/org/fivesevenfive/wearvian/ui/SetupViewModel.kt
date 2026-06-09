@@ -31,8 +31,9 @@ data class SetupUiState(
     val presenceRunning: Boolean = false,
     /** Command codes currently being sent over BLE — drives the in-flight throb on each button. */
     val inFlight: Set<Int> = emptySet(),
-    /** Auto power-save toggle (stay-alive passive on idle), surfaced on the settings screen. */
-    val proximityWakeEnabled: Boolean = false,
+    /** Auto power-save toggle (stay-alive passive on idle), surfaced on the settings screen.
+     *  Defaults on, matching [org.fivesevenfive.wearvian.store.SettingsStore.proximityWakeEnabled]. */
+    val proximityWakeEnabled: Boolean = true,
     /** Whether the watch has a secure lock set; if not, the anti-theft gating can't engage. */
     val deviceSecure: Boolean = true,
     /** Service is running but idling passively (BLE down, watching for the vehicle's approach). */
@@ -193,15 +194,18 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(inFlight = _state.value.inFlight + commandCode)
         viewModelScope.launch {
             try {
-                if (PresenceService.isRunning) {
+                if (PresenceService.isRunning && !PresenceService.passive.value) {
                     // Live session up: ride it so presence-gated closures (charge-port,
                     // windows, liftgate) are accepted, and use its running counter. The
                     // PRIMARY VehicleSession sends on its next heartbeat tick (~300 ms).
                     CommandBus.submit(commandCode, label)
                     delay(COMMAND_INFLIGHT_MS) // brief throb; the send is fire-and-forget on the session
                 } else {
-                    // Key off / no session: one-shot connect→handshake→command. Fine for
-                    // lock/unlock (the security module answers half-asleep).
+                    // Key off, or passive (running but no live session): one-shot
+                    // connect→handshake→command. Fine for lock/unlock (the security module answers
+                    // half-asleep). If passive, also nudge the service back to active so the next
+                    // interaction has a live session ready.
+                    if (PresenceService.passive.value) PresenceService.start(getApplication())
                     withContext(Dispatchers.IO) {
                         ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
                     }
