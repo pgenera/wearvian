@@ -85,6 +85,14 @@ class PresenceService : Service() {
     @Volatile private var locked = false
 
     /**
+     * True once [onDestroy] has begun. Gates [updateNotification] so a notification observer racing
+     * on another thread can't re-post the ongoing notification *after* we've removed it — which would
+     * leave a standalone notification (same id, no longer owned by the service) lingering on screen.
+     * Cancelling the scope is async (no join), so ordering alone can't close this race; this flag does.
+     */
+    @Volatile private var stopping = false
+
+    /**
      * In passive mode: false until we've confirmed (via a debounced MATCH_LOST) that the car has
      * actually left range. While false, a FIRST_MATCH is just the car we're still parked beside —
      * ignore it, or we'd snap straight back to active. Once true, the next FIRST_MATCH is a genuine
@@ -461,6 +469,7 @@ class PresenceService : Service() {
 
     /** Re-post the ongoing notification with the latest connection state. */
     private fun updateNotification(state: String) {
+        if (stopping) return // teardown in progress — never re-post after we've removed the notification
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(state))
         logi("notification: $state  [${PresenceStatus.snapshot()}]")
     }
@@ -468,15 +477,17 @@ class PresenceService : Service() {
     override fun onDestroy() {
         logi("PresenceService: onDestroy")
         DebugLog.add("presence: stopping")
+        // Latch teardown BEFORE anything else: from here on updateNotification is a no-op, so a
+        // notification observer racing on another thread can't re-post after we remove the FG
+        // notification below (which would leave it lingering — the "Off didn't clear it" bug).
+        stopping = true
         _running.value = false
         _passive.value = false
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
         departJob?.cancel()
-        // Cancel the coroutine scope FIRST so the notification observer is gone before
-        // we reset state — otherwise reset()'s "Stopped" emission gets re-posted as a
-        // standalone notification that outlives the service. Then remove the FG
-        // notification explicitly so deactivating the key clears it.
+        // Tear down the coroutine scope (the notification observer lives here) and reset shared
+        // state, then remove the FG notification explicitly so deactivating the key clears it.
         scope.cancel()
         PresenceStatus.reset()
         VehicleStatus.clear() // keep last-known state but mark it stale (no session confirming it)
