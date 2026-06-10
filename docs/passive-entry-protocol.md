@@ -627,14 +627,17 @@ Sunday status (`100f0c0f0030111edc00005078000000`) vs two documented prior captu
 |------|--------|---------|---------|-------|-------|
 | `[5]` | 48 | 59 | 65 | **SoC, integer %** | sunday 48 == 48.4% ✓ |
 | `[7]` | 30 | 14 | 24 | **cabin temp, °C** | sunday 30 °C == 86 °F ✓ |
-| `[8]` | 220 | 10 | 40 | **est. range, km** (low byte) | sunday 220 km == 137 mi ✓ |
+| `[8..9]` | 220 | 10 | 40 | **est. range, km** (LE16) | sunday 220 km == 137 mi ✓ |
 | `[6]` lo | 1 | 1 | 1 | charge state (see below) | moved later, same day |
 
-> **Range is `[8]` only, NOT `[8..9]`.** The charge capture below proves `[9]` is the charge-time
-> low byte (see the 2026-06-09 correction), so it can't also be range's high byte. The prior-A/B `[9]=01` values are unreliable
-> (early RE; possibly a tiny charge-power reading, not range), so the "266/280 km" and the
-> "~282 mi full-charge cross-check" are withdrawn. `[8]`=220 km matches sunday's 137 mi exactly;
-> range above ~255 km would need a high byte we haven't located (capture at >158 mi to find it).
+> **Range is `[8..9]` LE16, but `[9]` is MULTIPLEXED** (resolved 2026-06-10 by `mileage.log`).
+> `[9]` is the range high byte **only when not charging**; while charging, `[9..10]` is the charge
+> ETA (the amperage sweep proved `[9]` varies with current at fixed SoC — that can't be range). So
+> range = `[8..9]` normally, but `[8]` alone mid-charge. The mileage capture
+> `100f0c0f003e111c1801…` (62 % SoC, unplugged) gives `[8..9]`=`18 01`=0x0118=**280 km = 174 mi**
+> (app showed 173 mi); the old `[8]`-only parse read 0x18=24 km≈15 mi — the reported bug. Discriminator
+> in code: `etaActive = chargeState ∈ {CHARGING, STARTING}`. `[8]`=220 still matches sunday's 137 mi
+> (high byte 0 there). (The early prior-A/B `[9]` guesses remain unreliable and are still withdrawn.)
 
 ### Charge session (`sunday-status-plugged-in-and-charging.log`) — `[6]` and `[9..10]` decoded
 
@@ -675,7 +678,7 @@ the unexplained constants `[11]=0x50`/`[12]=0x78`, was unchanged. The setpoint l
 across captures. Neither is in 0x1c.
 
 **Revised 0x1c map:** `[0]`=asleep, `[1]`=lock(hi)/doors(lo), `[2]`=lock(hi)/frunk`0x08`/liftgate`0x04`,
-`[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8]`=range km (low byte),
+`[3]`=windows, `[5]`=SoC %, `[6]`lo=charge-state, `[7]`=cabin °C, `[8..9]`=range km LE16 ([9] is range hi only when not charging),
 `[9..10]`=**charge time-to-complete** (see 2026-06-09 below — NOT power), `[12]`=const `0x78`,
 `[4]`/`[11]`/`[13..15]`=config/unknown (NOT all constant — `[11]`,`[14]`,`[15]` vary by capture).
 Not in frame: charge limit, climate setpoint, charge-port door, **live charge power** (all cloud-only).

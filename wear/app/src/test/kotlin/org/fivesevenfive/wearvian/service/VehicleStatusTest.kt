@@ -79,9 +79,21 @@ class VehicleStatusTest {
         val s = VehicleStatus.state.value
         assertEquals(48, s.socPercent)
         assertEquals(30, s.cabinTempC) // 30°C == 86°F
-        assertEquals(220, s.rangeKm)   // 220 km == 137 mi (low byte [8])
+        assertEquals(220, s.rangeKm)   // 220 km == 137 mi ([8..9] LE16, high byte 0 here)
         assertEquals(VehicleStatus.ChargeState.UNPLUGGED, s.chargeState)
         assertEquals(0, s.chargeTimeRaw)
+    }
+
+    @Test
+    fun rangeUsesHighByteWhenNotCharging() {
+        // mileage.log 2026-06-10: SoC 62%, unplugged, app showed 173 mi. [8..9]=18 01 ⇒ 0x0118 =
+        // 280 km = 174 mi. The old [8]-only parse read 0x18 = 24 km ≈ 15 mi (the reported bug).
+        VehicleStatus.update(hex("01000000" + "100f0c0f003e111c1801005078000000"))
+        val s = VehicleStatus.state.value
+        assertEquals(62, s.socPercent)
+        assertEquals(VehicleStatus.ChargeState.UNPLUGGED, s.chargeState)
+        assertEquals(280, s.rangeKm)   // [8] | [9]<<8 = 0x0118
+        assertEquals(0, s.chargeTimeRaw) // not charging ⇒ no ETA ([9] is the range high byte)
     }
 
     @Test
@@ -117,9 +129,13 @@ class VehicleStatusTest {
         assertEquals(50, a20.socPercent)
         assertEquals(VehicleStatus.ChargeState.CHARGING, a20.chargeState)
         assertEquals(0x05d0, a20.chargeTimeRaw) // 1488 (little-endian d0 05)
+        // While charging, [9] is the ETA low byte — range falls back to [8] alone, NOT [8..9]
+        // (else it'd read 0xe3 | 0xd0<<8 = nonsense). 0xe3 = 227 km.
+        assertEquals(227, a20.rangeKm)
         VehicleStatus.update(hex("09000000" + "11ffac0f0032131be39002147800800c")) // 44A
         val a44 = VehicleStatus.state.value
         assertEquals(0x0290, a44.chargeTimeRaw) // 656 — higher current, less time
+        assertEquals(227, a44.rangeKm)          // [8] only while charging
     }
 
     @Test
