@@ -30,8 +30,9 @@ old "raw/70 kW" fit and the "raw/255 = 5.1 kW" anomaly were the same illusion: b
 captures sat in a power band where the time value numerically resembled the kW the app
 showed, so power and time were degenerate. There is NO AC/DC mode selector to find --
 true charge POWER is simply not in this 16-byte frame (no other byte tracks current).
-The unit/target of the time field (minutes? to 100% or to the limit?) is still
-unconfirmed; capture this raw alongside the app's "time to charge complete" to pin it.
+Target = the set LIMIT (70->90% A/B jumped raw 654->1184), and the scale is 15 s/count
+= raw/4 min: a simultaneous app reading (10h 13m = 613 min vs our settled raw 2468) gives
+14.9 s/count, and the field steps by 4 counts so 4x15 = a clean 60 s display resolution.
 
 ------------------------------------------------------------------------------
 Capturing on the watch
@@ -57,7 +58,7 @@ anchor on the 16-byte status and treat any leading bytes as the counter.
                                           5 plugged-idle, 7 fault)
   status[7]           cabin temperature, deg C
   status[8]           estimated range, km (LOW byte only; high byte unlocated)
-  status[9..10]       charge TIME-to-complete, LE16 (∝ 1/power; NOT power -- see above)
+  status[9..10]       charge ETA-to-limit, LE16, 15 s/count = raw/4 min (NOT power -- see above)
   status[11..15]      config tail; only [12..13]=78 00 is constant ([11],[14],[15] vary)
 """
 
@@ -155,7 +156,7 @@ def decode_status(s):
         "cabin_c": s[7],
         "range_km": s[8],
         "charge_time_raw": s[9] | (s[10] << 8),  # ETA-to-limit (∝ 1/power), not power
-        "eta_min": (s[9] | (s[10] << 8)) * 16 / 60,  # ~16 s per count (pinned vs app "5h18m")
+        "eta_min": (s[9] | (s[10] << 8)) / 4,  # 15 s/count = raw/4 min (pinned vs app "10h13m")
     }
 
 

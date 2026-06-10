@@ -706,10 +706,11 @@ Consequences:
   switches the "power scale" is closed: the field was never power, so there's nothing to select.
 - **Live charge power is not in this 16-byte frame at all.** Across the sweep, the *only* status
   bytes that changed were `[9..10]` (time) and `[7]` (cabin temp drift); nothing tracks current.
-- **Target = the charge LIMIT, unit ≈ 16 s/count** (CONFIRMED). The field is time-to-limit (a
-  70→90 % limit change at fixed SoC/current jumped the raw 654→1184), and `raw × 16 = seconds`,
-  pinned to ~1 % by a direct app reading (90 % / 9.7 kW: raw ~1184 ↔ "5h 18m"). See the 2026-06-09
-  A/B section below. Shipped as `chargeEtaSeconds` + a "Charging · 5h 18m" ETA in the UI.
+- **Target = the charge LIMIT, unit = 15 s/count (= raw/4 min)** (CONFIRMED; the interim 16 s/count
+  was wrong). The field is time-to-limit (a 70→90 % limit change at fixed SoC/current jumped the raw
+  654→1184), and `raw × 15 = seconds`, pinned by a simultaneous app reading (10h 13m vs our settled
+  raw 2468 ⇒ 14.9 s/count) plus the field's step-by-4 (4×15 = clean 60 s). See the A/B section below.
+  Shipped as `chargeEtaSeconds` + a "Charging · Xh Ym left" ETA in the UI.
 - The `[11..15]` "config tail" is **not constant**: these charging frames end `14 78 00 80 0c`
   vs the older `50 78 00 00 00`; only `[12]=0x78` (and `[13]=0x00`) holds. `decode_status.py`'s
   marker path now takes the trailing 16 bytes; the fallback anchors on `[12..13]=7800`.
@@ -731,16 +732,18 @@ vs `44A-90-percent-charging.log` @90 %):
 The raw **jumped** when the limit rose ⇒ the field is **time-to-limit**, not time-to-100 %. This
 reverses the earlier "time-to-full / limit-independent" guess.
 
-**Unit CONFIRMED: ≈ 16 s per raw count (raw × 16 = seconds-to-limit).** Pinned assumption-free by a
-direct app reading: at the 90 % limit / 9.7 kW, with raw ~1184, the official app showed **"5h 18m"**
-(318 min) → 318 × 60 / 1184 = **16.1 s/count**; the clean **16 s/count** gives 1184 × 16 = 18 944 s
-= 316 min, matching the app to **0.7 %**. (The interim "raw/4 ≈ minutes" guess was 296 min, 6.9 %
-off — discard it.) The field steps by 4 counts, i.e. ~64 s ≈ 1-min display resolution. Cross-check
-on the calibration point: 44 A@70 % raw 654 → 174 min vs a physical 27 kWh / 9.7 kW = 167 min for a
-20 % fill of the Gen-1 Large pack (135 kWh usable) — consistent (the app runs a touch over linear
-for taper/efficiency).
+**Unit CONFIRMED: 15 s per raw count (raw × 15 = seconds-to-limit = raw/4 min).** Pinned by a
+*simultaneous* app reading: the official app showed **"10h 13m"** (613 min) while our UI showed
+**"10h 58m"** (658 min). Our display rounds and the field steps by 4, so 658 min ⇒ settled raw 2468;
+613 × 60 / 2468 = **14.9 s/count** ≈ 15. The step-by-4 clinches it: 4 × 15 = a clean **60 s** (1-min)
+display resolution, whereas 16 s would be an odd 64 s. The interim **16 s** pin was wrong — it
+matched the *settled* raw 1184 to the app's "5h 18m", but 5h18m = raw 1272 (= 318 × 4, clean) which
+sits in that 90 % log's *early* ramp (1188..1368): the app reading was taken early, not at 1184,
+which inflated the scale. Cross-check on the calibration point: 44 A@70 % raw 654 → 164 min vs a
+physical 27 kWh / 9.7 kW = 167 min for a 20 % fill of the Gen-1 Large pack (135 kWh usable) —
+consistent.
 
-Shipped: `VehicleStatus.State.chargeEtaSeconds = chargeTimeRaw × 16`; `ControlScreens` shows e.g.
+Shipped: `VehicleStatus.State.chargeEtaSeconds = chargeTimeRaw × 15`; `ControlScreens` shows e.g.
 **"Charging · 5h 18m left"** (via `formatEta`). The **limit %** itself is NOT in the frame
 (cloud-only), so the UI shows the remaining time without the target percentage.
 

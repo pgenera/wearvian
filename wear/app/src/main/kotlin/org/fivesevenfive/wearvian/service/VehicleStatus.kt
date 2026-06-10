@@ -30,12 +30,13 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[8]           = estimated range, km (low byte; 220km==137mi). High byte UNLOCATED —
  *                         the earlier [8..9] LE guess is REFUTED ([9] is the charge-time low
  *                         byte). Correct above ~255km is unknown; needs a >158mi capture.
- *   status[9..10]       = charge ETA to the set LIMIT, LE16, ≈ 16 s per count (NOT power). Proven
+ *   status[9..10]       = charge ETA to the set LIMIT, LE16, 15 s per count = raw/4 min (NOT power). Proven
  *                         by a fixed-SoC (50%) amperage sweep 2026-06-09 (20A→1483, 28A→1042,
  *                         44A→654: falls as current rises, raw×current ≈ const ⇒ time ∝ 1/power,
  *                         impossible for power) plus a 70%→90% limit A/B (raw 654→1184 ⇒ tracks the
- *                         limit, not 100%). Scale pinned to ~1% by a direct app reading (90% limit,
- *                         9.7 kW: raw ~1184 ↔ app "5h 18m"). The old "1/70 kW power" read was a
+ *                         limit, not 100%). Scale pinned by a simultaneous app reading (10h 13m =
+ *                         613 min vs settled raw 2468 ⇒ 14.9 s/count) and the field's step-by-4
+ *                         (4×15 = clean 60 s display res). The old "1/70 kW power" read was a
  *                         coincidence — both prior captures sat in the same ~9–10 kW band where
  *                         power and time are numerically degenerate. True charge POWER is not in
  *                         this frame at all (no other byte tracks current across the sweep).
@@ -96,12 +97,13 @@ object VehicleStatus {
         val chargeTimeRaw: Int? = null,
     ) {
         /**
-         * Estimated time to reach the charge LIMIT, in seconds (≈ 16 s per raw count). Time-to-
-         * limit, not to 100% — a 70%→90% limit A/B at fixed SoC/current jumped the raw 654→1184.
-         * The 16 s/count scale is pinned to ~1% by a direct app reading (90% limit, 9.7 kW: raw
-         * ~1184 ↔ app "5h 18m" = 318 min). null when [chargeTimeRaw] is null.
+         * Estimated time to reach the charge LIMIT, in seconds (15 s per raw count = raw/4 min).
+         * Time-to-limit, not to 100% — a 70%→90% limit A/B at fixed SoC/current jumped the raw
+         * 654→1184. The 15 s/count scale: a simultaneous app reading (10h 13m = 613 min) against
+         * our settled raw 2468 gives 14.9 s/count, and the field steps by 4 counts so 4×15 = 60 s
+         * is a clean 1-min display resolution (16 s would be 64 s). null when [chargeTimeRaw] null.
          */
-        val chargeEtaSeconds: Int? get() = chargeTimeRaw?.let { it * 16 }
+        val chargeEtaSeconds: Int? get() = chargeTimeRaw?.let { it * 15 }
     }
 
     private val _state = MutableStateFlow(State())

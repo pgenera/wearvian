@@ -123,13 +123,14 @@ class VehicleStatusTest {
     }
 
     @Test
-    fun chargeEtaSecondsUsesSixteenSecondsPerCount() {
+    fun chargeEtaSecondsUsesFifteenSecondsPerCount() {
         // Target = the charge LIMIT (a 70→90% A/B jumped raw 654→1184 at fixed SoC/current). The
-        // 16 s/count scale is pinned by an app reading: 90% limit, 9.7 kW, raw ~1184 ↔ "5h 18m".
+        // 15 s/count (= raw/4 min) scale is pinned by a simultaneous app reading (10h 13m = 613 min
+        // vs our settled raw 2468 ⇒ 14.9 s/count), and the field steps by 4 ⇒ 4×15 = clean 60 s.
         VehicleStatus.update(hex("09000000" + "11ffac0f0032131be3a004147800800c")) // 90%, raw 0x04a0=1184
         val s = VehicleStatus.state.value
         assertEquals(1184, s.chargeTimeRaw)
-        assertEquals(1184 * 16, s.chargeEtaSeconds) // 18944 s ≈ 5h 16m (app showed 5h 18m)
+        assertEquals(1184 * 15, s.chargeEtaSeconds) // 17760 s = 296 min = 4h 56m
     }
 
     @Test
