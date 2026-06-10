@@ -28,8 +28,8 @@ android {
         targetSdk = 35       // Play requires new apps to target API 35+ (FGS types since 34)
         // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
         // Must stay unique across BOTH apps and only ever increase.
-        versionCode = 1009
-        versionName = "0.4.1"
+        versionCode = 1010
+        versionName = "0.5"
     }
 
     signingConfigs {
