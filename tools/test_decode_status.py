@@ -73,9 +73,19 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual(0x05d0, a20["charge_time_raw"])  # 1488
         self.assertEqual(0x0290, a44["charge_time_raw"])  # 656
         self.assertGreater(a20["charge_time_raw"], a44["charge_time_raw"])  # lower current -> more time
-        # While charging, [9] is the ETA low byte, so range is [8] alone (0xe3=227), not [8..9].
+        # While charging, range is the 9-bit field [8]+bit0([9]): 0xe3d0 & 0x1ff = 0x0e3 = 227.
         self.assertEqual(227, a20["range_km"])
         self.assertEqual(227, a44["range_km"])
+
+    def test_range_nine_bits_while_charging(self):
+        # mileage-charging.log 2026-06-12: SoC 68%, charging, app showed 193 mi. Range shares [9]
+        # with the ETA: 0xcd36 & 0x1ff = 0x136 = 310 km = 193 mi; old [8]-only read 0x36 = 54 km
+        # = 34 mi (the bug). ETA = [9..10] = 0x00cd = 205, unaffected by the range mask.
+        d = ds.decode_status(bytes.fromhex("100f0c0f0044131c36cd005078000000"))
+        self.assertEqual(68, d["soc_pct"])
+        self.assertEqual("charging", d["charge_state"])
+        self.assertEqual(310, d["range_km"])
+        self.assertEqual(0xcd, d["charge_time_raw"])
 
     def test_range_high_byte_when_not_charging(self):
         # mileage.log 2026-06-10: SoC 62%, unplugged, app showed 173 mi. [8..9]=18 01 = 0x0118 =

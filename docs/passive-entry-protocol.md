@@ -630,14 +630,18 @@ Sunday status (`100f0c0f0030111edc00005078000000`) vs two documented prior captu
 | `[8..9]` | 220 | 10 | 40 | **est. range, km** (LE16) | sunday 220 km == 137 mi ✓ |
 | `[6]` lo | 1 | 1 | 1 | charge state (see below) | moved later, same day |
 
-> **Range is `[8..9]` LE16, but `[9]` is MULTIPLEXED** (resolved 2026-06-10 by `mileage.log`).
-> `[9]` is the range high byte **only when not charging**; while charging, `[9..10]` is the charge
-> ETA (the amperage sweep proved `[9]` varies with current at fixed SoC — that can't be range). So
-> range = `[8..9]` normally, but `[8]` alone mid-charge. The mileage capture
-> `100f0c0f003e111c1801…` (62 % SoC, unplugged) gives `[8..9]`=`18 01`=0x0118=**280 km = 174 mi**
-> (app showed 173 mi); the old `[8]`-only parse read 0x18=24 km≈15 mi — the reported bug. Discriminator
-> in code: `etaActive = chargeState ∈ {CHARGING, STARTING}`. `[8]`=220 still matches sunday's 137 mi
-> (high byte 0 there). (The early prior-A/B `[9]` guesses remain unreliable and are still withdrawn.)
+> **Range is a 9-bit field that OVERLAPS the charge ETA in `[9]`** (resolved 2026-06-12 by
+> `mileage-charging.log`; supersedes the interim "`[8]` alone mid-charge" rule). Range = `[8]` +
+> **bit0 of `[9]`** = `([8] | [9]<<8) & 0x1ff`. While charging, `[9..10]` is the charge ETA, so `[9]`'s
+> upper bits aren't range and must be masked off; when **not charging** the ETA is absent so `[9]` is a
+> clean range high byte and full `[8..9]` LE16 is used (allowing >511 km / 317 mi, above the 9-bit
+> ceiling — which only binds while charging, when you can't be near max range anyway). Evidence: at
+> 68 % **charging**, `…36cd…` → `0xcd36 & 0x1ff` = 0x136 = **310 km = 193 mi** (app agreed), whereas
+> `[8]` alone read 0x36 = 54 km = **34 mi** (the reported bug) and full `[8..9]` read 52534 km. The
+> 50 % amperage-sweep `[8]`-only happened to be right only because bit0 of `[9]` was 0 there
+> (`0xe3=227 km`); the mask reproduces 227 (`0xe3d0 & 0x1ff`). Idle captures unchanged: mileage.log
+> `18 01`=280 km=174 mi, sunday `dc 00`=220 km=137 mi. Discriminator still
+> `etaActive = chargeState ∈ {CHARGING, STARTING}`; charging masks, else full LE16.
 
 ### Charge session (`sunday-status-plugged-in-and-charging.log`) — `[6]` and `[9..10]` decoded
 

@@ -129,13 +129,26 @@ class VehicleStatusTest {
         assertEquals(50, a20.socPercent)
         assertEquals(VehicleStatus.ChargeState.CHARGING, a20.chargeState)
         assertEquals(0x05d0, a20.chargeTimeRaw) // 1488 (little-endian d0 05)
-        // While charging, [9] is the ETA low byte — range falls back to [8] alone, NOT [8..9]
-        // (else it'd read 0xe3 | 0xd0<<8 = nonsense). 0xe3 = 227 km.
+        // While charging, range is the 9-bit field [8]+bit0([9]); [9]'s upper bits are the ETA.
+        // 0xe3d0 & 0x1ff = 0x0e3 = 227 km (bit0 of 0xd0 = 0, so just [8] here).
         assertEquals(227, a20.rangeKm)
         VehicleStatus.update(hex("09000000" + "11ffac0f0032131be39002147800800c")) // 44A
         val a44 = VehicleStatus.state.value
         assertEquals(0x0290, a44.chargeTimeRaw) // 656 — higher current, less time
-        assertEquals(227, a44.rangeKm)          // [8] only while charging
+        assertEquals(227, a44.rangeKm)          // 0xe390 & 0x1ff = 227
+    }
+
+    @Test
+    fun rangeIsNineBitsWhileCharging() {
+        // mileage-charging.log 2026-06-12: SoC 68%, charging, app showed 193 mi. The range high bit
+        // shares [9] with the charge-ETA low byte: 0xcd36 & 0x1ff = 0x136 = 310 km = 193 mi. The old
+        // [8]-only parse read 0x36 = 54 km = 34 mi (the reported bug). ETA = [9..10] = 0x00cd = 205.
+        VehicleStatus.update(hex("02000000" + "100f0c0f0044131c36cd005078000000"))
+        val s = VehicleStatus.state.value
+        assertEquals(68, s.socPercent)
+        assertEquals(VehicleStatus.ChargeState.CHARGING, s.chargeState)
+        assertEquals(310, s.rangeKm)        // 0xcd36 & 0x1ff, NOT 0x36 (=54) and NOT 0xcd36 (=52534)
+        assertEquals(0xcd, s.chargeTimeRaw) // [9..10] = 205, unchanged by the range mask
     }
 
     @Test

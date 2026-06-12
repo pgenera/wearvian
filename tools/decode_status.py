@@ -57,8 +57,9 @@ anchor on the 16-byte status and treat any leading bytes as the counter.
   status[6] lo-nibble charge-state enum  (1 unplugged, 2 starting, 3 charging,
                                           5 plugged-idle, 7 fault)
   status[7]           cabin temperature, deg C
-  status[8..9]        estimated range, km, LE16 -- BUT [9] is range high byte only when not
-                      charging; while charging [9..10] is the ETA, so range is [8] alone then
+  status[8..9]        estimated range, km -- a 9-bit field (s[8] + bit0 of s[9]) that OVERLAPS the
+                      charge ETA in s[9]. Full s[8..9] LE16 when not charging; masked to 9 bits
+                      (& 0x1ff) while charging, since s[9]'s upper bits are then the ETA low byte
   status[9..10]       charge ETA-to-limit, LE16, 15 s/count = raw/4 min (NOT power -- see above)
   status[11..15]      config tail; only [12..13]=78 00 is constant ([11],[14],[15] vary)
 """
@@ -145,7 +146,8 @@ def _status_from_hex(hexstr):
 def decode_status(s):
     """Decode a 16-byte status into a dict. Mirrors VehicleStatus.update()."""
     cs = s[6] & 0x0F
-    # [9] is multiplexed: charge-ETA low byte while charging (states 2/3), else the range high byte.
+    # Range and the charge ETA overlap in s[9]: range is a 9-bit field (s[8] + bit0 of s[9]); while
+    # charging (states 2/3) s[9]'s upper bits are the ETA low byte, so range is masked to 9 bits.
     eta_active = cs in (2, 3)
     raw = (s[9] | (s[10] << 8)) if eta_active else 0
     return {
@@ -159,7 +161,7 @@ def decode_status(s):
         "soc_pct": s[5],
         "charge_state": CHARGE_STATES.get(cs, "?0x%x" % cs),
         "cabin_c": s[7],
-        "range_km": s[8] if eta_active else (s[8] | (s[9] << 8)),  # [8..9] LE16 unless [9]=ETA
+        "range_km": ((s[8] | (s[9] << 8)) & 0x1FF) if eta_active else (s[8] | (s[9] << 8)),  # 9-bit while charging
         "charge_time_raw": raw,  # ETA-to-limit (∝ 1/power), not power; 0 unless charging
         "eta_min": raw / 4,  # 15 s/count = raw/4 min (pinned vs app "10h13m")
     }

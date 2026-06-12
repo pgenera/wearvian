@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import org.fivesevenfive.wearvian.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -369,6 +370,9 @@ class VehicleSession(
      */
     private fun onVehicleStatus(value: ByteArray) {
         VehicleStatus.update(value) // publish parsed lock/closure state to the UI (in-memory)
+        // The 0x1c frame is plaintext vehicle status (lock/closure/SoC/range) — sensitive usage
+        // data. Don't write it to the debug log on production builds; keep it for dev diagnostics.
+        if (BuildConfig.PRODUCTION) return
         val hex = value.toHexString()
         if (hex == lastStatus1cHex) return
         lastStatus1cHex = hex
@@ -389,6 +393,9 @@ class VehicleSession(
         val v = vNonce
         when (value.firstOrNull()) {
             ActiveCommandFrames.TYPE_VEHICLE_STATUS -> {
+                // Decrypted vehicle status (lock/closure/charge) — sensitive usage data, so don't
+                // log it on production builds. (Closure state still reaches the UI via 0x1c.)
+                if (BuildConfig.PRODUCTION) return
                 val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
                 when {
                     pt == null -> {

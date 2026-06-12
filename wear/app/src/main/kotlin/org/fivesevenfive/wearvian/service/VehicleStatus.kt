@@ -28,9 +28,14 @@ import kotlinx.coroutines.flow.StateFlow
  *   status[6] lo-nibble = charge state enum                 (decoded 2026-06-07; see [ChargeState])
  *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
  *   status[8..9]        = estimated range, km, LE16 (280km==174mi, confirmed 2026-06-10 by mileage.log).
- *                         The high byte [9] is MULTIPLEXED with the charge ETA: it's the range high
- *                         byte only when not charging; while charging [9..10] is the ETA, so range
- *                         falls back to [8] alone (range fits — 227km/141mi at 50% mid-charge).
+ *                         Range OVERLAPS the charge ETA in [9]: it's really a 9-bit field — [8] plus
+ *                         bit0 of [9] — so while charging (when [9..10] carries the ETA) range must be
+ *                         masked to 9 bits (`[8..9] & 0x1ff`); the ETA's higher bits in [9] are dropped.
+ *                         Confirmed 2026-06-12 by mileage-charging.log (0xcd36 & 0x1ff = 310km = 193mi;
+ *                         [8]-only read 54km = 34mi — the reported bug). When NOT charging the ETA is
+ *                         absent so [9] is a clean range high byte and full [8..9] is used (so range can
+ *                         exceed the 9-bit 511km / 317mi ceiling, which the field only constrains while
+ *                         charging — and you can't be near max range while actively charging).
  *   status[9..10]       = charge ETA to the set LIMIT, LE16, 15 s per count = raw/4 min (NOT power). Proven
  *                         by a fixed-SoC (50%) amperage sweep 2026-06-09 (20A→1483, 28A→1042,
  *                         44A→654: falls as current rises, raw×current ≈ const ⇒ time ∝ 1/power,
@@ -84,9 +89,9 @@ object VehicleStatus {
         /** Cabin temperature in °C; null when not present in the frame. */
         val cabinTempC: Int? = null,
         /**
-         * Estimated remaining range, km. [8..9] LE16 when not charging (280==174mi); just [8] while
-         * charging, because [9] is then the charge-ETA low byte (so range > 255 km can't be shown
-         * mid-charge — it fits anyway at typical mid-charge SoC). null when not present in the frame.
+         * Estimated remaining range, km. A 9-bit field ([8] + bit0 of [9]) that overlaps the charge
+         * ETA in [9]: full [8..9] LE16 when not charging (280==174mi), but masked to 9 bits while
+         * charging (`& 0x1ff`), since [9]'s upper bits are then the ETA. null when not in the frame.
          */
         val rangeKm: Int? = null,
         /** Plug/charge state; [ChargeState.UNKNOWN] when not present or unrecognized. */
@@ -117,9 +122,12 @@ object VehicleStatus {
         fun s(i: Int) = frame[4 + i].toInt() and 0xff
         val hasTelemetry = frame.size >= 4 + 11 // need status[0..10] for SoC/temp/range/charge
         val cs = if (hasTelemetry) chargeStateOf(s(6)) else ChargeState.UNKNOWN
-        // status[9] is multiplexed: the charge-ETA low byte while a charge is in progress, else the
-        // range HIGH byte. So range is [8..9] LE16 normally (needed above 255 km / 158 mi) but only
-        // [8] while charging, when [9..10] carries the live ETA instead (and [10] is its high byte).
+        // Range and charge-ETA OVERLAP in status[9]: range is a 9-bit field (status[8] plus bit0 of
+        // [9]), and the charge ETA is [9..10] — so [9]'s upper bits are the ETA low byte while a
+        // charge is in progress. When charging, masking range to 9 bits drops those ETA bits; when
+        // not charging the ETA is absent, so [9] is a clean range high byte and full [8..9] gives
+        // headroom above the 9-bit ceiling (511 km / 317 mi). Confirmed on every captured frame
+        // (mileage-charging.log: 0xcd36 & 0x1ff = 310 km = 193 mi, while [8] alone read 54 km = 34 mi).
         val etaActive = cs == ChargeState.CHARGING || cs == ChargeState.STARTING
         // [2] high nibble is the cleanest lock signal (set when locked; clear when unlocked,
         // even with a closure open). [1]'s high nibble flickers (0x7f) mid-unlock.
@@ -137,8 +145,8 @@ object VehicleStatus {
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = when {
                 !hasTelemetry -> null
-                etaActive -> s(8)              // [9] is the ETA low byte while charging
-                else -> s(8) or (s(9) shl 8)   // [8..9] LE16 — high byte needed above 255 km
+                etaActive -> (s(8) or (s(9) shl 8)) and 0x1ff // 9-bit: [9]'s upper bits are the ETA
+                else -> s(8) or (s(9) shl 8)                   // [8..9] LE16 — full range, no ETA in [9]
             },
             chargeState = cs,
             chargeTimeRaw = when {
