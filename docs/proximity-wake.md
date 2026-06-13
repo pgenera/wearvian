@@ -33,8 +33,8 @@ notification stays visible while idle.
 ### Flow
 1. **Active** — `PresenceService`: foreground, wake lock, sensor sessions, RSSI heartbeats.
    Every PRIMARY/sensor MAC is learned into `VehicleAddressStore` (used as scan filters).
-2. **Idle → passive** — `monitorIdle()` after `IDLE_TIMEOUT_MS` (5 min) with no link, gated on
-   `proximityWakeEnabled` (default OFF) + not locked → `enterPassive()`:
+2. **Idle → passive** — `monitorIdle()` after `IDLE_TIMEOUT_MS` (5 min) with no link, when not
+   locked → `enterPassive()` (always on — no user toggle):
    - `passive=true`, `_passive` flow flips the UI to "Key passive";
    - `stopBle()` + `releaseWakeLock()`;
    - `ProximityWake.scanForVehicle(…, proximityCallback)` arms the in-process offloaded scan
@@ -47,18 +47,16 @@ notification stays visible while idle.
 unlock); `monitorLock()` stops the passive scan on lock; a plain restart while `passive` (e.g.
 START_STICKY after a kill, or any external start) is treated as a wake.
 
-Passive mode is opt-in (`SettingsStore.proximityWakeEnabled`, default OFF); enabling it is a
-plain toggle with no association/dialog and works anywhere.
+Passive mode is **always on** (the old `proximityWakeEnabled` toggle was removed 2026-06-13); it
+needs no association/dialog and works anywhere.
 
 ## Components
 - `ble/ProximityWake.kt` — `scanForVehicle()/stopScan()` (in-process offloaded `ScanCallback`).
 - `service/PresenceService.kt` — idle timer, `enterPassive()/exitPassive()`, `passive` flow,
   lock gating, MAC learning.
-- `store/SettingsStore.kt` — `proximityWakeEnabled` (default OFF).
-- `ui/ControlScreens.kt` — settings toggle + "Key passive" label driven by `PresenceService.passive`.
+- `ui/ControlScreens.kt` — "Key passive" label driven by `PresenceService.passive`.
 
 ## On-device test checklist (validated on-vehicle 2026-06-07)
-- [x] Enable Auto power-save (anywhere — plain toggle, no dialog).
 - [x] Active → walk away → after the idle timeout: log `→ passive (idle, service alive); proximity
       watch=true`, notification reads "Passive · waiting for vehicle", notification **stays up**,
       wake lock released.

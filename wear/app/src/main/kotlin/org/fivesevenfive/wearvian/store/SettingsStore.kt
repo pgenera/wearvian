@@ -8,17 +8,6 @@ class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("wearvian_settings", Context.MODE_PRIVATE)
 
     /**
-     * Auto power-save: after a stretch with no vehicle link, drop to passive — the foreground
-     * service + notification stay up but the wake lock is released and BLE is torn down, and an
-     * in-process offloaded scan watches for the car's approach to rebuild the link. **Default ON**
-     * (all builds) — the battery win is wanted out of the box; capability is preserved (passive
-     * commands fall back to a one-shot connect). See docs/proximity-wake.md.
-     */
-    var proximityWakeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PROXIMITY_WAKE, true)
-        set(value) = prefs.edit().putBoolean(KEY_PROXIMITY_WAKE, value).apply()
-
-    /**
      * Whether the user has the mobile key armed (operational intent, not a preference).
      * Distinct from "presence service currently running": when auto power-save drops the
      * service to passive, the key is still armed — the UI shows "Key passive", not "off".
@@ -27,8 +16,17 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_KEY_ARMED, false)
         set(value) = prefs.edit().putBoolean(KEY_KEY_ARMED, value).apply()
 
+    /**
+     * Debug-only override: force the UI into R1T (truck) mode regardless of the enrolled VIN, so the
+     * tailgate UI can be exercised on a non-R1T vehicle. Only togglable from the debug Settings page;
+     * defaults OFF so production (no Settings page) is unaffected. See [VehicleModel].
+     */
+    var forceR1t: Boolean
+        get() = prefs.getBoolean(KEY_FORCE_R1T, false)
+        set(value) = prefs.edit().putBoolean(KEY_FORCE_R1T, value).apply()
+
     private companion object {
-        const val KEY_PROXIMITY_WAKE = "proximity_wake_enabled"
         const val KEY_KEY_ARMED = "key_armed"
+        const val KEY_FORCE_R1T = "force_r1t"
     }
 }

@@ -55,8 +55,15 @@ object ActiveCommandFrames {
         const val LOCK_ALL = 0x0006
         const val OPEN_FRUNK = 0x0026
         const val CLOSE_FRUNK = 0x0027
+        // R1S liftgate. NOTE (k2.smali): the canonical OPEN_LIFTGATE enum value is 0x1f and 0x2a is
+        // OPEN_LIFTGATE_UNLATCH_TAILGATE — both have empty (cloud-routed) BLE arrays in-app. We ship
+        // 0x2a (pattern-predicted, open=close-1); leaving as-is (untested either way). See docs.
         const val OPEN_LIFTGATE = 0x002a  // pattern-predicted (app reserves it as NONE); verify on-vehicle
         const val CLOSE_LIFTGATE = 0x002b
+        // R1T tailgate OPEN. Authoritative code from k2.smali (OPEN_TAILGATE_VALUE = 0x24); like
+        // OPEN_LIFTGATE its in-app BLE array is empty (cloud-routed), but the firmware keys on the
+        // enum value. There is deliberately NO CLOSE_TAILGATE — none exists in the command registry.
+        const val OPEN_TAILGATE = 0x0024
         const val OPEN_ALL_WINDOWS = 0x0015
         const val CLOSE_ALL_WINDOWS = 0x0016
         const val OPEN_CHARGE_PORT = 0x0036
