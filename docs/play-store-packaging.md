@@ -64,10 +64,11 @@ The **release** build type is "production" (what goes to Play); **debug** is the
 development build. `BuildConfig.PRODUCTION` (`build.gradle.kts` build types) carries this at
 runtime:
 
-- **Production hides unfinished/experimental surfaces.** `ui/ControlScreens.kt` shows only the
-  working pager pages — **Key, Closures, Charge** — on production. The **Security & lights** page
-  (Gear Guard doesn't actuate yet) and the **Settings** page (proximity-wake, still unproven) are
-  **debug-only**. The swipe-left BLE debug console stays in both for now.
+- **Production hides debug-only surfaces.** `ui/ControlScreens.kt` shows the working pager pages —
+  **Key, Closures, Charge, Alarm** — on production. The **Settings** page (now just the debug
+  "Force R1T" test switch + manual passive) is **debug-only**. The swipe-left BLE debug console
+  stays in both for now. Also: the plaintext `0x1c`/`0x20` vehicle-status frames are logged only in
+  debug (`VehicleSession` gates them on `!BuildConfig.PRODUCTION`).
 - To gate more later: read `BuildConfig.PRODUCTION` (false in debug, true in release).
 
 ## Local sideload testing of the release build

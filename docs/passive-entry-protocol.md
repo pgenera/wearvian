@@ -431,17 +431,25 @@ lives in `ActiveCommandFrames.Cmd`. **Open/close pairs are adjacent (open = clos
 | 0x6e | FLASH_EXTERNAL_LIGHTS | | 0x72 / 0x73 | DRIVE_AUTH_USER_INPUT ALLOW / DENY |
 | 0x6f | ACTIVATE_EXTERNAL_SOUND | | 0x5e / 0x5f | DRIVE_AUTH_MOBILE_NOTIF ENABLE / DISABLE |
 
-**OPEN_LIFTGATE / OPEN_TAILGATE note:** in this app build their command classes are nulled to an
-empty BLE byte[] (the app routes them via the **cloud**), and `0x2a` is reserved as `k2.NONE`. But
-`0x2a` is exactly the open-liftgate code by the open=close−1 pattern, so the **vehicle firmware almost
-certainly still accepts `0x2a`** — Rivian just stopped the app sending it over BLE. Worth trying
-on-vehicle. (`0x0a/0x0c/0x12` also map to `k2.NONE` — reserved no-ops.)
+**OPEN_LIFTGATE / OPEN_TAILGATE note (updated 2026-06-13 from `k2.smali`):** the enum values are
+`OPEN_LIFTGATE = 0x1f`, `OPEN_TAILGATE = 0x24`, `OPEN_LIFTGATE_UNLATCH_TAILGATE = 0x2a`,
+`CLOSE_LIFTGATE = 0x2b`; **there is no `CLOSE_TAILGATE`** anywhere in the enum. In this app build the
+"open" classes are nulled to an empty BLE byte[] (cloud-routed); only `CLOSE_LIFTGATE` is populated.
+The firmware keys on the enum value regardless. We **ship `OPEN_LIFTGATE = 0x2a`** (the
+unlatch-tailgate combo) and it is **confirmed on-vehicle** to open the R1S liftgate (see 2026-06-05
+results); for the R1T we use the dedicated `OPEN_TAILGATE = 0x24`. **The `0x1c` status frame is
+model-agnostic** — the official app splits tailgate vs liftgate only via cloud GraphQL fields
+(`closureTailgateClosed`/`closureLiftgateClosed`), so our rear-closure bit `status[2] & 0x04` carries
+the tailgate-closed state on an R1T just as it carries liftgate on an R1S. (`0x0a/0x0c/0x12` map to
+`k2.NONE` — reserved no-ops.)
 
 **Cloud-only (no BLE code — need INTERNET / the companion):** WakeVehicle, Start/Stop charging,
 SetChargingLimit, CabinPreconditioningSetTemperature (0x35 takes a temp arg), all HVAC seat/defrost
 controls, GearGuard video, climate hold, software InstallNow. **State of charge / range / mileage are
 cloud telemetry** (GraphQL `vehicleState`: `batteryLevel`, `distanceToEmpty`, `vehicleMileage`) — the
 BLE path has no battery fields, so SoC is **not** retrievable over Bluetooth.
+> **SUPERSEDED (2026-06-07):** SoC, range, cabin temp, and charge state/ETA ARE on BLE — decoded from
+> the plaintext `0x1c` stream. See the "0x1c carries SoC, range, and cabin temp" section below.
 
 ## What this means for the app
 

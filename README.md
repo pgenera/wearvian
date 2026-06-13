@@ -1,65 +1,63 @@
 # wearvian
 
-WearOS app that acts as a Rivian phone key (BLE) for a Gen-1 R1S — unlock and **drive**
-enabled by BLE proximity, fully offline once set up. No companion phone app is required to
-*operate* (only to *enroll*).
+Wear OS app that acts as a Rivian phone key (BLE) — unlock and **drive** enabled by BLE proximity,
+fully offline once set up. A companion phone app is needed only to *enroll* (a Rivian cloud step),
+never to *operate*. The watch has **no `INTERNET` permission**.
 
 > **Key protocol finding:** there is no discrete "drive" command. Once the watch is enrolled
-> (one-time cloud step) and BLE-bonded to the vehicle, the R1S's passive-entry logic unlocks and
-> enables drive automatically whenever it localizes the bonded key. The watch's job is to *be* a
-> bonded phone key that maintains BLE presence. See [`PLAN.md`](PLAN.md) for the full design,
-> protocol constants, and current status.
+> (one-time cloud step) and presence-authenticated to the vehicle, the vehicle's passive-entry logic
+> unlocks and enables drive automatically whenever it localizes the key (via an authenticated RSSI
+> heartbeat session — *not* OS bonding, which the official app does not use). The watch's job is to
+> *be* a phone key that maintains that BLE presence.
 
-## Status (2026-06-07, v0.4.1)
+## Status
 
-**The watch is a fully working offline phone key — confirmed on-vehicle (Gen-1 R1S).** With the
-phone in airplane mode, the watch enrolls (once, via the companion), then drives passive
-entry/unlock and active commands entirely from its own BLE radio.
+Version **0.5.3** (versionCode 1013). The watch is a working offline phone key, confirmed on-vehicle
+on a Gen-1 **R1S**; **R1T** (truck) support is implemented from the decompile but not yet tested on a
+truck. With the phone in airplane mode, the watch enrolls once (via the companion) then drives
+passive entry/unlock and active commands entirely from its own BLE radio.
 
-Confirmed working on the vehicle:
+Confirmed working on the vehicle (R1S):
 
-- ✅ **Passive entry + drive enable** by BLE presence (heartbeat/ranging session). The vehicle
-  unlocks on approach and allows drive with phone/cloud fully off.
-- ✅ **Active commands** — unlock/lock (`0x03`/`0x06`), frunk open/close (`0x26`/`0x27`), liftgate
-  open/close (`0x2a`/`0x2b`). (Windows + charge-port frames are byte-correct but the vehicle
-  ignores them on a one-shot connection — see `docs/passive-entry-protocol.md`; parked.)
-- ✅ **Live vehicle status** — lock, doors, windows, frunk, liftgate decoded from the plaintext
-  `0x1c` status stream and reflected in the UI (`docs/passive-entry-protocol.md` has the byte map).
-- ✅ **Watch tile** — hex layout: key in the center plus six icon controls (lock/unlock, frunk
-  open/close, hatch open/close), with vehicle-state button shading and live refresh.
-- ✅ **M2 proximity wake** — opt-in passive idle (releases the wake lock, tears down BLE) with a
-  hardware-offloaded scan that auto-rebuilds the link on approach; full active→passive→wake→active
-  cycle confirmed on-vehicle. See `docs/proximity-wake.md`.
+- ✅ **Passive entry + drive enable** by BLE presence (authenticated heartbeat/ranging session).
+- ✅ **Active commands** — unlock/lock, frunk, liftgate, windows, charge port, climate precondition,
+  panic. (Commands ride the live presence session, which is what makes the closure commands the
+  vehicle gates on presence actually actuate.)
+- ✅ **Live vehicle status** — lock, doors, windows, frunk, liftgate, SoC, range, cabin temp, charge
+  state + time-to-limit, decoded from the plaintext `0x1c` stream and shown in the UI/tile.
+- ✅ **Watch tile** — hex layout (key + six controls) with vehicle-state shading and live refresh.
+- ✅ **Power-saving passive mode** (always on) — after an idle stretch it releases the wake lock and
+  tears down BLE, then a hardware-offloaded scan rebuilds the link on approach.
+
+R1T (decompile-derived, untested on a truck): the rear closure shows a **Tailgate** (open only — no
+tailgate-close command exists) instead of the R1S hatch; the model is decoded from the VIN.
 
 Foundations:
 
-- ✅ `wear/core-crypto/` — standalone Kotlin/JVM module, **tests pass**
-  (`cd wear/core-crypto && ./gradlew test`). secp256r1 keygen + ECDH + HKDF-SHA256 + HMAC +
-  `signCommand`, with known-answer parity against the `rivian-python-client` reference.
-- ✅ `wear/` — Android Wear OS app (Compose, BLE handshake, command + presence session, tile).
-  Builds to a debug APK against the Android SDK. No `INTERNET` permission.
+- ✅ `wear/core-crypto/` — standalone Kotlin/JVM module (secp256r1 + ECDH + HKDF-SHA256 + HMAC +
+  AES-GCM command frames), known-answer parity tests. `cd wear/core-crypto && ./gradlew test`.
+- ✅ `wear/` — Wear OS app (Compose, BLE handshake, command + presence session, tile). No `INTERNET`.
 - ✅ **Companion phone app** — own repo,
   [`wearvian-companion`](https://github.com/pgenera/wearvian-companion). Performs the Rivian
-  login/MFA + `EnrollPhone` and hands the watch its VAS IDs over the Wear OS Data Layer. The
-  watch's EC private key never leaves the watch.
-
-The standalone Flask cloud-auth broker (`auth-server/`) and the watch's QR/browser enrollment
-flow have been **removed** — the companion app replaces them.
+  login/MFA + `EnrollPhone` and hands the watch its VAS IDs over the Wear OS Data Layer. The watch's
+  EC private key never leaves the watch.
 
 ## Layout
 
-| Path                | What                                                              |
-|---------------------|------------------------------------------------------------------|
-| `wear/`             | Android Gradle project — the watch app                           |
-| `wear/core-crypto/` | Pure-JVM crypto/protocol module (composite build, unit-tested)   |
-| `PLAN.md`           | Original M1 design + protocol constants (historical; M1 is done) |
-| `docs/passive-entry-protocol.md` | Reverse-engineered BLE protocol: handshake, heartbeat, active-command crypto, `0x1c` status map |
-| `docs/proximity-wake.md`         | M2 passive idle + auto-wake-on-approach design |
-| `docs/play-store-packaging.md`   | F3: single-listing (watch + companion) release packaging |
-| `docs/next-steps.md`             | Current backlog / what's blocked on testing vs. pickable |
+| Path | What |
+|------|------|
+| `wear/` | Android Gradle project — the watch app |
+| `wear/core-crypto/` | Pure-JVM crypto/protocol module (composite build, unit-tested) |
+| `docs/passive-entry-protocol.md` | The reverse-engineered BLE protocol: handshake, heartbeat, active-command crypto, command-code table, `0x1c` status map. **Source of truth.** |
+| `docs/companion-enrollment-protocol.md` | Watch ↔ phone Data Layer enrollment contract |
+| `docs/proximity-wake.md` | Passive idle + auto-wake-on-approach design |
+| `docs/play-store-packaging.md` | Single-listing (watch + companion) release packaging |
+| `docs/wearvian-overview.md` | Plain-language overview (setup, battery, security) |
+| `docs/next-steps.md` | Current backlog |
+| `docs/HISTORY.md` | Original M1 design + early RE constants (historical) |
 
-Enrollment handoff protocol: see the companion repo's
-[`PROTOCOL.md`](https://github.com/pgenera/wearvian-companion/blob/main/PROTOCOL.md).
+> Protocol/RE docs live **only in this (private) repo** — they're intentionally not in the
+> companion repo.
 
 ## Building
 
@@ -70,14 +68,3 @@ cd wear
 ./gradlew :app:assembleDebug          # watch app -> app/build/outputs/apk/debug/
 cd core-crypto && ./gradlew test      # crypto parity tests
 ```
-
-## Next steps
-
-The phone-key milestones (M1 unlock/drive, M2 proximity wake, F5 live status) are validated
-on-vehicle. Remaining work is in [`docs/next-steps.md`](docs/next-steps.md); the headline items:
-
-1. **Play Store packaging** (F3) — blocked on the developer account; bundles + signing ready
-   (`docs/play-store-packaging.md`).
-2. **Windows / charge-port** — byte-correct but ignored on a one-shot connection; likely need a
-   command sent through the live presence session (`docs/passive-entry-protocol.md`).
-3. **Panic command** with a confirmation dialog.

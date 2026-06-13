@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
  * Parity test: these vectors were produced by the reference Python implementation
  * (`bretterer/rivian-python-client`, `utils.py`) so a match proves our JVM crypto
  * is byte-for-byte interoperable with the community-tested signer that the vehicle
- * accepts. See docs/PROTOCOL.md for how the vector was generated.
+ * accepts. See docs/passive-entry-protocol.md for the crypto details.
  */
 class RivianCryptoTest {
 

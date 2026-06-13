@@ -1,9 +1,9 @@
-# Wearvian — Wear OS phone key for Rivian R1S
+# Wearvian — Wear OS phone key for Rivian R1S / R1T
 
-**Version 0.5** · Pixel Watch 4 (Wear OS 5+)
+**Version 0.5.3** · Pixel Watch 4 (Wear OS 5+)
 
 Wearvian turns a Wear OS watch into a standalone Bluetooth phone key for a Rivian
-R1S: it unlocks and drives the vehicle over BLE with no phone present and **no
+R1S (and R1T): it unlocks and drives the vehicle over BLE with no phone present and **no
 internet access on the watch** (the app declares no `INTERNET` permission). The
 only time a network is involved is a one-time enrollment, which is brokered by a
 companion phone app over the Wear OS Data Layer — the watch itself never talks to
