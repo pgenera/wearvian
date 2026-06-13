@@ -32,6 +32,7 @@ import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.service.PresenceService
+import org.fivesevenfive.wearvian.service.VehicleModel
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
@@ -71,14 +72,18 @@ class KeyTileService : TileService() {
     override fun onTileRequest(
         requestParams: RequestBuilders.TileRequest,
     ): ListenableFuture<Tile> {
+        // Rear closure depends on body style: R1T tailgate (open only) vs R1S hatch (open+close).
+        val isTruck = VehicleModel.fromVin(EnrollmentStore(this).load()?.vin.orEmpty()).isTruck
         // A LoadAction reloads the tile and reports the tapped element here.
         when (requestParams.currentState.lastClickableId) {
             ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")
             ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
             ID_FRUNK_OPEN -> dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
             ID_FRUNK_CLOSE -> dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
-            ID_HATCH_OPEN -> dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
-            ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE")
+            ID_HATCH_OPEN ->
+                if (isTruck) dispatch(Cmd.OPEN_TAILGATE, "OPEN_TAILGATE")
+                else dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
+            ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE") // R1S only (no truck close button)
         }
 
         // Gold when the key is armed (active OR passively power-saving), not only while running.
@@ -125,12 +130,17 @@ class KeyTileService : TileService() {
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
-            // bottom: hatch open / hatch close
+            // bottom: rear closure. R1T tailgate = open only (no tailgate-close command exists);
+            // R1S hatch = open + close. liftgateOpen is the rear-closure state for both bodies.
             .addContent(
                 Row.Builder()
                     .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, actionable(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
-                    .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                    .addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                    .apply {
+                        if (!isTruck) {
+                            addContent(Spacer.Builder().setWidth(dp(topGap)).build())
+                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                        }
+                    }
                     .build(),
             )
             .build()

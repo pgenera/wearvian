@@ -144,7 +144,7 @@ fun ControlScreens(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (pages[index]) {
                     Page.KEY -> KeyPage(state, status, onTogglePresence, onCommand)
-                    Page.CLOSURES -> ClosuresPage(state.inFlight, status, onCommand)
+                    Page.CLOSURES -> ClosuresPage(state.inFlight, status, state.isTruck, onCommand)
                     Page.CHARGE -> ChargeStatusPage(state.inFlight, status, onCommand)
                     Page.ALARM -> AlarmPage(state.inFlight, onCommand)
                     Page.SETTINGS -> SettingsPage(state, onProximityWakeChange, onStartPassive)
@@ -246,7 +246,12 @@ private fun KeyPage(
 }
 
 @Composable
-private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onCommand: (Int, String) -> Unit) {
+private fun ClosuresPage(
+    inFlight: Set<Int>,
+    status: VehicleStatus.State,
+    isTruck: Boolean,
+    onCommand: (Int, String) -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
@@ -259,9 +264,18 @@ private fun ClosuresPage(inFlight: Set<Int>, status: VehicleStatus.State, onComm
         ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
             "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
             open = status.frunkOpen, stateKnown = status.valid, stale = stale)
-        ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
-            "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
-            open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
+        // Rear closure: R1S liftgate (open + close) vs R1T tailgate (open only — there is no
+        // tailgate-close command). The 0x1c rear-closure bit is model-agnostic, so liftgateOpen
+        // reflects the tailgate state on an R1T too. See VehicleModel / ActiveCommandFrames.Cmd.
+        if (isTruck) {
+            ClosureRow(Icons.Filled.Luggage, "Tailgate", Cmd.OPEN_TAILGATE, null,
+                "OPEN_TAILGATE", null, inFlight, onCommand,
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
+        } else {
+            ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
+                "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
+        }
         // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
         // now that commands ride the live session (the old one-shot path no-op'd them).
         ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
@@ -444,9 +458,9 @@ private fun ClosureRow(
     icon: ImageVector,
     name: String,
     openCode: Int,
-    closeCode: Int,
+    closeCode: Int?,
     openLabel: String,
-    closeLabel: String,
+    closeLabel: String?,
     inFlight: Set<Int>,
     onCommand: (Int, String) -> Unit,
     open: Boolean = false,
@@ -475,10 +489,17 @@ private fun ClosureRow(
         @Composable
         fun arrow(glyph: ImageVector, opens: Boolean) {
             val code = if (opens) openCode else closeCode
+            val label = if (opens) openLabel else closeLabel
+            // A role with no command (e.g. an R1T tailgate has no close) renders an empty slot of
+            // the same size, so the open (▲) buttons stay column-aligned with the other rows.
+            if (code == null || label == null) {
+                Spacer(Modifier.size(CLOSURE_BTN))
+                return
+            }
             RoundIcon(glyph, if (opens) "Open $name" else "Close $name", Color.White, CLOSURE_BTN,
                 busy = code in inFlight, active = stateKnown && open != opens,
                 activeFill = if (stale) DIM else Color.White) {
-                onCommand(code, if (opens) openLabel else closeLabel)
+                onCommand(code, label)
             }
         }
         // Normally up=open / down=close; windows are inverted ([upOpens]=false) because raising a

@@ -16,6 +16,7 @@ import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
+import org.fivesevenfive.wearvian.service.VehicleModel
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.store.SettingsStore
@@ -41,6 +42,9 @@ data class SetupUiState(
     /** Whether the mobile key is armed (intent). With [presenceRunning]/[presencePassive] this
      *  gives the tri-state: off / active (running) / passive (idling, watching for approach). */
     val keyArmed: Boolean = false,
+    /** True when the enrolled vehicle is an R1T (truck), decoded from the VIN. Drives the
+     *  rear-closure UI: R1T shows a tailgate (open only) instead of the R1S hatch (open+close). */
+    val isTruck: Boolean = false,
 )
 
 /** How long a command tap throbs when routed to the live session (fire-and-forget). */
@@ -98,6 +102,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     deviceSecure = isDeviceSecure(),
                     presencePassive = PresenceService.passive.value,
                     keyArmed = settings.keyArmed,
+                    isTruck = VehicleModel.fromVin(e.vin).isTruck,
                 )
             }
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
