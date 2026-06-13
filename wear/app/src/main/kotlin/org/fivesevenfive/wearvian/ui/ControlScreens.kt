@@ -424,20 +424,22 @@ private fun SettingsPage(
         }
         // Debug: force the R1T (tailgate) UI on a non-R1T vehicle, to test the truck layout.
         val r1t = state.forceR1t
-        Image(
-            imageVector = if (r1t) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
-            contentDescription = if (r1t) "Force R1T on" else "Force R1T off",
-            modifier = Modifier.width(64.dp).height(40.dp).clickable { onForceR1tChange(!r1t) },
-            colorFilter = ColorFilter.tint(if (r1t) GOLD else DIM),
-        )
-        Text(
-            "Force R1T (test)",
-            color = Color.White,
-            fontSize = 13.sp,
-            maxLines = 1,
-            softWrap = false,
-            textAlign = TextAlign.Center,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                imageVector = if (r1t) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
+                contentDescription = if (r1t) "Force R1T on" else "Force R1T off",
+                modifier = Modifier.width(64.dp).height(40.dp).clickable { onForceR1tChange(!r1t) },
+                colorFilter = ColorFilter.tint(if (r1t) GOLD else DIM),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "Force R1T",
+                color = Color.White,
+                fontSize = 13.sp,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
         Text(
             "Start passive mode",
             color = GOLD,
