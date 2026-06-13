@@ -99,8 +99,8 @@ fun ControlScreens(
     state: SetupUiState,
     onTogglePresence: (Boolean) -> Unit,
     onCommand: (Int, String) -> Unit,
-    onProximityWakeChange: (Boolean) -> Unit,
     onStartPassive: () -> Unit,
+    onForceR1tChange: (Boolean) -> Unit,
 ) {
     // Production shows the working cards; Settings stays debug-only (auto power-save defaults on,
     // so there's nothing to toggle in production). BuildConfig.PRODUCTION is constant.
@@ -147,7 +147,7 @@ fun ControlScreens(
                     Page.CLOSURES -> ClosuresPage(state.inFlight, status, state.isTruck, onCommand)
                     Page.CHARGE -> ChargeStatusPage(state.inFlight, status, onCommand)
                     Page.ALARM -> AlarmPage(state.inFlight, onCommand)
-                    Page.SETTINGS -> SettingsPage(state, onProximityWakeChange, onStartPassive)
+                    Page.SETTINGS -> SettingsPage(state, onStartPassive, onForceR1tChange)
                 }
             }
         }
@@ -405,10 +405,9 @@ private fun AlarmPage(inFlight: Set<Int>, onCommand: (Int, String) -> Unit) {
 @Composable
 private fun SettingsPage(
     state: SetupUiState,
-    onChange: (Boolean) -> Unit,
     onStartPassive: () -> Unit,
+    onForceR1tChange: (Boolean) -> Unit,
 ) {
-    val on = state.proximityWakeEnabled
     Column(
         Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
@@ -423,16 +422,16 @@ private fun SettingsPage(
                 textAlign = TextAlign.Center,
             )
         }
-        // Auto power-save: after an idle stretch the key drops to passive (notification stays up,
-        // wake lock released, watching for the car). Plain toggle — works anywhere.
+        // Debug: force the R1T (tailgate) UI on a non-R1T vehicle, to test the truck layout.
+        val r1t = state.forceR1t
         Image(
-            imageVector = if (on) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
-            contentDescription = if (on) "Auto power-save on" else "Auto power-save off",
-            modifier = Modifier.width(64.dp).height(40.dp).clickable { onChange(!on) },
-            colorFilter = ColorFilter.tint(if (on) GOLD else DIM),
+            imageVector = if (r1t) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
+            contentDescription = if (r1t) "Force R1T on" else "Force R1T off",
+            modifier = Modifier.width(64.dp).height(40.dp).clickable { onForceR1tChange(!r1t) },
+            colorFilter = ColorFilter.tint(if (r1t) GOLD else DIM),
         )
         Text(
-            "Auto power save",
+            "Force R1T (test)",
             color = Color.White,
             fontSize = 13.sp,
             maxLines = 1,

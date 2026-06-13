@@ -32,9 +32,6 @@ data class SetupUiState(
     val presenceRunning: Boolean = false,
     /** Command codes currently being sent over BLE — drives the in-flight throb on each button. */
     val inFlight: Set<Int> = emptySet(),
-    /** Auto power-save toggle (stay-alive passive on idle), surfaced on the settings screen.
-     *  Defaults on, matching [org.fivesevenfive.wearvian.store.SettingsStore.proximityWakeEnabled]. */
-    val proximityWakeEnabled: Boolean = true,
     /** Whether the watch has a secure lock set; if not, the anti-theft gating can't engage. */
     val deviceSecure: Boolean = true,
     /** Service is running but idling passively (BLE down, watching for the vehicle's approach). */
@@ -42,9 +39,11 @@ data class SetupUiState(
     /** Whether the mobile key is armed (intent). With [presenceRunning]/[presencePassive] this
      *  gives the tri-state: off / active (running) / passive (idling, watching for approach). */
     val keyArmed: Boolean = false,
-    /** True when the enrolled vehicle is an R1T (truck), decoded from the VIN. Drives the
-     *  rear-closure UI: R1T shows a tailgate (open only) instead of the R1S hatch (open+close). */
+    /** Effective truck mode: enrolled vehicle is an R1T (by VIN) OR the debug [forceR1t] override is
+     *  on. Drives the rear-closure UI: R1T shows a tailgate (open only) vs the R1S hatch (open+close). */
     val isTruck: Boolean = false,
+    /** Debug-only override that forces [isTruck] on regardless of VIN — for testing the R1T UI. */
+    val forceR1t: Boolean = false,
 )
 
 /** How long a command tap throbs when routed to the live session (fire-and-forget). */
@@ -98,11 +97,11 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 SetupUiState(
                     Phase.BONDED,
                     presenceRunning = running,
-                    proximityWakeEnabled = settings.proximityWakeEnabled,
                     deviceSecure = isDeviceSecure(),
                     presencePassive = PresenceService.passive.value,
                     keyArmed = settings.keyArmed,
-                    isTruck = VehicleModel.fromVin(e.vin).isTruck,
+                    isTruck = VehicleModel.fromVin(e.vin).isTruck || settings.forceR1t,
+                    forceR1t = settings.forceR1t,
                 )
             }
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
@@ -173,8 +172,9 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     Phase.BONDED,
                     presenceRunning = true,
                     keyArmed = true,
-                    proximityWakeEnabled = settings.proximityWakeEnabled,
                     deviceSecure = isDeviceSecure(),
+                    isTruck = VehicleModel.fromVin(enrollment.vin).isTruck || settings.forceR1t,
+                    forceR1t = settings.forceR1t,
                 )
             }.onFailure {
                 loge("startPairing failed", it)
@@ -242,20 +242,20 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         store.load() ?: return
         logi("startPassive: manual")
         settings.keyArmed = true
-        settings.proximityWakeEnabled = true
         PresenceService.goPassiveNow(getApplication())
-        _state.value = _state.value.copy(keyArmed = true, proximityWakeEnabled = true)
+        _state.value = _state.value.copy(keyArmed = true)
     }
 
     /**
-     * Toggle auto power-save (stay-alive passive). Persisted; [PresenceService] reads it when
-     * deciding whether to drop to passive after an idle stretch. Takes effect on the next idle
-     * cycle (no association / dialog — plain in-process scan).
+     * Debug-only: force the UI into R1T (truck) mode regardless of the enrolled VIN, so the tailgate
+     * UI can be tested on a non-R1T vehicle. Persisted; takes effect immediately in the UI (and on
+     * the tile, which reads the flag directly).
      */
-    fun setProximityWake(on: Boolean) {
-        logi("setProximityWake: $on")
-        settings.proximityWakeEnabled = on
-        _state.value = _state.value.copy(proximityWakeEnabled = on)
+    fun setForceR1t(on: Boolean) {
+        logi("setForceR1t: $on")
+        settings.forceR1t = on
+        val vinTruck = store.load()?.let { VehicleModel.fromVin(it.vin).isTruck } ?: false
+        _state.value = _state.value.copy(forceR1t = on, isTruck = vinTruck || on)
     }
 
     /**

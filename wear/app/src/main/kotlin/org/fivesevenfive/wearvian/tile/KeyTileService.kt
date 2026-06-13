@@ -73,7 +73,9 @@ class KeyTileService : TileService() {
         requestParams: RequestBuilders.TileRequest,
     ): ListenableFuture<Tile> {
         // Rear closure depends on body style: R1T tailgate (open only) vs R1S hatch (open+close).
-        val isTruck = VehicleModel.fromVin(EnrollmentStore(this).load()?.vin.orEmpty()).isTruck
+        // forceR1t is the debug test override (Settings page); honored here so the tile matches the app.
+        val isTruck = VehicleModel.fromVin(EnrollmentStore(this).load()?.vin.orEmpty()).isTruck ||
+            SettingsStore(this).forceR1t
         // A LoadAction reloads the tile and reports the tapped element here.
         when (requestParams.currentState.lastClickableId) {
             ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")

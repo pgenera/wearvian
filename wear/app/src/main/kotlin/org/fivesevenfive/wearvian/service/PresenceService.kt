@@ -41,7 +41,6 @@ import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
-import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
@@ -319,16 +318,12 @@ class PresenceService : Service() {
             .collect { TileRefresher.refresh(this) }
     }
 
-    /** Auto idle→passive: gated on power-save being on and not locked. @return true iff passive. */
+    /** Auto idle→passive (always on, except while locked). @return true iff passive. */
     private fun goPassive(): Boolean {
         if (passive) return true
         // While locked, BLE is already torn down by monitorLock — don't go passive; just keep
         // the (cheap) foreground service alive until the watch is unlocked.
         if (locked) return false
-        if (!SettingsStore(this).proximityWakeEnabled) {
-            DebugLog.add("presence: idle, but auto power-save is off — staying foreground")
-            return false
-        }
         DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive")
         return enterPassive()
     }
