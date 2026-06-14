@@ -291,7 +291,10 @@ class PairingManager(
 
     private companion object {
         const val SCAN_TIMEOUT_MS = 15_000L
-        const val CONNECT_TIMEOUT_MS = 10_000L
+        // Match the official app's direct-connect watchdog (ap/h1: 0x88b8 = 35 s); 10 s was too
+        // short for a dormant module and made pairing take several tries. GATT_OP matches the app's
+        // 5 s operation watchdog (l60/i).
+        const val CONNECT_TIMEOUT_MS = 35_000L
         const val GATT_OP_TIMEOUT_MS = 5_000L
         const val BOND_TIMEOUT_MS = 30_000L
     }

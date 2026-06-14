@@ -477,7 +477,11 @@ class VehicleSession(
     }
 
     companion object {
-        private const val CONNECT_MS = 10_000L
+        // Direct-connect timeout. Matches the official app's connect watchdog (ap/h1: 0x88b8 = 35 s,
+        // armed only for a direct connectGatt, i.e. autoConnect=false — same condition we gate on
+        // below). Our old 10 s gave up well before a dormant module finished connecting, which is
+        // why connecting took several tries.
+        private const val CONNECT_MS = 35_000L
         private const val OP_MS = 5_000L
         private const val PHONEID_ECHO_MS = 3_000L
         private const val RECONNECT_BACKOFF_MS = 1_500L
