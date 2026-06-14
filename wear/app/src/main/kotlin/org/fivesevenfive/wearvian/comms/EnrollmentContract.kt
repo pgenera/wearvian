@@ -4,9 +4,9 @@ import org.json.JSONObject
 
 /**
  * Wire contract for the watch <-> phone Data Layer enrollment handoff. Must stay
- * in sync with the companion app's `EnrollmentContract` (see the wearvian-companion
- * repo's PROTOCOL.md). This is the watch side: it builds the request and parses
- * the result.
+ * in sync with the companion app's `EnrollmentContract` (contract documented in
+ * docs/companion-enrollment-protocol.md). This is the watch side: it builds the
+ * request and parses the result.
  */
 object EnrollmentContract {
     const val VERSION = 1

@@ -38,7 +38,7 @@ import java.util.UUID
  *   createBond().
  *
  * Once bonded + enrolled, the vehicle's proximity sensors handle passive unlock
- * and drive enablement; there is no explicit "drive" command (see PROTOCOL.md).
+ * and drive enablement; there is no explicit "drive" command (see docs/passive-entry-protocol.md).
  *
  * Permission note: callers must hold BLUETOOTH_SCAN + BLUETOOTH_CONNECT.
  */

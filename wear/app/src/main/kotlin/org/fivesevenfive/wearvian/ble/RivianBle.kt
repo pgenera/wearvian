@@ -2,7 +2,7 @@ package org.fivesevenfive.wearvian.ble
 
 import java.util.UUID
 
-/** BLE identifiers for the Rivian phone-key protocol (see docs/PROTOCOL.md). */
+/** BLE identifiers for the Rivian phone-key protocol (see docs/passive-entry-protocol.md). */
 object RivianBle {
     /** Local name advertised by the vehicle's phone-key GATT peripheral. */
     const val DEVICE_NAME = "Rivian Phone Key"
