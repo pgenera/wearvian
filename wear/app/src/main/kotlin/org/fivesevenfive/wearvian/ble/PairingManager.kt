@@ -296,6 +296,8 @@ class PairingManager(
         // 5 s operation watchdog (l60/i).
         const val CONNECT_TIMEOUT_MS = 35_000L
         const val GATT_OP_TIMEOUT_MS = 5_000L
-        const val BOND_TIMEOUT_MS = 30_000L
+        // Bonding can be slow (OS retries, user confirmation); give it plenty of headroom so a slow
+        // bond doesn't fail the pairing and force a retry.
+        const val BOND_TIMEOUT_MS = 60_000L
     }
 }
