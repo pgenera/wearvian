@@ -210,10 +210,20 @@ private fun KeyPage(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            LabeledIcon(Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight) {
+            // Lit button MATCHES the current lock state (like Rivian's app): Unlock fills when
+            // unlocked, Lock fills when locked — white if live, gray (DIM) if stale/last-known.
+            LabeledIcon(
+                Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight,
+                active = status.valid && !status.locked,
+                activeFill = if (status.live) Color.White else DIM,
+            ) {
                 onCommand(Cmd.UNLOCK_ALL, "UNLOCK")
             }
-            LabeledIcon(Icons.Filled.Lock, "Lock", busy = Cmd.LOCK_ALL in state.inFlight) {
+            LabeledIcon(
+                Icons.Filled.Lock, "Lock", busy = Cmd.LOCK_ALL in state.inFlight,
+                active = status.valid && status.locked,
+                activeFill = if (status.live) Color.White else DIM,
+            ) {
                 onCommand(Cmd.LOCK_ALL, "LOCK")
             }
         }
@@ -259,7 +269,7 @@ private fun ClosuresPage(
         Header("Closures")
         // Frunk/hatch/window open-state come from the 0x1c stream. Charge-port door state
         // is NOT in that frame (cloud-only), so it has no live indicator. A stale (persisted)
-        // state still lights the actionable button, just dimmed (gray, via [stale]).
+        // state still lights the state-matching button, just dimmed (gray, via [stale]).
         val stale = status.valid && !status.live
         ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
             "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
@@ -349,8 +359,8 @@ private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, on
             Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
         }
         // Climate: cabin preconditioning. status[4] tells us if it's running, so the Climate
-        // button fills (gold live / gray stale) while on — mirroring the closures' actionable
-        // highlight — and a status line confirms it in words. Off stops it.
+        // button fills (gold live / gray stale) while on — the same state-matching highlight the
+        // lock/closures now use — and a status line confirms it in words. Off stops it.
         Spacer(Modifier.height(2.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             LabeledIcon(
@@ -471,9 +481,9 @@ private fun ClosureRow(
 ) {
     // Category icon + label, then open/close. The leading cluster has a FIXED width so the
     // open (▲) buttons line up in one vertical column and the close (▼) buttons in another
-    // across every row. Current state (when known) lights the ACTIONABLE button — the one whose
-    // press would change state: down filled when currently open (you can close it), up filled
-    // when currently closed (you can open it). The fill is a luminance cue, so colorblind-safe.
+    // across every row. Current state (when known) lights the button MATCHING that state (like
+    // Rivian's app) — the OPEN button when currently open, the CLOSE button when currently closed
+    // — NOT the press target. The fill is a luminance cue, so colorblind-safe.
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
@@ -484,9 +494,10 @@ private fun ClosureRow(
             Spacer(Modifier.width(5.dp))
             Text(name, color = Color.White, fontSize = 13.sp)
         }
-        // One arrow button, by the role it fires (open vs close). The lit (actionable) button is
-        // the one whose press would change the current state: `open != opens` is true exactly for
-        // the open button when closed and the close button when open.
+        // One arrow button, by the role it fires (open vs close). The lit button is the one whose
+        // ROLE matches the current state: `open == opens` is true exactly for the open button when
+        // open and the close button when closed. Windows invert via [upOpens], so it's the role —
+        // not the physical arrow — that's matched (down=open lights when a window is open).
         @Composable
         fun arrow(glyph: ImageVector, opens: Boolean) {
             val code = if (opens) openCode else closeCode
@@ -498,7 +509,7 @@ private fun ClosureRow(
                 return
             }
             RoundIcon(glyph, if (opens) "Open $name" else "Close $name", Color.White, CLOSURE_BTN,
-                busy = code in inFlight, active = stateKnown && open != opens,
+                busy = code in inFlight, active = stateKnown && open == opens,
                 activeFill = if (stale) DIM else Color.White) {
                 onCommand(code, label)
             }
@@ -569,10 +580,10 @@ private fun RoundIcon(
     } else {
         1f
     }
-    // [active] = this button is the actionable one for the closure's current state: invert to a
-    // filled circle with a dark glyph. The fill is a luminance/contrast change (not a hue), so it
-    // reads regardless of color vision and highlights the press that will change state. A stale
-    // (persisted) state fills gray instead of white, so it reads as "last known, not confirmed".
+    // [active] = this button MATCHES the vehicle's current state (like Rivian's app: the lock
+    // button when locked): invert to a filled circle with a dark glyph. The fill is a luminance/
+    // contrast change (not a hue), so it reads regardless of color vision. A stale (persisted)
+    // state fills gray instead of white, so it reads as "last known, not confirmed".
     Box(
         Modifier.size(diameter).clip(CircleShape).background(if (active) activeFill else BTN_BG)
             .clickable(enabled = !busy, onClick = onClick),

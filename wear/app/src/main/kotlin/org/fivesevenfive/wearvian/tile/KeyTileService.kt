@@ -57,11 +57,12 @@ import org.fivesevenfive.wearvian.util.logi
  *  - **Any command** fires the BLE command in-process via a `LoadAction` — the tile reloads, the
  *    command runs in the background, and the app UI never opens.
  *
- * The controls carry over the app's vehicle-state treatment: the *actionable* button for each
- * pair (the one whose press would change state) is filled — white when the state is live
- * (a session is confirming it), gray when it's the last-known (stale) state, and plain dark
- * when state is unknown. State comes from the in-process [VehicleStatus] (same process as the
- * presence service / app), so the tile reflects whatever the app would show.
+ * The controls carry over the app's vehicle-state treatment: the button that MATCHES the current
+ * state for each pair (lock filled when locked, frunk-open filled when the frunk is open — like
+ * Rivian's app) is filled — white when the state is live (a session is confirming it), gray when
+ * it's the last-known (stale) state, and plain dark when state is unknown. State comes from the
+ * in-process [VehicleStatus] (same process as the presence service / app), so the tile reflects
+ * whatever the app would show.
  *
  * Command dispatch reuses [ActiveCommandManager] (the same path the app uses) on a
  * process-lifetime scope so it survives this service instance being recycled between
@@ -90,11 +91,12 @@ class KeyTileService : TileService() {
 
         // Gold when the key is armed (active OR passively power-saving), not only while running.
         val keyArmed = SettingsStore(this).keyArmed
-        // Vehicle state for the actionable-button fill (same source/semantics as the app).
+        // Vehicle state for the state-matching button fill (same source/semantics as the app).
         val st = VehicleStatus.state.value
-        // A button is actionable when pressing it would change the current state. Only meaningful
-        // once we have state; the fill is white when live, gray when stale (last-known).
-        fun actionable(changes: Boolean) = st.valid && changes
+        // Fill the button that MATCHES the current state (like Rivian's app: the lock glyph fills
+        // when locked), NOT the press target. Only meaningful once we have state; the fill is white
+        // when live, gray when stale (last-known).
+        fun inState(matches: Boolean) = st.valid && matches
 
         // Size the whole hex to the actual face so it fills the watch (fixed dp looked small on
         // larger screens). Fractions are tuned so the top/bottom pair — the limiting corners —
@@ -114,9 +116,9 @@ class KeyTileService : TileService() {
             // top: unlock / lock
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, actionable(st.locked), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, inState(!st.locked), st.live, cmdBtn, cmdIcon))
                     .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                    .addContent(commandButton(ID_LOCK, ICON_LOCK, actionable(!st.locked), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_LOCK, ICON_LOCK, inState(st.locked), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
@@ -124,11 +126,11 @@ class KeyTileService : TileService() {
             .addContent(
                 Row.Builder()
                     .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
-                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, actionable(!st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, inState(st.frunkOpen), st.live, cmdBtn, cmdIcon))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
                     .addContent(keyButton(keyArmed, keyBtn, keyIcon))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
-                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, actionable(st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, inState(!st.frunkOpen), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
@@ -136,11 +138,11 @@ class KeyTileService : TileService() {
             // R1S hatch = open + close. liftgateOpen is the rear-closure state for both bodies.
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, actionable(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, inState(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
                     .apply {
                         if (!isTruck) {
                             addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, actionable(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, inState(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
                         }
                     }
                     .build(),
@@ -211,23 +213,23 @@ class KeyTileService : TileService() {
     }
 
     /**
-     * A command control: fires its command in-process via LoadAction (no app UI). When
-     * [actionable] (its press would change the vehicle's current state) it's filled — white if
-     * [live], gray if stale — with a dark glyph, exactly like the app's closure buttons.
+     * A command control: fires its command in-process via LoadAction (no app UI). When [filled]
+     * (this button MATCHES the vehicle's current state — e.g. the lock button when locked) it's
+     * filled — white if [live], gray if stale — with a dark glyph, like the app's controls.
      */
     private fun commandButton(
-        id: String, icon: String, actionable: Boolean, live: Boolean, sizeDp: Float, iconDp: Float,
+        id: String, icon: String, filled: Boolean, live: Boolean, sizeDp: Float, iconDp: Float,
     ): Button {
         val click = Clickable.Builder()
             .setId(id)
             .setOnClick(ActionBuilders.LoadAction.Builder().build())
             .build()
         val fill = when {
-            !actionable -> BTN_BG
+            !filled -> BTN_BG
             live -> WHITE
             else -> STALE
         }
-        val glyph = if (actionable) BLACK else WHITE
+        val glyph = if (filled) BLACK else WHITE
         return Button.Builder(this, click)
             .setCustomContent(iconElement(icon, iconDp, glyph))
             .setSize(dp(sizeDp))
