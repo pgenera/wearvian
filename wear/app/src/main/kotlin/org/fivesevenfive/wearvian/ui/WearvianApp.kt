@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,7 +17,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.wear.compose.material.Button
+import androidx.wear.compose.material.Chip
+import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
@@ -61,7 +63,7 @@ fun WearvianApp(
                 Phase.NEEDS_SETUP -> {
                     Title("wearvian")
                     Caption("Set up this watch as your Rivian phone key.")
-                    Button(onClick = onSetup) { Text("Set up") }
+                    ActionButton("Set up", onSetup)
                 }
 
                 Phase.AWAITING_COMPANION -> {
@@ -73,7 +75,7 @@ fun WearvianApp(
                 Phase.ENROLLED -> {
                     Title("Enrolled ✓")
                     Caption(state.detail?.let { "VIN $it" } ?: "Now pair over Bluetooth.")
-                    Button(onClick = onPair) { Text("Pair with vehicle") }
+                    ActionButton("Pair with vehicle", onPair)
                 }
 
                 Phase.BONDED -> Unit // handled by ControlScreens above
@@ -81,11 +83,32 @@ fun WearvianApp(
                 Phase.ERROR -> {
                     Title("Something went wrong")
                     Caption(state.detail ?: "Please try again.")
-                    Button(onClick = onRefresh) { Text("OK") }
+                    ActionButton("OK", onRefresh)
                 }
             }
         }
     }
+}
+
+/**
+ * Full-width rectangular action button for the enrollment screens. Wear's round `Button` is sized
+ * for icons and cramps text; a [Chip] is rectangular and gives the label the full width to wrap.
+ */
+@Composable
+private fun ActionButton(text: String, onClick: () -> Unit) {
+    Chip(
+        onClick = onClick,
+        label = {
+            Text(
+                text = text,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        colors = ChipDefaults.primaryChipColors(),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
