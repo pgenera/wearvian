@@ -30,8 +30,8 @@ android {
         // Must stay unique across BOTH apps and only ever increase.
         // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
         // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
-        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1017
-        versionName = "0.6.2"
+        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1020
+        versionName = "0.6.3"
     }
 
     signingConfigs {
