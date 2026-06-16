@@ -28,7 +28,9 @@ android {
         targetSdk = 35       // Play requires new apps to target API 35+ (FGS types since 34)
         // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
         // Must stay unique across BOTH apps and only ever increase.
-        versionCode = 1017
+        // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
+        // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
+        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1017
         versionName = "0.6.2"
     }
 
@@ -70,6 +72,18 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+        }
+        // Play-uploadable build with debug features ON. Inherits release (upload-key signing + R8,
+        // so Play accepts it and it installs over the enrolled app without re-enroll), but flips
+        // PRODUCTION off — enabling the SETTINGS page and the 0x1c/0x20 vehicle-status logging used
+        // to capture frames — and marks the version "-debug". Build with a fresh code each time:
+        //     ./gradlew bundleDebugRelease -PvCode=1019
+        // NEVER upload to the production track: it logs sensitive usage data and exposes dev UI.
+        create("debugRelease") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            buildConfigField("boolean", "PRODUCTION", "false")
+            versionNameSuffix = "-debug"
         }
     }
 
