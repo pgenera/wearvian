@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -227,18 +228,35 @@ private fun KeyPage(
                 onCommand(Cmd.LOCK_ALL, "LOCK")
             }
         }
-        // Lock state from the 0x1c stream, shown colorblind-safe: the padlock GLYPH differs
-        // (open vs closed shackle) AND it's spelled out — no reliance on color. A stale
+        // Drive/lock state from the 0x1c stream, shown colorblind-safe: the GLYPH differs AND it's
+        // spelled out — no reliance on color. While in gear we show the gear (the car auto-locks
+        // anyway, so lock matters less mid-drive); parked, the padlock GLYPH + word. A stale
         // (persisted, not currently confirmed) state renders gray instead of white.
         if (status.valid) {
             val stateColor = if (status.live) Color.White else DIM
+            val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
-                    if (status.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    when {
+                        inGear -> Icons.Filled.DirectionsCar
+                        status.locked -> Icons.Filled.Lock
+                        else -> Icons.Filled.LockOpen
+                    },
                     null, Modifier.size(14.dp), colorFilter = ColorFilter.tint(stateColor),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (status.locked) "Locked" else "Unlocked", color = stateColor, fontSize = 11.sp)
+                Text(
+                    when {
+                        inGear -> when (status.gear) {
+                            VehicleStatus.Gear.REVERSE -> "Reverse"
+                            VehicleStatus.Gear.NEUTRAL -> "Neutral"
+                            else -> "Driving"
+                        }
+                        status.locked -> "Locked"
+                        else -> "Unlocked"
+                    },
+                    color = stateColor, fontSize = 11.sp,
+                )
             }
         }
         // Surface genuinely useful state when we have it (text, not color). Live = red warning;

@@ -217,25 +217,29 @@ class VehicleSession(
 
             // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
-            var pausedForLock = false
+            var pauseReason: String? = null
             while (scope.isActive && sessionAlive) {
-                // Layer 1 anti-theft: while the watch is locked (e.g. removed from the wrist
-                // with a screen lock set), send NO authenticated heartbeats — the car loses
-                // presence and won't passively unlock/drive for whoever holds the watch. The
-                // GATT link stays up so presence resumes instantly on unlock. Protects keys
-                // both old and new (the shared secret is cached in memory, so the keystore
-                // key's unlocked-device requirement alone wouldn't stop an active session).
-                if (keyguard?.isDeviceLocked == true) {
-                    if (!pausedForLock) {
-                        pausedForLock = true
-                        DebugLog.add("$label: watch locked — pausing presence heartbeats")
+                // Pause SENDING heartbeats (but keep the GATT link + 0x1c subscription) for either:
+                //  - anti-theft (Layer 1): watch locked / off-wrist — the car loses presence so a
+                //    thief can't passively unlock/drive; presence resumes instantly on unlock.
+                //  - driving-doze: the car is in gear, so we don't need to hold presence; releasing
+                //    the wake lock saves battery while we keep watching 0x1c for the return to Park.
+                val reason = when {
+                    keyguard?.isDeviceLocked == true -> "watch locked"
+                    heartbeatsPaused -> "driving"
+                    else -> null
+                }
+                if (reason != null) {
+                    if (pauseReason != reason) {
+                        pauseReason = reason
+                        DebugLog.add("$label: pausing presence heartbeats ($reason)")
                     }
                     delay(HEARTBEAT_PERIOD_MS)
                     continue
                 }
-                if (pausedForLock) {
-                    pausedForLock = false
-                    DebugLog.add("$label: watch unlocked — resuming heartbeats")
+                if (pauseReason != null) {
+                    pauseReason = null
+                    DebugLog.add("$label: resuming heartbeats")
                 }
                 // PRIMARY drains queued active commands so they ride THIS live, awake
                 // session with the running counter — the only way the vehicle accepts the
@@ -477,6 +481,15 @@ class VehicleSession(
     }
 
     companion object {
+        /**
+         * When true, live sessions stop SENDING authenticated heartbeats (0x1b) but keep the GATT
+         * link + 0x1c subscription up. Set by [org.fivesevenfive.wearvian.service.PresenceService]
+         * "driving-doze" so the wake lock can be released while the car is in gear — we still receive
+         * vehicle-status frames (to detect the return to Park) without paying for continuous presence.
+         * Distinct from the keyguard pause (anti-theft), which also stops heartbeats but for security.
+         */
+        @Volatile var heartbeatsPaused = false
+
         // Direct-connect timeout. Matches the official app's connect watchdog (ap/h1: 0x88b8 = 35 s,
         // armed only for a direct connectGatt, i.e. autoConnect=false — same condition we gate on
         // below). Our old 10 s gave up well before a dormant module finished connecting, which is

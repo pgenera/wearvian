@@ -51,6 +51,33 @@ class VehicleStatusTest {
     }
 
     @Test
+    fun gearFromByte6HighNibble() {
+        // prndl.log walked P→D→N→R→P: [6] HIGH nibble is the gear, LOW nibble stays 1 (unplugged).
+        // Needs full telemetry (>= status[0..10]).
+        fun gearFor(b6: Int): VehicleStatus.Gear {
+            VehicleStatus.update(frame(0x10, 0x0f, 0x0c, 0x0f, 0x00, 0x43, b6, 0x18, 0x31, 0x01, 0x00, 0x50, 0x78))
+            return VehicleStatus.state.value.gear
+        }
+        assertEquals(VehicleStatus.Gear.PARK, gearFor(0x11))
+        assertEquals(VehicleStatus.Gear.DRIVE, gearFor(0x41))
+        assertEquals(VehicleStatus.Gear.NEUTRAL, gearFor(0x31))
+        assertEquals(VehicleStatus.Gear.REVERSE, gearFor(0x21))
+        // The charge-state low nibble is still read independently of the gear high nibble.
+        assertEquals(VehicleStatus.ChargeState.UNPLUGGED, VehicleStatus.state.value.chargeState)
+    }
+
+    @Test
+    fun inMotionFlagFromByte4() {
+        // [4] bit 0x20 sets while driving (prndl.log locked-in-Drive frames), clear when parked.
+        VehicleStatus.update(frame(0x10, 0xff, 0xac, 0x0f, 0x20, 0x43, 0x41, 0x18, 0x31, 0x01, 0x00))
+        assertTrue(VehicleStatus.state.value.inMotion)
+        VehicleStatus.update(frame(0x10, 0x0f, 0x0c, 0x0f, 0x00, 0x43, 0x11, 0x18, 0x31, 0x01, 0x00))
+        assertFalse(VehicleStatus.state.value.inMotion)
+        // The climate bits (0x0c) are independent of the 0x20 drive flag.
+        assertFalse(VehicleStatus.state.value.climateOn)
+    }
+
+    @Test
     fun liftgateOpen() {
         // [2]=0xa8 → locked, frunk (0x08) set = closed, liftgate (0x04) clear = open
         VehicleStatus.update(frame(0x00, 0xff, 0xa8, 0x0f))

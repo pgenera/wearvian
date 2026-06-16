@@ -78,6 +78,7 @@ CONFIG_ANCHOR = "7800"
 # 0x_8 was observed once (2026-06-09, 20A capture) right at charge start with ETA raw 0;
 # semantics unidentified, so it deliberately isn't named here and prints as ?0x8.
 CHARGE_STATES = {1: "unplugged", 2: "starting", 3: "charging", 5: "plugged-idle", 7: "fault"}
+GEARS = {1: "P", 2: "R", 3: "N", 4: "D"}  # status[6] HIGH nibble (PRNDL), decoded 2026-06-16 from prndl.log
 
 
 def extract_frames(text):
@@ -158,6 +159,8 @@ def decode_status(s):
         "door_open": (s[1] & 0x0F) != 0x0F,
         "window_open": (s[3] & 0x0F) != 0x0F,
         "climate_on": bool(s[4] & 0x0C),  # [4]: 0 off, 0x04 starting, 0x08 running
+        "in_motion": bool(s[4] & 0x20),   # [4] bit5: drive/in-motion flag (trails gear by ~1 frame)
+        "gear": GEARS.get((s[6] >> 4) & 0x0F, "?"),  # [6] hi-nibble: 1=P 2=R 3=N 4=D
         "soc_pct": s[5],
         "charge_state": CHARGE_STATES.get(cs, "?0x%x" % cs),
         "cabin_c": s[7],
@@ -218,8 +221,8 @@ def main(argv=None):
                     help="after the table, print a per-byte value summary")
     args = ap.parse_args(argv)
 
-    hdr = "%-6s %-4s %-4s %-12s %-5s %-6s %-8s %-8s %s" % (
-        "lock", "soc", "clim", "charge", "cabC", "rngkm", "t_raw", "eta", "closures")
+    hdr = "%-6s %-4s %-4s %-4s %-12s %-5s %-6s %-8s %-8s %s" % (
+        "lock", "gear", "soc", "clim", "charge", "cabC", "rngkm", "t_raw", "eta", "closures")
     print(hdr)
     print("-" * len(hdr))
 
@@ -243,8 +246,9 @@ def main(argv=None):
             last = key
             total += 1
             collected.append((path, s))
-            row = "%-6s %-4d %-4s %-12s %-5d %-6d %-8d %-8s %s" % (
+            row = "%-6s %-4s %-4d %-4s %-12s %-5d %-6d %-8d %-8s %s" % (
                 "locked" if d["locked"] else "open",
+                d["gear"],
                 d["soc_pct"], "on" if d["climate_on"] else "-", d["charge_state"],
                 d["cabin_c"], d["range_km"],
                 d["charge_time_raw"], _eta(d["eta_min"]) if d["charge_time_raw"] else "-",

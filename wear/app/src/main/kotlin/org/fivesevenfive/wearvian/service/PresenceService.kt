@@ -23,6 +23,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
@@ -69,6 +70,7 @@ class PresenceService : Service() {
     private var lockJob: Job? = null
     private var tileJob: Job? = null
     private var departJob: Job? = null // debounces a MATCH_LOST before we treat the car as gone
+    private var drivingJob: Job? = null // driving-doze: drop the wake lock while the car is in gear
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
@@ -82,6 +84,20 @@ class PresenceService : Service() {
 
     /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
     @Volatile private var locked = false
+
+    /**
+     * True while in "driving-doze": the car is in gear, so we release the wake lock and pause
+     * heartbeats but KEEP the connection + 0x1c subscription, to still catch the return to Park.
+     * See [monitorDriving].
+     */
+    @Volatile private var driving = false
+
+    /**
+     * Latched true if the car dropped the link while heartbeats were paused (driving-doze) — disables
+     * driving-doze for the rest of THIS drive (until gear returns to Park), so we don't churn
+     * pause→drop→reconnect→pause. Cleared on the next Park.
+     */
+    @Volatile private var drivingDozeDisabled = false
 
     /**
      * True once [onDestroy] has begun. Gates [updateNotification] so a notification observer racing
@@ -175,6 +191,8 @@ class PresenceService : Service() {
         lockJob = scope.launch { monitorLock() }
         // Keep the (background) tile's vehicle-state shading in sync, heavily debounced.
         tileJob = scope.launch { refreshTileOnStatusChange() }
+        // Drop the wake lock + heartbeats while the car is in gear (debug builds only; see below).
+        drivingJob = scope.launch { monitorDriving() }
         return START_STICKY
     }
 
@@ -220,6 +238,7 @@ class PresenceService : Service() {
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     if (passive) { ProximityWake.stopScan(this, proximityCallback); departJob?.cancel(); passive = false; _passive.value = false }
+                    driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
                     updateNotification(LOCKED_TEXT)
@@ -303,6 +322,61 @@ class PresenceService : Service() {
         listOf(s.locked, s.anyDoorOpen, s.anyWindowOpen, s.frunkOpen, s.liftgateOpen, s.chargeState, s.asleep)
 
     /**
+     * Driving-doze: when the gear leaves Park the car is started and being driven, so we don't need
+     * to hold presence. Release the wake lock and pause heartbeats, but KEEP the GATT link + 0x1c
+     * subscription — the BT controller still delivers status frames while the CPU dozes, so we catch
+     * the return to Park (which re-arms presence). The watch stays in BLE range the whole drive (it's
+     * on the driver's wrist), so the link doesn't drop from range.
+     *
+     * VALIDATED on-vehicle 2026-06-16 (drive-sleep.log): 0x1c kept streaming through the heartbeat-less
+     * window on a single continuous link (no reconnect). If the link ever DOES drop mid-gear
+     * (interference / a module hiccup), [drivingDozeDisabled] latches the optimization off for the rest
+     * of the drive and we resume normal presence.
+     */
+    private suspend fun monitorDriving() {
+        combine(VehicleStatus.state, PresenceStatus.connected) { st, conn ->
+            st.gear to (conn && st.valid && st.live)
+        }.distinctUntilChanged().collect { (gear, liveConnected) ->
+            if (locked || passive) return@collect // those modes own the wake lock / BLE
+            val inGear = gear != VehicleStatus.Gear.PARK && gear != VehicleStatus.Gear.UNKNOWN
+            when {
+                !inGear -> { // Park (or no reading): normal presence; clear the per-drive latch
+                    drivingDozeDisabled = false
+                    if (driving) exitDriving("back in Park")
+                }
+                !liveConnected -> if (driving) { // in gear but the link is gone → hypothesis failed
+                    exitDriving("link dropped without heartbeats")
+                    drivingDozeDisabled = true // don't retry until Park, or we'd churn pause→drop→reconnect
+                    DebugLog.add("presence: driving-doze FAILED — car dropped the heartbeat-less link; holding presence for the rest of this drive")
+                }
+                else -> if (!driving && !drivingDozeDisabled) enterDriving(gear)
+            }
+        }
+    }
+
+    /** Enter driving-doze: keep the connection/0x1c, drop the wake lock + heartbeats. */
+    private fun enterDriving(gear: VehicleStatus.Gear) {
+        if (driving) return
+        driving = true
+        VehicleSession.heartbeatsPaused = true
+        releaseWakeLock()
+        updateNotification(DRIVING_TEXT)
+        DebugLog.add("presence: → driving-doze (gear=$gear) — wake lock released, heartbeats paused, link kept for 0x1c")
+        TileRefresher.refresh(this)
+    }
+
+    /** Leave driving-doze: resume presence (wake lock + heartbeats). */
+    private fun exitDriving(why: String) {
+        if (!driving) return
+        driving = false
+        VehicleSession.heartbeatsPaused = false
+        acquireWakeLock()
+        updateNotification(PresenceStatus.summary.value)
+        DebugLog.add("presence: ← driving-doze ($why) — wake lock reacquired, heartbeats resumed")
+        TileRefresher.refresh(this)
+    }
+
+    /**
      * Refresh the tile when the vehicle state it draws actually changes — heavily debounced,
      * because the 0x1c stream flickers fast (mid-unlock especially) and a tile update is
      * expensive/rate-limited. Maps to only the fields the tile renders so changes it ignores
@@ -345,6 +419,7 @@ class PresenceService : Service() {
         seenDeparture = !PresenceStatus.connected.value
         scope.launch { stopBle() }
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
+        driving = false; VehicleSession.heartbeatsPaused = false // leaving active — clear driving-doze
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching")
@@ -451,8 +526,16 @@ class PresenceService : Service() {
         val offAction = Notification.Action.Builder(
             Icon.createWithResource(this, R.drawable.ic_notif_power), "Disable", offIntent,
         ).build()
+        // The MODE (active / passive / paused) lives in the title; the content text is pure detail
+        // (link state, "Waiting for vehicle", etc.) — so the two never contradict each other.
+        val mode = when {
+            locked -> "paused"
+            driving -> "driving"
+            passive -> "passive"
+            else -> "active"
+        }
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.presence_notification_title))
+            .setContentTitle("${getString(R.string.presence_notification_title)} · $mode")
             .setContentText(state)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentIntent)
@@ -484,6 +567,7 @@ class PresenceService : Service() {
         // Tear down the coroutine scope (the notification observer lives here) and reset shared
         // state, then remove the FG notification explicitly so deactivating the key clears it.
         scope.cancel()
+        driving = false; VehicleSession.heartbeatsPaused = false // never leak the pause to a future session
         PresenceStatus.reset()
         VehicleStatus.clear() // keep last-known state but mark it stale (no session confirming it)
         TileRefresher.refresh(this) // active/passive→off: key no longer armed; refresh the tile
@@ -518,8 +602,9 @@ class PresenceService : Service() {
         private const val LOCK_POLL_MS = 2_000L
         /** Settle time before refreshing the tile on a 0x1c change — the stream flickers fast. */
         private const val TILE_REFRESH_DEBOUNCE_MS = 3_000L
-        private const val LOCKED_TEXT = "Watch locked · key paused"
-        private const val PASSIVE_TEXT = "Passive · waiting for vehicle"
+        private const val LOCKED_TEXT = "Watch locked"
+        private const val PASSIVE_TEXT = "Waiting for vehicle"
+        private const val DRIVING_TEXT = "In gear · presence paused"
 
         /** Live "is the presence service running" — observed by the UI for the active/passive flip. */
         private val _running = MutableStateFlow(false)

@@ -22,10 +22,13 @@ import kotlinx.coroutines.flow.StateFlow
  *                                                       0x02 rear-driver, 0x01 rear-pass; 1=closed)
  *   status[2] hi-nibble = locked;  bit 0x08 = frunk, bit 0x04 = liftgate  (1=closed)
  *   status[3]           = windows (same bit layout as doors; 1=closed)
- *   status[4]           = climate/HVAC state (decoded 2026-06-09): 0 off, 0x04 preconditioning
- *                         starting, 0x08 running. `& 0x0c` != 0 = climate on.
+ *   status[4]           = HVAC + drive flags: 0x04 preconditioning starting, 0x08 running
+ *                         (`& 0x0c` != 0 = climate on); bit 0x20 = in-motion/drive flag (decoded
+ *                         2026-06-16 from prndl.log — it trails the gear by ~1 frame).
  *   status[5]           = state of charge, integer %        (decoded 2026-06-07)
- *   status[6] lo-nibble = charge state enum                 (decoded 2026-06-07; see [ChargeState])
+ *   status[6] hi-nibble = GEAR / PRNDL (decoded 2026-06-16 from prndl.log): 1=Park, 2=Reverse,
+ *                         3=Neutral, 4=Drive. Was only ever 0x1 before because every prior capture
+ *                         was parked. lo-nibble = charge state enum (decoded 2026-06-07; [ChargeState]).
  *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
  *   status[8..9]        = estimated range, km, LE16 (280km==174mi, confirmed 2026-06-10 by mileage.log).
  *                         Range OVERLAPS the charge ETA in [9]: it's really a 9-bit field — [8] plus
@@ -55,7 +58,10 @@ import kotlinx.coroutines.flow.StateFlow
  */
 object VehicleStatus {
 
-    /** Charge state from status[6]'s low nibble (high nibble is a constant 0x1). */
+    /** Transmission gear from status[6]'s HIGH nibble (PRNDL order). */
+    enum class Gear { UNKNOWN, PARK, REVERSE, NEUTRAL, DRIVE }
+
+    /** Charge state from status[6]'s low nibble (the high nibble is the [Gear]). */
     enum class ChargeState {
         UNKNOWN,      // not yet parsed / unrecognized code (0x_8 seen once at charge start, ETA 0
                       // — semantics unidentified, so it intentionally maps here and the UI shows
@@ -84,6 +90,14 @@ object VehicleStatus {
          * step 0 → 0x04 (starting) → 0x08 (running) → 0 (off). We treat `0x0c` (either bit) as on.
          */
         val climateOn: Boolean = false,
+        /**
+         * Transmission gear (PRNDL) from status[6]'s high nibble; [Gear.UNKNOWN] when absent.
+         * Leaving Park means the car is started and being driven — used to drop presence (see
+         * PresenceService driving-doze). Decoded 2026-06-16 from prndl.log.
+         */
+        val gear: Gear = Gear.UNKNOWN,
+        /** status[4] bit 0x20 — set while actively driving (trails [gear] by ~1 frame); semantics TBD. */
+        val inMotion: Boolean = false,
         /** State of charge, integer percent; null when the frame is too short to carry it. */
         val socPercent: Int? = null,
         /** Cabin temperature in °C; null when not present in the frame. */
@@ -141,6 +155,8 @@ object VehicleStatus {
             anyDoorOpen = (s(1) and 0x0f) != 0x0f,
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
             climateOn = frame.size >= 4 + 5 && (s(4) and 0x0c) != 0,
+            inMotion = frame.size >= 4 + 5 && (s(4) and 0x20) != 0,
+            gear = if (hasTelemetry) gearOf(s(6)) else Gear.UNKNOWN,
             socPercent = if (hasTelemetry) s(5) else null,
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = when {
@@ -155,6 +171,15 @@ object VehicleStatus {
                 else -> 0                       // not charging: no ETA, and [9] is the range high byte
             },
         )
+    }
+
+    /** Gear from status[6]'s high nibble (PRNDL order; confirmed on prndl.log P→D→N→R→P). */
+    private fun gearOf(b6: Int): Gear = when ((b6 shr 4) and 0x0f) {
+        0x1 -> Gear.PARK
+        0x2 -> Gear.REVERSE
+        0x3 -> Gear.NEUTRAL
+        0x4 -> Gear.DRIVE
+        else -> Gear.UNKNOWN
     }
 
     private fun chargeStateOf(b6: Int): ChargeState = when (b6 and 0x0f) {
