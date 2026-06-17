@@ -45,6 +45,9 @@ object EnrollmentContract {
         val error: String?,
         val userId: String,
         val vehicles: List<VehicleResult>,
+        /** True = registered with Rivian as a WATCH (no passive lock/unlock); false = phone (full
+         *  proximity). Absent from old companions → defaults to false (phone). */
+        val asWatch: Boolean = false,
     ) {
         val isOk: Boolean get() = status == "ok"
     }
@@ -84,6 +87,7 @@ object EnrollmentContract {
             error = null,
             userId = o.optString("userId"),
             vehicles = vehicles,
+            asWatch = o.optBoolean("asWatch", false), // absent (old companion) → phone
         )
     }
 }

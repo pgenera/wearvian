@@ -15,6 +15,10 @@ data class Enrollment(
     val vehiclePublicKey: String,
     val vasPhoneId: String,
     val identityId: String,
+    /** Registered with Rivian as a WATCH key (car does no passive lock/unlock) vs a phone key (full
+     *  proximity). Defaults false so installs enrolled before this field existed are treated as phone
+     *  keys on upgrade. Stored now; the presence behavior that consumes it lands in a later branch. */
+    val asWatch: Boolean = false,
     val bonded: Boolean = false,
 )
 
@@ -41,7 +45,7 @@ class EnrollmentStore(context: Context) {
     fun isEnrolled(): Boolean = prefs.contains(KEY_VAS_PHONE_ID)
 
     fun save(e: Enrollment) {
-        logi("EnrollmentStore: save vin=${e.vin} vehicleId=${e.vehicleId} vasPhoneId=${e.vasPhoneId} bonded=${e.bonded}")
+        logi("EnrollmentStore: save vin=${e.vin} vehicleId=${e.vehicleId} vasPhoneId=${e.vasPhoneId} asWatch=${e.asWatch} bonded=${e.bonded}")
         prefs.edit()
             .putString(KEY_USER_ID, e.userId)
             .putString(KEY_VEHICLE_ID, e.vehicleId)
@@ -50,6 +54,7 @@ class EnrollmentStore(context: Context) {
             .putString(KEY_VEHICLE_PUBKEY, e.vehiclePublicKey)
             .putString(KEY_VAS_PHONE_ID, e.vasPhoneId)
             .putString(KEY_IDENTITY_ID, e.identityId)
+            .putBoolean(KEY_AS_WATCH, e.asWatch)
             .putBoolean(KEY_BONDED, e.bonded)
             .apply()
     }
@@ -64,6 +69,7 @@ class EnrollmentStore(context: Context) {
             vehiclePublicKey = prefs.getString(KEY_VEHICLE_PUBKEY, "").orEmpty(),
             vasPhoneId = prefs.getString(KEY_VAS_PHONE_ID, "").orEmpty(),
             identityId = prefs.getString(KEY_IDENTITY_ID, "").orEmpty(),
+            asWatch = prefs.getBoolean(KEY_AS_WATCH, false), // pre-existing installs → phone key
             bonded = prefs.getBoolean(KEY_BONDED, false),
         )
     }
@@ -86,6 +92,7 @@ class EnrollmentStore(context: Context) {
         const val KEY_VEHICLE_PUBKEY = "vehicle_public_key"
         const val KEY_VAS_PHONE_ID = "vas_phone_id"
         const val KEY_IDENTITY_ID = "identity_id"
+        const val KEY_AS_WATCH = "as_watch"
         const val KEY_BONDED = "bonded"
     }
 }

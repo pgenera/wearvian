@@ -127,7 +127,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 if (!result.isOk) error(result.error ?: "Enrollment failed")
                 val vehicle = result.vehicles.firstOrNull()
                     ?: error("No vehicles on this Rivian account")
-                logi("startEnrollment: enrolled vin=${vehicle.vin} vasPhoneId=${vehicle.vasPhoneId} identityId=${vehicle.identityId}")
+                logi("startEnrollment: enrolled vin=${vehicle.vin} vasPhoneId=${vehicle.vasPhoneId} identityId=${vehicle.identityId} asWatch=${result.asWatch}")
 
                 store.save(
                     Enrollment(
@@ -138,6 +138,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                         vehiclePublicKey = vehicle.vehiclePublicKey,
                         vasPhoneId = vehicle.vasPhoneId,
                         identityId = vehicle.identityId,
+                        asWatch = result.asWatch,
                         bonded = false,
                     ),
                 )
