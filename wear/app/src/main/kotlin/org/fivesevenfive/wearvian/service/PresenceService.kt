@@ -199,9 +199,10 @@ class PresenceService : Service() {
         // Mirror the aggregate connection state into the ongoing notification, like the official
         // app's "vehicle connected / disconnected" persistent notification — but while locked or
         // passive, hold that status text instead of link state.
-        // While locked / passive / driving-doze, the notification shows a fixed status (LOCKED_TEXT /
-        // PASSIVE_TEXT / DRIVING_TEXT) — don't let the live link-count summary clobber it.
-        notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive && !driving) updateNotification(it) } }
+        // While locked / passive / heartbeats-paused (driving-doze OR watch-mode standby), the
+        // notification holds a fixed status text (LOCKED_TEXT / PASSIVE_TEXT / DRIVING_TEXT /
+        // WATCH_DOZE_TEXT) — don't let the live link-count summary clobber it.
+        notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive && !VehicleSession.heartbeatsPaused) updateNotification(it) } }
         // Drop to passive (stay-alive + in-process proximity watch) after a stretch with no link.
         idleJob = scope.launch { monitorIdle() }
         // Also drop to passive while still connected but parked-idle (state steady for a while).
@@ -624,12 +625,11 @@ class PresenceService : Service() {
         val offAction = Notification.Action.Builder(
             Icon.createWithResource(this, R.drawable.ic_notif_power), "Disable", offIntent,
         ).build()
-        // The MODE (active / passive / paused) lives in the title; the content text is pure detail
-        // (link state, "Waiting for vehicle", etc.) — so the two never contradict each other.
+        // The MODE in the title (active / passive / paused) matches the app's key-status EXACTLY;
+        // sub-states (driving-doze, watch standby, link count) are detail in the content text, so the
+        // title and the app never contradict each other.
         val mode = when {
             locked -> "paused"
-            driving -> "driving"
-            watchMode && VehicleSession.heartbeatsPaused -> "standby"
             passive -> "passive"
             else -> "active"
         }
