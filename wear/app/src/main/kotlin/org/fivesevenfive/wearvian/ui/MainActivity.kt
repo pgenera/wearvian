@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
                         onCommand = vm::sendCommand,
                         onStartPassive = vm::startPassive,
                         onForceR1tChange = vm::setForceR1t,
+                        onForceWatchChange = vm::setForceWatch,
                         onReset = vm::reset,
                     )
                 }

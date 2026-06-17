@@ -42,8 +42,10 @@ import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
@@ -173,8 +175,9 @@ class PresenceService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        watchMode = enrollment.asWatch
-        DebugLog.add("presence: key registered as ${if (watchMode) "WATCH — manual lock/unlock, no passive entry" else "PHONE — full proximity"}")
+        logPersistentState(this) // dump all persisted state + the transient switch at startup
+        watchMode = enrollment.asWatch || DebugOverrides.forceWatch
+        DebugLog.add("presence: key acts as ${if (watchMode) "WATCH — manual lock/unlock, no passive entry" else "PHONE — full proximity"} (enrolled asWatch=${enrollment.asWatch}, forceWatch=${DebugOverrides.forceWatch})")
         // lockJob is the "service is already running" marker (loopJob can be inactive while locked).
         if (lockJob?.isActive == true) {
             when {

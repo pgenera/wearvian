@@ -17,9 +17,11 @@ import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
+import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.store.SettingsStore
+import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.logi
 import org.fivesevenfive.wearvian.util.logw
@@ -47,6 +49,9 @@ data class SetupUiState(
     /** Registered with Rivian as a WATCH key (no passive lock/unlock — manual lock/unlock only) vs a
      *  phone key (full proximity). Lets the UI reflect the mode; behavior gating lands incrementally. */
     val asWatch: Boolean = false,
+    /** Debug-only TRANSIENT override (Force WaaK): force watch-key behavior regardless of enrollment.
+     *  In-memory only ([DebugOverrides]), never persisted. */
+    val forceWatch: Boolean = false,
 )
 
 /** How long a command tap throbs when routed to the live session (fire-and-forget). */
@@ -64,6 +69,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     val state: State<SetupUiState> get() = _state
 
     init {
+        logPersistentState(app) // log all persisted state + the transient switch on app startup
         // Live tri-state: when the presence service starts/stops or flips active↔passive (auto-
         // idle, or the proximity watch reviving it), reflect it on the BONDED screen without
         // waiting for a resume. Re-read keyArmed so off/active/passive stay consistent.
@@ -106,6 +112,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     isTruck = VehicleModel.fromVin(e.vin).isTruck || settings.forceR1t,
                     forceR1t = settings.forceR1t,
                     asWatch = e.asWatch,
+                    forceWatch = DebugOverrides.forceWatch,
                 )
             }
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
@@ -181,6 +188,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     isTruck = VehicleModel.fromVin(enrollment.vin).isTruck || settings.forceR1t,
                     forceR1t = settings.forceR1t,
                     asWatch = enrollment.asWatch,
+                    forceWatch = DebugOverrides.forceWatch,
                 )
             }.onFailure {
                 loge("startPairing failed", it)
@@ -262,6 +270,21 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         settings.forceR1t = on
         val vinTruck = store.load()?.let { VehicleModel.fromVin(it.vin).isTruck } ?: false
         _state.value = _state.value.copy(forceR1t = on, isTruck = vinTruck || on)
+    }
+
+    /**
+     * Debug-only TRANSIENT override (Force WaaK): force watch-key behavior (burst presence, no passive
+     * lock/unlock) regardless of the enrolled `asWatch`. In-memory only ([DebugOverrides]) — NOT
+     * persisted, so it's gone on app restart. Restarts presence so PresenceService re-reads the mode.
+     */
+    fun setForceWatch(on: Boolean) {
+        logi("setForceWatch: $on (transient override — not persisted)")
+        DebugOverrides.forceWatch = on
+        _state.value = _state.value.copy(forceWatch = on)
+        if (settings.keyArmed) {
+            PresenceService.stop(getApplication())
+            PresenceService.start(getApplication())
+        }
     }
 
     /**

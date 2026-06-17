@@ -102,6 +102,7 @@ fun ControlScreens(
     onCommand: (Int, String) -> Unit,
     onStartPassive: () -> Unit,
     onForceR1tChange: (Boolean) -> Unit,
+    onForceWatchChange: (Boolean) -> Unit,
 ) {
     // Production shows the working cards; Settings stays debug-only (auto power-save defaults on,
     // so there's nothing to toggle in production). BuildConfig.PRODUCTION is constant.
@@ -148,7 +149,7 @@ fun ControlScreens(
                     Page.CLOSURES -> ClosuresPage(state.inFlight, status, state.isTruck, onCommand)
                     Page.CHARGE -> ChargeStatusPage(state.inFlight, status, onCommand)
                     Page.ALARM -> AlarmPage(state.inFlight, onCommand)
-                    Page.SETTINGS -> SettingsPage(state, onStartPassive, onForceR1tChange)
+                    Page.SETTINGS -> SettingsPage(state, onStartPassive, onForceR1tChange, onForceWatchChange)
                 }
             }
         }
@@ -435,6 +436,7 @@ private fun SettingsPage(
     state: SetupUiState,
     onStartPassive: () -> Unit,
     onForceR1tChange: (Boolean) -> Unit,
+    onForceWatchChange: (Boolean) -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().padding(18.dp),
@@ -462,6 +464,25 @@ private fun SettingsPage(
             Spacer(Modifier.width(6.dp))
             Text(
                 "Force R1T",
+                color = Color.White,
+                fontSize = 13.sp,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+        // Debug: force WATCH-key behavior (burst presence, no passive lock/unlock) regardless of the
+        // enrolled device type. TRANSIENT — never persisted (DebugOverrides); gone on app restart.
+        val waak = state.forceWatch
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                imageVector = if (waak) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
+                contentDescription = if (waak) "Force WaaK on" else "Force WaaK off",
+                modifier = Modifier.width(64.dp).height(40.dp).clickable { onForceWatchChange(!waak) },
+                colorFilter = ColorFilter.tint(if (waak) GOLD else DIM),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "Force WaaK",
                 color = Color.White,
                 fontSize = 13.sp,
                 maxLines = 1,
