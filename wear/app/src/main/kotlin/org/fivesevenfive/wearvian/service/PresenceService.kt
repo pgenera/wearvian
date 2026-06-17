@@ -97,10 +97,6 @@ class PresenceService : Service() {
      */
     @Volatile private var watchMode = false
 
-    /** elapsedRealtime() of the last watch-mode burst trigger (a door opening or the vehicle waking).
-     *  Combined with [CommandBus.lastSubmitMs] (a manual command) to decide whether to hold presence. */
-    @Volatile private var lastWatchTriggerMs = 0L
-
     /**
      * True while in "driving-doze": the car is in gear, so we release the wake lock and pause
      * heartbeats but KEEP the connection + 0x1c subscription, to still catch the return to Park.
@@ -434,6 +430,9 @@ class PresenceService : Service() {
         if (!watchMode) return
         var prevDoorOpen = false
         var prevAsleep = false
+        // elapsedRealtime() of the last door-open / vehicle-woke trigger; combined with
+        // CommandBus.lastSubmitMs (manual command). Local — only used in this loop.
+        var lastWatchTriggerMs = 0L
         while (true) {
             delay(WATCH_TICK_MS)
             if (locked || passive) { prevDoorOpen = false; prevAsleep = false; continue }
