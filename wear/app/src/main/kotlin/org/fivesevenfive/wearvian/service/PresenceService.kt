@@ -307,13 +307,59 @@ class PresenceService : Service() {
                 PresenceStatus.connected.first { it }
                 continue
             }
-            // Disconnected — go passive only if we stay disconnected for the whole window;
-            // a reconnect within it cancels the attempt.
-            val reconnected = withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } }
-            if (reconnected != null) continue // came back on its own
-            // Power-save off, or couldn't arm the scan → stay foreground-active and retry next cycle.
+            // Disconnected — go passive as soon as the car's nodes are confirmed out of range (a quick
+            // offloaded scan), instead of always holding active for IDLE_TIMEOUT_MS. A reconnect, or the
+            // scan still seeing the nodes advertising, means it's a blip → stay active.
+            val disconnectedAt = SystemClock.elapsedRealtime()
+            if (!departed(disconnectedAt)) continue // reconnected, or car still in range → keep active
             if (!goPassive()) continue
             PresenceStatus.connected.first { it } // passive: block until the proximity watch wakes us
+        }
+    }
+
+    /**
+     * After the links drop, decide whether the car has actually LEFT (→ passive now) vs a transient
+     * blip (→ keep active). Arms an offloaded scan for the car's nodes (they advertise once we're no
+     * longer connected to them — the same way passive mode finds them on return). If neither a
+     * reconnect nor a node sighting happens within [IDLE_PROBE_MS], the car is out of range → go
+     * passive, without holding active for the full [IDLE_TIMEOUT_MS]. If the nodes ARE seen (car
+     * nearby) it's a blip, so we wait for the reconnect — but never past the IDLE_TIMEOUT_MS backstop
+     * measured from [disconnectedAt]. @return true iff the car is gone (caller should go passive).
+     */
+    private suspend fun departed(disconnectedAt: Long): Boolean {
+        val vasId = EnrollmentStore(this).load()?.vasVehicleId
+            ?: return withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } } == null
+        val seen = java.util.concurrent.atomic.AtomicBoolean(false)
+        val cb = object : android.bluetooth.le.ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+                if (callbackType == android.bluetooth.le.ScanSettings.CALLBACK_TYPE_FIRST_MATCH &&
+                    seen.compareAndSet(false, true)) {
+                    DebugLog.add("idle: car node ${result.device?.address} in range — blip, staying active")
+                }
+            }
+        }
+        if (!ProximityWake.scanForVehicle(this, vasId, cb)) {
+            // No scan available (BT off / no filters) → fall back to the old fixed wait.
+            return withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } } == null
+        }
+        try {
+            // Give the offloaded scan a short window to spot the car (or for a reconnect to happen).
+            withTimeoutOrNull(IDLE_PROBE_MS) {
+                while (!seen.get() && !PresenceStatus.connected.value && !passive && !locked) delay(500)
+            }
+            return when {
+                passive || locked -> false
+                PresenceStatus.connected.value -> false // reconnected on its own — blip
+                !seen.get() -> { DebugLog.add("idle: car nodes out of range ${IDLE_PROBE_MS / 1000}s → passive"); true }
+                else -> {
+                    // Car's still advertising nearby — a blip. Wait for the reconnect, capped by the
+                    // IDLE_TIMEOUT_MS backstop from when the links first dropped.
+                    val remaining = IDLE_TIMEOUT_MS - (SystemClock.elapsedRealtime() - disconnectedAt)
+                    remaining <= 0 || withTimeoutOrNull(remaining) { PresenceStatus.connected.first { it } } == null
+                }
+            }
+        } finally {
+            ProximityWake.stopScan(this, cb)
         }
     }
 
@@ -682,8 +728,13 @@ class PresenceService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val RESCAN_MS = 15_000L
         private const val STAGGER_MS = 1_500L
-        /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). */
+        /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). This
+         *  is now only the BACKSTOP; [departed] usually drops to passive far sooner via [IDLE_PROBE_MS]. */
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
+        /** After the links drop, how long the offloaded scan looks for the car's nodes before
+         *  concluding they're out of range and going passive. ~6x faster than the IDLE_TIMEOUT_MS
+         *  backstop; long enough for the low-power scan to spot a nearby car (avoids false departures). */
+        private const val IDLE_PROBE_MS = 45_000L
         /** How often [monitorStableIdle] samples vehicle state to judge "nothing's changed". */
         private const val STABLE_CHECK_MS = 30_000L
         /** Connected but state steady this long → drop to passive. Plugged in = strong stay signal. */
