@@ -127,9 +127,11 @@ class VehicleSession(
             g.discoverServices()
             withTimeout(OP_MS) { servicesReady.await() }
             sessionAlive = true
-            // Request a fast connection interval — the default power-save interval
-            // (~1 s) throttled our heartbeats to ~0.9 Hz. HIGH ≈ 7.5–15 ms interval.
-            val connPri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            // Match the official app's connection interval. Its HCI btsnoop (captures/) shows it
+            // runs links at a 45 ms baseline and relaxes to 90/135 ms — it NEVER uses HIGH (11–15 ms),
+            // and the car honours intervals up to 135 ms. BALANCED (~30–50 ms) carries 300 ms heartbeats
+            // + localization fine and is ~4× cheaper than HIGH across 5 links. (Paused → LOW_POWER.)
+            val connPri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
             DebugLog.ble("·", label, "discovered (${g.services.size} svc) connPriReq=$connPri")
 
             val phoneIdChar = requireChar(g, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
@@ -232,14 +234,20 @@ class VehicleSession(
                 if (reason != null) {
                     if (pauseReason != reason) {
                         pauseReason = reason
-                        DebugLog.add("$label: pausing presence heartbeats ($reason)")
+                        // No localization while paused → relax the radio. A slow connection interval
+                        // still delivers the sparse 0x1c stream and cuts radio wakeups ~10x across the
+                        // whole drive (the dominant cost now that the wake lock + heartbeats are off).
+                        val pri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
+                        DebugLog.add("$label: pausing presence heartbeats ($reason) — conn→LOW_POWER ($pri)")
                     }
                     delay(HEARTBEAT_PERIOD_MS)
                     continue
                 }
                 if (pauseReason != null) {
                     pauseReason = null
-                    DebugLog.add("$label: resuming heartbeats")
+                    // Back to the active baseline (BALANCED ≈ 45 ms, matching the official app).
+                    val pri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                    DebugLog.add("$label: resuming heartbeats — conn→BALANCED ($pri)")
                 }
                 // PRIMARY drains queued active commands so they ride THIS live, awake
                 // session with the running counter — the only way the vehicle accepts the
