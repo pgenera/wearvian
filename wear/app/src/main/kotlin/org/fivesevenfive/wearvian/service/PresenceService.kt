@@ -326,6 +326,10 @@ class PresenceService : Service() {
      * door you open as you walk up keeps the key active.
      */
     private suspend fun monitorStableIdle() {
+        // Watch mode stays in doze while connected (no heartbeats/wake lock anyway) and MUST keep the
+        // link to watch 0x1c for the door-open trigger — so don't tear it down here; departure →
+        // passive is still handled by monitorIdle (no link UP) when the car actually drops/leaves.
+        if (watchMode) return
         while (true) {
             delay(STABLE_CHECK_MS)
             if (passive || locked) continue
@@ -440,11 +444,16 @@ class PresenceService : Service() {
                 prevDoorOpen = st.anyDoorOpen
                 prevAsleep = st.asleep
             }
-            val lastTrigger = maxOf(lastWatchTriggerMs, CommandBus.lastSubmitMs)
-            val recentTrigger = lastTrigger > 0L && SystemClock.elapsedRealtime() - lastTrigger < WATCH_BURST_MS
+            val now = SystemClock.elapsedRealtime()
             val carAsleep = st.valid && st.asleep
             val inGear = st.valid && st.gear != VehicleStatus.Gear.PARK && st.gear != VehicleStatus.Gear.UNKNOWN
-            val wantBurst = recentTrigger && !carAsleep && !inGear
+            // A MANUAL command must burst so the heartbeat loop can drain it — even if the car is asleep
+            // or in gear (else a tapped lock/unlock is queued and never sent: the heartbeat loop won't
+            // drain while paused). Passive triggers (door / wake) only burst while parked & awake — the
+            // drive-enable window — and stop when the car sleeps or you shift into gear.
+            val recentManual = CommandBus.lastSubmitMs > 0L && now - CommandBus.lastSubmitMs < WATCH_BURST_MS
+            val recentPassive = lastWatchTriggerMs > 0L && now - lastWatchTriggerMs < WATCH_BURST_MS
+            val wantBurst = recentManual || (recentPassive && !carAsleep && !inGear)
             // Drive off the real heartbeat flag (not a local) so this self-corrects after a lock/passive
             // reset flips it. In watch mode only this monitor un-pauses, so paused==false ⟺ bursting.
             if (wantBurst && VehicleSession.heartbeatsPaused) {
