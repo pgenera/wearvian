@@ -86,6 +86,15 @@ class PresenceService : Service() {
     @Volatile private var locked = false
 
     /**
+     * True when this key was registered with Rivian as a WATCH (keyDeviceSubtype="WATCH") — the car
+     * does NO passive lock/unlock for it, so proximity presence on approach/departure is wasted. The
+     * gating signal for the watch-mode presence lifecycle (presence only around the drive window).
+     * Set on start from the stored enrollment; defaults false (phone, full proximity) for installs
+     * enrolled before the device-type plumbing. Behavior gated on this lands incrementally.
+     */
+    @Volatile private var watchMode = false
+
+    /**
      * True while in "driving-doze": the car is in gear, so we release the wake lock and pause
      * heartbeats but KEEP the connection + 0x1c subscription, to still catch the return to Park.
      * See [monitorDriving].
@@ -161,6 +170,8 @@ class PresenceService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        watchMode = enrollment.asWatch
+        DebugLog.add("presence: key registered as ${if (watchMode) "WATCH — manual lock/unlock, no passive entry" else "PHONE — full proximity"}")
         // lockJob is the "service is already running" marker (loopJob can be inactive while locked).
         if (lockJob?.isActive == true) {
             when {

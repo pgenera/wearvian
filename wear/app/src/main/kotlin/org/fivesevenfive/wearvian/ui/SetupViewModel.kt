@@ -44,6 +44,9 @@ data class SetupUiState(
     val isTruck: Boolean = false,
     /** Debug-only override that forces [isTruck] on regardless of VIN — for testing the R1T UI. */
     val forceR1t: Boolean = false,
+    /** Registered with Rivian as a WATCH key (no passive lock/unlock — manual lock/unlock only) vs a
+     *  phone key (full proximity). Lets the UI reflect the mode; behavior gating lands incrementally. */
+    val asWatch: Boolean = false,
 )
 
 /** How long a command tap throbs when routed to the live session (fire-and-forget). */
@@ -102,6 +105,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     keyArmed = settings.keyArmed,
                     isTruck = VehicleModel.fromVin(e.vin).isTruck || settings.forceR1t,
                     forceR1t = settings.forceR1t,
+                    asWatch = e.asWatch,
                 )
             }
             else -> SetupUiState(Phase.ENROLLED, detail = e.vin)
@@ -176,6 +180,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                     deviceSecure = isDeviceSecure(),
                     isTruck = VehicleModel.fromVin(enrollment.vin).isTruck || settings.forceR1t,
                     forceR1t = settings.forceR1t,
+                    asWatch = enrollment.asWatch,
                 )
             }.onFailure {
                 loge("startPairing failed", it)
