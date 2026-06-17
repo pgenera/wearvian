@@ -182,7 +182,9 @@ class PresenceService : Service() {
         // Mirror the aggregate connection state into the ongoing notification, like the official
         // app's "vehicle connected / disconnected" persistent notification — but while locked or
         // passive, hold that status text instead of link state.
-        notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive) updateNotification(it) } }
+        // While locked / passive / driving-doze, the notification shows a fixed status (LOCKED_TEXT /
+        // PASSIVE_TEXT / DRIVING_TEXT) — don't let the live link-count summary clobber it.
+        notifJob = scope.launch { PresenceStatus.summary.collect { if (!locked && !passive && !driving) updateNotification(it) } }
         // Drop to passive (stay-alive + in-process proximity watch) after a stretch with no link.
         idleJob = scope.launch { monitorIdle() }
         // Also drop to passive while still connected but parked-idle (state steady for a while).
