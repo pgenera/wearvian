@@ -14,6 +14,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -34,6 +35,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
+import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.ble.RivianBle
@@ -71,6 +73,7 @@ class PresenceService : Service() {
     private var tileJob: Job? = null
     private var departJob: Job? = null // debounces a MATCH_LOST before we treat the car as gone
     private var drivingJob: Job? = null // driving-doze: drop the wake lock while the car is in gear
+    private var watchJob: Job? = null   // watch-mode burst presence (only when registered as a watch)
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
@@ -93,6 +96,10 @@ class PresenceService : Service() {
      * enrolled before the device-type plumbing. Behavior gated on this lands incrementally.
      */
     @Volatile private var watchMode = false
+
+    /** elapsedRealtime() of the last watch-mode burst trigger (a door opening or the vehicle waking).
+     *  Combined with [CommandBus.lastSubmitMs] (a manual command) to decide whether to hold presence. */
+    @Volatile private var lastWatchTriggerMs = 0L
 
     /**
      * True while in "driving-doze": the car is in gear, so we release the wake lock and pause
@@ -188,7 +195,7 @@ class PresenceService : Service() {
         when {
             locked -> updateNotification(LOCKED_TEXT)
             goPassiveNow -> { DebugLog.add("presence: manual passive requested"); enterPassive() }
-            else -> { acquireWakeLock(); startBle() }
+            else -> startActivePresence()
         }
         // Mirror the aggregate connection state into the ongoing notification, like the official
         // app's "vehicle connected / disconnected" persistent notification — but while locked or
@@ -202,8 +209,11 @@ class PresenceService : Service() {
         lockJob = scope.launch { monitorLock() }
         // Keep the (background) tile's vehicle-state shading in sync, heavily debounced.
         tileJob = scope.launch { refreshTileOnStatusChange() }
-        // Drop the wake lock + heartbeats while the car is in gear (debug builds only; see below).
+        // Drop the wake lock + heartbeats while the car is in gear (phone mode; watch mode handles
+        // gear itself via monitorWatchPresence).
         drivingJob = scope.launch { monitorDriving() }
+        // Watch keys: doze by default, burst presence only around the drive window.
+        watchJob = scope.launch { monitorWatchPresence() }
         return START_STICKY
     }
 
@@ -235,6 +245,22 @@ class PresenceService : Service() {
     }
 
     /**
+     * Bring up the BLE sessions. PHONE keys hold the wake lock for continuous presence (passive
+     * unlock/lock + drive). WATCH keys come up in DOZE — connection + 0x1c kept, but heartbeats paused
+     * and no wake lock — since the car does no passive lock/unlock for them; [monitorWatchPresence]
+     * bursts presence on only around the drive window.
+     */
+    private fun startActivePresence() {
+        if (watchMode) {
+            VehicleSession.heartbeatsPaused = true // doze by default; bursts un-pause it
+            startBle()
+        } else {
+            acquireWakeLock()
+            startBle()
+        }
+    }
+
+    /**
      * Anti-theft: while the watch is locked (removed from the wrist with a screen lock),
      * tear down ALL BLE — no connections, no chatter, no wake lock — keeping the foreground
      * service alive so we can rebuild instantly on unlock without an FGS-restart (which the
@@ -255,8 +281,7 @@ class PresenceService : Service() {
                     updateNotification(LOCKED_TEXT)
                 } else {
                     DebugLog.add("presence: watch unlocked — restoring presence")
-                    acquireWakeLock()
-                    startBle()
+                    startActivePresence()
                     updateNotification(PresenceStatus.summary.value)
                 }
             }
@@ -345,6 +370,7 @@ class PresenceService : Service() {
      * of the drive and we resume normal presence.
      */
     private suspend fun monitorDriving() {
+        if (watchMode) return // watch mode manages gear/heartbeats in monitorWatchPresence
         combine(VehicleStatus.state, PresenceStatus.connected) { st, conn ->
             st.gear to (conn && st.valid && st.live)
         }.distinctUntilChanged().collect { (gear, liveConnected) ->
@@ -385,6 +411,55 @@ class PresenceService : Service() {
         updateNotification(PresenceStatus.summary.value)
         DebugLog.add("presence: ← driving-doze ($why) — wake lock reacquired, heartbeats resumed")
         TileRefresher.refresh(this)
+    }
+
+    /**
+     * Watch-mode presence lifecycle (asWatch enrollments only). A watch key gets no passive lock/unlock
+     * from the car, so we don't stream heartbeats on approach / dwell / departure — the sessions stay
+     * connected (0x1c flowing) but DOZE: heartbeats paused, no wake lock. We BURST full presence only
+     * around the drive window so drive-enable works, then fall back to doze.
+     *
+     * Burst triggers (any): a door opens, the vehicle wakes (asleep→awake), or a manual command (the
+     * heartbeat loop won't drain a queued command while paused, so a tap has to wake the burst). A burst
+     * holds for [WATCH_BURST_MS] of inactivity, then drops to doze; it also drops the instant the car
+     * reports it went back to sleep, and never runs while actually driving (gear ≠ Park — already
+     * validated heartbeat-free via driving-doze). UNVALIDATED on-vehicle: whether the link survives
+     * heartbeat-less while parked-present long enough to catch the door-open is the thing to test.
+     */
+    private suspend fun monitorWatchPresence() {
+        if (!watchMode) return
+        var prevDoorOpen = false
+        var prevAsleep = false
+        while (true) {
+            delay(WATCH_TICK_MS)
+            if (locked || passive) { prevDoorOpen = false; prevAsleep = false; continue }
+            val st = VehicleStatus.state.value
+            if (st.valid) {
+                if (st.anyDoorOpen && !prevDoorOpen) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = door opened") }
+                if (!st.asleep && prevAsleep) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = vehicle woke") }
+                prevDoorOpen = st.anyDoorOpen
+                prevAsleep = st.asleep
+            }
+            val lastTrigger = maxOf(lastWatchTriggerMs, CommandBus.lastSubmitMs)
+            val recentTrigger = lastTrigger > 0L && SystemClock.elapsedRealtime() - lastTrigger < WATCH_BURST_MS
+            val carAsleep = st.valid && st.asleep
+            val inGear = st.valid && st.gear != VehicleStatus.Gear.PARK && st.gear != VehicleStatus.Gear.UNKNOWN
+            val wantBurst = recentTrigger && !carAsleep && !inGear
+            // Drive off the real heartbeat flag (not a local) so this self-corrects after a lock/passive
+            // reset flips it. In watch mode only this monitor un-pauses, so paused==false ⟺ bursting.
+            if (wantBurst && VehicleSession.heartbeatsPaused) {
+                acquireWakeLock()
+                VehicleSession.heartbeatsPaused = false
+                DebugLog.add("watch: → burst — presence ON (drive-intent)")
+                updateNotification(PresenceStatus.summary.value)
+            } else if (!wantBurst && !VehicleSession.heartbeatsPaused) {
+                VehicleSession.heartbeatsPaused = true
+                releaseWakeLock()
+                val why = if (inGear) "driving" else if (carAsleep) "vehicle asleep" else "idle timeout"
+                DebugLog.add("watch: → doze — presence OFF ($why)")
+                updateNotification(WATCH_DOZE_TEXT)
+            }
+        }
     }
 
     /**
@@ -451,8 +526,7 @@ class PresenceService : Service() {
             updateNotification(LOCKED_TEXT)
             return
         }
-        acquireWakeLock()
-        startBle()
+        startActivePresence()
         updateNotification(PresenceStatus.summary.value)
         DebugLog.add("presence: proximity wake → active")
         TileRefresher.refresh(this) // passive→active: tile state changed
@@ -542,6 +616,7 @@ class PresenceService : Service() {
         val mode = when {
             locked -> "paused"
             driving -> "driving"
+            watchMode && VehicleSession.heartbeatsPaused -> "standby"
             passive -> "passive"
             else -> "active"
         }
@@ -616,6 +691,11 @@ class PresenceService : Service() {
         private const val LOCKED_TEXT = "Watch locked"
         private const val PASSIVE_TEXT = "Waiting for vehicle"
         private const val DRIVING_TEXT = "In gear · presence paused"
+        private const val WATCH_DOZE_TEXT = "Standby · open a door to drive"
+        // Watch-mode burst presence: monitor re-eval cadence, and how long a burst holds after the
+        // last trigger (door / wake / manual). 3 min covers a slow get-in with margin; tunable.
+        private const val WATCH_TICK_MS = 1_000L
+        private const val WATCH_BURST_MS = 3 * 60_000L
 
         /** Live "is the presence service running" — observed by the UI for the active/passive flip. */
         private val _running = MutableStateFlow(false)

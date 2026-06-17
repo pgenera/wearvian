@@ -25,9 +25,15 @@ object CommandBus {
     // session drains at heartbeat cadence (~300 ms), so the queue stays tiny.
     private val queue = Channel<Command>(Channel.UNLIMITED)
 
+    /** elapsedRealtime() of the last submit — a "manual action" signal for watch-mode burst presence
+     *  (the heartbeat loop skips draining while paused, so a tap has to wake the burst to be sent). */
+    @Volatile var lastSubmitMs = 0L
+        private set
+
     /** Enqueue a command for the live PRIMARY session to send on its next heartbeat tick. */
     fun submit(code: Int, label: String) {
         DebugLog.add("cmdbus: queued $label (0x%04x)".format(code))
+        lastSubmitMs = android.os.SystemClock.elapsedRealtime()
         queue.trySend(Command(code, label))
     }
 
