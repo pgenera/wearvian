@@ -1,75 +1,65 @@
 package org.fivesevenfive.wearvian.crypto
 
-import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.KeyProtection
 import android.security.keystore.StrongBoxUnavailableException
-import org.fivesevenfive.wearvian.store.ImportedKeyStore
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.fivesevenfive.wearvian.util.logi
+import java.math.BigInteger
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.PublicKey
+import java.security.cert.X509Certificate
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
+import java.util.Date
 import javax.crypto.KeyAgreement
 
 /**
- * Owns the phone key's secp256r1 key pair and performs ECDH for it. Supports two
- * mutually-exclusive backends in the same build:
+ * Owns the phone key's secp256r1 key pair and performs ECDH for it. Two
+ * mutually-exclusive keys can exist in the same build, both held by the Android
+ * Keystore (non-exportable — ECDH runs inside the keystore daemon, only the shared
+ * secret leaves it):
  *
- *  - **Escrowed (default):** the key is generated in the Android Keystore with
- *    [KeyProperties.PURPOSE_AGREE_KEY] and is non-exportable — ECDH happens inside
- *    the secure element (StrongBox when available). Only the shared secret leaves
- *    the Keystore. This is what makes "survive phone destruction" real.
+ *  - **Escrowed (default):** generated in-place under [DEFAULT_ALIAS] with
+ *    [KeyProperties.PURPOSE_AGREE_KEY], StrongBox-backed when available. This is
+ *    what makes "survive phone destruction" real — the key never existed off-device.
  *
  *  - **Imported:** a private key brought in from elsewhere (e.g. the Home Assistant
- *    Rivian integration) lives as raw bytes in [ImportedKeyStore] and ECDH is done
- *    in software. It is NOT in the secure element and NOT unlocked-device gated —
- *    that guarantee can't hold for a key that already exists off-device.
+ *    Rivian integration) is *imported* into the Keystore under [IMPORTED_ALIAS] via
+ *    [importKey], then the raw bytes are discarded. Imported keys can't go in
+ *    StrongBox (hardware won't accept arbitrary keys) but are still non-extractable
+ *    once imported — our own code can no longer read them back. The unavoidable
+ *    caveat is that the plaintext existed off-device before import.
  *
- * The active backend is decided solely by whether [ImportedKeyStore] holds a key:
- * if it does, the imported key is used and the Keystore key is ignored (never both
- * at once). Importing leaves the Keystore key intact, so [ImportedKeyStore.clear]
- * reverts to escrowed mode.
+ * The active key is whichever alias is present, imported winning (never both at
+ * once). Importing leaves the escrowed key intact, so [clearImported] reverts to it.
  */
-class KeyManager(context: Context, private val alias: String = DEFAULT_ALIAS) {
+class KeyManager(private val alias: String = DEFAULT_ALIAS) {
 
     companion object {
         const val DEFAULT_ALIAS = "wearvian_phone_key"
+        const val IMPORTED_ALIAS = "wearvian_imported_key"
         private const val PROVIDER = "AndroidKeyStore"
     }
-
-    private val imported = ImportedKeyStore(context.applicationContext)
-
-    /** True when an imported key is active (software ECDH, not the secure element). */
-    fun isImported(): Boolean = imported.hasKey()
 
     private fun keyStore(): KeyStore =
         KeyStore.getInstance(PROVIDER).apply { load(null) }
 
-    /** Whether a usable key exists in the *active* backend. */
-    fun hasKey(): Boolean = if (isImported()) true else keyStore().containsAlias(alias)
+    /** True when an imported key is active (not the escrowed Keystore key). */
+    fun isImported(): Boolean = keyStore().containsAlias(IMPORTED_ALIAS)
 
-    /**
-     * Adopt an externally-supplied P-256 private key as the active key (imported
-     * mode). The Keystore key, if any, is left untouched so escrowed mode can be
-     * restored later via [clearImported].
-     *
-     * @param privateKeyPemBase64 base64 of a PKCS#8 PEM private key (the HA format).
-     * @param publicKeyHex the matching X9.62 uncompressed public point.
-     */
-    fun importKey(privateKeyPemBase64: String, publicKeyHex: String) {
-        // Validate it parses + that the public point matches before persisting.
-        val priv = RivianKeys.decodePrivateKeyPemBase64(privateKeyPemBase64)
-        require(priv.algorithm == "EC") { "imported key is not an EC key" }
-        logi("KeyManager: importing external key (software ECDH) publicKey=${publicKeyHex.take(16)}…")
-        imported.save(privateKeyPemBase64, publicKeyHex)
-    }
+    /** The alias in use: an imported key takes precedence over the escrowed one. */
+    private fun activeAlias(): String = if (isImported()) IMPORTED_ALIAS else alias
 
-    /** Drop the imported key and revert to the escrowed Keystore key. */
-    fun clearImported() = imported.clear()
+    fun hasKey(): Boolean = keyStore().containsAlias(activeAlias())
 
-    /** Create the escrowed key pair if absent. Returns the public key as X9.62 hex.
+    /** Create the escrowed key pair if absent. Returns the active public key as X9.62 hex.
      *  No-op for imported mode (the key is supplied, not generated). */
     fun ensureKey(): String {
         if (isImported()) {
@@ -82,7 +72,7 @@ class KeyManager(context: Context, private val alias: String = DEFAULT_ALIAS) {
         } else {
             logi("KeyManager: reusing existing key (alias=$alias)")
         }
-        return publicKeyHex().also { logi("KeyManager: publicKey=${it.take(16)}… len=${it.length}") }
+        return publicKeyHex().also { logi("KeyManager: publicKey len=${it.length}") }
     }
 
     private fun generate() {
@@ -113,30 +103,50 @@ class KeyManager(context: Context, private val alias: String = DEFAULT_ALIAS) {
         }
     }
 
+    /**
+     * Adopt an externally-supplied P-256 private key as the active key by importing it into the
+     * Keystore (non-extractable) under [IMPORTED_ALIAS], gated on the device being unlocked like the
+     * escrowed key. The raw key is copied into the keystore daemon; afterwards ECDH runs there and the
+     * bytes never re-enter the app. The escrowed key, if any, is left untouched for [clearImported].
+     *
+     * @param privateKeyPemBase64 base64 of a PKCS#8 PEM private key (the HA format).
+     * @param publicKeyHex the matching X9.62 uncompressed public point (carrier for the cert chain).
+     */
+    fun importKey(privateKeyPemBase64: String, publicKeyHex: String) {
+        val priv = RivianKeys.decodePrivateKeyPemBase64(privateKeyPemBase64)
+        require(priv.algorithm == "EC") { "imported key is not an EC key" }
+        val pub = RivianKeys.decodePublicKeyHex(publicKeyHex)
+        keyStore().setEntry(
+            IMPORTED_ALIAS,
+            KeyStore.PrivateKeyEntry(priv, arrayOf(selfSignedCert(priv, pub))),
+            KeyProtection.Builder(KeyProperties.PURPOSE_AGREE_KEY)
+                .setUnlockedDeviceRequired(true)
+                .build(),
+        )
+        logi("KeyManager: imported external key into Keystore (non-extractable, software/TEE) len=${publicKeyHex.length}")
+    }
+
+    /** Drop the imported key and revert to the escrowed Keystore key. */
+    fun clearImported() {
+        val ks = keyStore()
+        if (ks.containsAlias(IMPORTED_ALIAS)) ks.deleteEntry(IMPORTED_ALIAS)
+    }
+
     fun publicKeyHex(): String {
-        imported.publicKeyHex()?.let { return it }
-        val cert = keyStore().getCertificate(alias)
+        val cert = keyStore().getCertificate(activeAlias())
             ?: error("Phone key not found in Keystore")
         return RivianKeys.encodePublicKeyHex(cert.publicKey as ECPublicKey)
     }
 
-    private fun keystorePrivateKey(): PrivateKey =
-        (keyStore().getEntry(alias, null) as KeyStore.PrivateKeyEntry).privateKey
+    private fun privateKey(): PrivateKey =
+        (keyStore().getEntry(activeAlias(), null) as KeyStore.PrivateKeyEntry).privateKey
 
-    /** ECDH against the vehicle's public key (hex X9.62). Performed in the Keystore for the
-     *  escrowed key, or in software for an imported key. */
+    /** ECDH against the vehicle's public key (hex X9.62), performed in the Keystore (escrowed or
+     *  imported — both are Keystore-resident, so the private key never enters app memory). */
     fun sharedSecret(vehiclePublicKeyHex: String): ByteArray {
-        val pem = imported.privateKeyPemBase64()
-        if (pem != null) {
-            logi("KeyManager: software ECDH (imported key) against vehiclePublicKey=${vehiclePublicKeyHex.take(16)}…")
-            return RivianKeys.ecdh(
-                RivianKeys.decodePrivateKeyPemBase64(pem),
-                RivianKeys.decodePublicKeyHex(vehiclePublicKeyHex),
-            )
-        }
-        logi("KeyManager: Keystore ECDH against vehiclePublicKey=${vehiclePublicKeyHex.take(16)}…")
+        logi("KeyManager: ${if (isImported()) "imported" else "escrowed"} ECDH against vehiclePublicKey len=${vehiclePublicKeyHex.length}")
         val ka = KeyAgreement.getInstance("ECDH", PROVIDER)
-        ka.init(keystorePrivateKey())
+        ka.init(privateKey())
         ka.doPhase(RivianKeys.decodePublicKeyHex(vehiclePublicKeyHex), true)
         return ka.generateSecret()
     }
@@ -149,14 +159,28 @@ class KeyManager(context: Context, private val alias: String = DEFAULT_ALIAS) {
     fun signCommand(vehiclePublicKeyHex: String, command: String, timestamp: String): ByteArray =
         RivianCrypto.signCommand(sharedSecret(vehiclePublicKeyHex), command, timestamp)
 
-    /** Delete the *active* key. For imported mode this clears the imported key (reverting to
-     *  escrowed); for escrowed mode it deletes the Keystore entry (forcing a re-key). */
+    /** Delete the *active* key. Imported mode deletes the imported key (reverting to escrowed);
+     *  escrowed mode deletes the escrowed entry (forcing a re-key). */
     fun deleteKey() {
-        if (isImported()) {
-            imported.clear()
-            return
-        }
         val ks = keyStore()
-        if (ks.containsAlias(alias)) ks.deleteEntry(alias)
+        val a = activeAlias()
+        if (ks.containsAlias(a)) ks.deleteEntry(a)
+    }
+
+    /** Minimal throwaway self-signed cert carrying [pub] — the chain KeyStore.setEntry requires for
+     *  a PrivateKeyEntry. Identity/validity are irrelevant; nothing ever verifies it. */
+    private fun selfSignedCert(priv: PrivateKey, pub: PublicKey): X509Certificate {
+        val now = System.currentTimeMillis()
+        val name = X500Name("CN=wearvian-imported")
+        val builder = JcaX509v3CertificateBuilder(
+            name,
+            BigInteger.valueOf(now),
+            Date(now - 60_000),
+            Date(now + 3650L * 24 * 60 * 60 * 1000), // ~10 years
+            name,
+            pub,
+        )
+        val signer = JcaContentSignerBuilder("SHA256withECDSA").build(priv)
+        return JcaX509CertificateConverter().getCertificate(builder.build(signer))
     }
 }

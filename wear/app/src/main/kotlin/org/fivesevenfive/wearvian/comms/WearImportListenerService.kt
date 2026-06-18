@@ -22,9 +22,9 @@ import org.fivesevenfive.wearvian.util.logi
  * Receives an imported phone key pushed from the companion app (the HA-key import
  * flow), stores it as the active key + enrollment, and acks back to the phone.
  *
- * This replaces the watch's own keypair: importing switches [KeyManager] to
- * software ECDH with the supplied private key (see [org.fivesevenfive.wearvian.store.ImportedKeyStore]).
- * The next time the app opens it shows ENROLLED, ready to pair over BLE.
+ * This replaces the watch's own keypair: [KeyManager.importKey] adopts the supplied
+ * private key as a non-extractable Keystore entry. The next time the app opens it
+ * shows ENROLLED, ready to pair over BLE.
  */
 class WearImportListenerService : WearableListenerService() {
 
@@ -43,7 +43,7 @@ class WearImportListenerService : WearableListenerService() {
             // First vehicle is the active one (the HA key is enrolled to a single vehicle in
             // practice; multi-vehicle accounts can be revisited later).
             val v = key.vehicles.first()
-            KeyManager(this).importKey(key.privateKeyPemBase64, key.publicKeyHex)
+            KeyManager().importKey(key.privateKeyPemBase64, key.publicKeyHex)
             EnrollmentStore(this).save(
                 Enrollment(
                     userId = key.userId,

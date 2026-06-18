@@ -114,6 +114,14 @@ android {
         // a transitive androidx.fragment version we never use. False positive — don't fail release.
         disable += "InvalidFragmentVersionForActivityResult"
     }
+
+    packaging {
+        resources {
+            // BouncyCastle's bcprov/bcpkix/bcutil JARs each ship this multi-release OSGi manifest;
+            // drop the duplicates so resource merging doesn't fail.
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 dependencies {
@@ -143,6 +151,10 @@ dependencies {
 
     // Encrypted on-device storage for keys / enrollment data
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // BouncyCastle: mint a throwaway self-signed cert so an *imported* P-256 key (HA-key flow) can be
+    // stored as a non-extractable Android Keystore entry — KeyStore.setEntry requires a cert chain.
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 
     // Wear OS Data Layer: receive enrollment from the companion phone app.
     implementation("com.google.android.gms:play-services-wearable:18.2.0")

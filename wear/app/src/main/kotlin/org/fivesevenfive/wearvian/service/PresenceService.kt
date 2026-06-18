@@ -64,7 +64,7 @@ import org.fivesevenfive.wearvian.util.logi
 class PresenceService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val keyManager = KeyManager(this)
+    private val keyManager = KeyManager()
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     private var wakeLock: PowerManager.WakeLock? = null
     private var loopJob: Job? = null   // owns the BLE work (sessions + scan); torn down when locked

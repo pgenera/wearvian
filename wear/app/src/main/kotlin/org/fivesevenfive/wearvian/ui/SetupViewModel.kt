@@ -62,7 +62,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = EnrollmentStore(app)
     private val settings = SettingsStore(app)
-    private val keyManager = KeyManager(app)
+    private val keyManager = KeyManager()
     private val companion = CompanionEnrollmentClient(app)
 
     private val _state = mutableStateOf(SetupUiState())
