@@ -260,7 +260,7 @@ class KeyTileService : TileService() {
         }
         val ctx = applicationContext
         scope.launch {
-            ActiveCommandManager(ctx, KeyManager()).sendCommand(enrollment, code, label)
+            ActiveCommandManager(ctx, KeyManager(ctx)).sendCommand(enrollment, code, label)
         }
     }
 

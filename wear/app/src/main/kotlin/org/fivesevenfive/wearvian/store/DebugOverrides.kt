@@ -15,15 +15,18 @@ object DebugOverrides {
 
 /**
  * Dump EVERYTHING in persistent storage (plus the transient debug switch) to the debug log — called on
- * startup so the on-device log shows exactly what state the app booted with. Note the watch's private
- * key is NOT here (it lives in the Keystore, never in these stores), so this is safe to log.
+ * startup so the on-device log shows exactly what state the app booted with. The active *private* key
+ * is never logged: for an escrowed key it lives only in the Keystore, and for an imported key only the
+ * public key (not the private bytes) is surfaced here.
  */
 fun logPersistentState(context: Context) {
     val settings = SettingsStore(context)
     val enrollment = EnrollmentStore(context).load()
     val addrs = VehicleAddressStore(context).load()
+    val imported = ImportedKeyStore(context)
     DebugLog.add("state: switch forceWatch=${DebugOverrides.forceWatch} (transient, NOT persisted)")
     DebugLog.add("state: settings keyArmed=${settings.keyArmed} forceR1t=${settings.forceR1t}")
+    DebugLog.add("state: keyMode=${if (imported.hasKey()) "IMPORTED (software ECDH)" else "ESCROWED (Keystore)"}")
     DebugLog.add("state: enrollment=${enrollment ?: "NONE"}")
     DebugLog.add("state: vehicleAddrs=${if (addrs.isEmpty()) "NONE" else addrs.joinToString()}")
 }
