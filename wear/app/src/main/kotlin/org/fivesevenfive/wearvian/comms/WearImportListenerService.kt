@@ -60,6 +60,7 @@ class WearImportListenerService : WearableListenerService() {
             logi("import: stored imported key + enrollment vin=${v.vin} asWatch=${key.asWatch}")
             v.vin
         }.onSuccess { vin ->
+            ImportEvents.signal(vin) // nudge a foregrounded SetupViewModel to show "ready to pair"
             notifyImported()
             ack(node, ImportContract.ackOk(key.requestId, vin))
         }.onFailure { e ->

@@ -6,6 +6,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -14,6 +15,7 @@ import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
+import org.fivesevenfive.wearvian.comms.ImportEvents
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
@@ -68,8 +70,21 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = mutableStateOf(SetupUiState())
     val state: State<SetupUiState> get() = _state
 
+    /** The in-flight watch-initiated enrollment, so an import landing can cancel its wait. */
+    private var enrollJob: Job? = null
+
     init {
         logPersistentState(app) // log all persisted state + the transient switch on app startup
+        // An imported key + enrollment can arrive from the companion at any time (phone-initiated).
+        // When it lands, drop any pending "check your phone" enrollment wait and refresh to "ready
+        // to pair" so the user doesn't have to relaunch the app.
+        viewModelScope.launch {
+            ImportEvents.landed.collect { vin ->
+                logi("import landed (vin=$vin) — cancelling pending enrollment and refreshing")
+                enrollJob?.cancel()
+                refresh()
+            }
+        }
         // Live tri-state: when the presence service starts/stops or flips active↔passive (auto-
         // idle, or the proximity watch reviving it), reflect it on the BONDED screen without
         // waiting for a resume. Re-read keyArmed so off/active/passive stay consistent.
@@ -126,7 +141,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startEnrollment() {
         logi("startEnrollment: begin")
-        viewModelScope.launch {
+        enrollJob = viewModelScope.launch {
             runCatching {
                 _state.value = SetupUiState(
                     Phase.AWAITING_COMPANION,
