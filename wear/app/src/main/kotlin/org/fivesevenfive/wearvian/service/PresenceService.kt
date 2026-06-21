@@ -11,10 +11,12 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import androidx.core.app.NotificationCompat
+import androidx.wear.ongoing.OngoingActivity
+import androidx.wear.ongoing.Status
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -645,7 +647,9 @@ class PresenceService : Service() {
 
     private fun startAsForeground() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, getString(R.string.presence_channel_name), NotificationManager.IMPORTANCE_LOW),
+            // IMPORTANCE_MIN: with the OngoingActivity attached (see buildNotification), the status
+            // shows as a key icon on the watch face rather than a persistent notification card.
+            NotificationChannel(CHANNEL_ID, getString(R.string.presence_channel_name), NotificationManager.IMPORTANCE_MIN),
         )
         startForeground(
             NOTIFICATION_ID, buildNotification(PresenceStatus.summary.value),
@@ -668,8 +672,8 @@ class PresenceService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         // Disables the key: turns it off, stops the service, clears the notification.
-        val offAction = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_notif_power), "Disable", offIntent,
+        val offAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_notif_power, "Disable", offIntent,
         ).build()
         // The MODE in the title (active / passive / paused) matches the app's key-status EXACTLY;
         // sub-states (driving-doze, watch standby, link count) are detail in the content text, so the
@@ -679,15 +683,27 @@ class PresenceService : Service() {
             passive -> "passive"
             else -> "active"
         }
-        return Notification.Builder(this, CHANNEL_ID)
+        // NotificationCompat (not the platform Notification.Builder) because OngoingActivity.Builder
+        // decorates a NotificationCompat.Builder.
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("${getString(R.string.presence_notification_title)} · $mode")
             .setContentText(state)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true) // updates frequently — never buzz/re-alert
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .addAction(offAction)
+        // Promote the ongoing status onto the watch face as a key icon (Wear OS Ongoing Activity).
+        // This decorates the FGS notification in place, so the glanceable surface is the icon — not a
+        // persistent card. Tapping it opens the app (same target as the notification's content intent).
+        OngoingActivity.Builder(applicationContext, NOTIFICATION_ID, builder)
+            .setStaticIcon(R.drawable.ic_tile_key)
+            .setTouchIntent(contentIntent)
+            .setStatus(Status.Builder().addTemplate("$mode · $state").build())
             .build()
+            .apply(applicationContext)
+        return builder.build()
     }
 
     /** Re-post the ongoing notification with the latest connection state. */
