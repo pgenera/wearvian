@@ -135,6 +135,10 @@ dependencies {
     implementation("androidx.wear.compose:compose-foundation:1.4.0")
     implementation("androidx.wear.compose:compose-navigation:1.4.0")
 
+    // Wear OS Ongoing Activity: surface the presence FGS as a small key icon on the watch
+    // face (instead of a persistent notification card). Decorates the FGS notification.
+    implementation("androidx.wear:wear-ongoing:1.0.0")
+
     // Wear OS Tile: quick lock/unlock/key without opening the app.
     implementation("androidx.wear.tiles:tiles:1.4.0")
     // protolayout 1.4.0: 1.2.0 bundled a vulnerable protolayout-external-protobuf (pre-fix
