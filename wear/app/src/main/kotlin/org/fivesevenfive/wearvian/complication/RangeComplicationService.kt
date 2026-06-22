@@ -32,19 +32,22 @@ class RangeComplicationService : SuspendingComplicationDataSourceService() {
     override fun getPreviewData(type: ComplicationType): ComplicationData = build(type, 280)
 
     private fun build(type: ComplicationType, km: Int): ComplicationData {
-        val text = Units.range(km) // localized, e.g. "174 mi" or "280 km"
-        val description = PlainComplicationText.Builder("$text range").build()
+        // The cramped slot shows the localized number only (no "mi"/"km") — the unit is implied by the
+        // watch's region. The unit is kept in the accessibility description and the roomy LONG_TEXT slot.
+        val value = Units.rangeValue(km).toString() // localized number, e.g. "174" or "280"
+        val withUnit = Units.range(km)              // e.g. "174 mi" or "280 km"
+        val description = PlainComplicationText.Builder("$withUnit range").build()
         val icon = MonochromaticImage.Builder(
             Icon.createWithResource(this, R.drawable.ic_complication_range),
         ).build()
         return when (type) {
             ComplicationType.LONG_TEXT ->
-                LongTextComplicationData.Builder(PlainComplicationText.Builder("$text range").build(), description)
+                LongTextComplicationData.Builder(PlainComplicationText.Builder("$withUnit range").build(), description)
                     .setMonochromaticImage(icon)
                     .setTapAction(launchApp())
                     .build()
             else ->
-                ShortTextComplicationData.Builder(PlainComplicationText.Builder(text).build(), description)
+                ShortTextComplicationData.Builder(PlainComplicationText.Builder(value).build(), description)
                     .setMonochromaticImage(icon)
                     .setTapAction(launchApp())
                     .build()

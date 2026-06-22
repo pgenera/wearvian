@@ -23,7 +23,11 @@ object Units {
     fun temp(celsius: Int): String =
         if (useFahrenheit) "${(celsius * 9 / 5.0 + 32).roundToInt()}°F" else "$celsius°C"
 
+    /** Distance value only, localized to the region's unit (mi or km), no unit text — e.g. 137 or 220. */
+    fun rangeValue(km: Int): Int =
+        if (useMiles) (km / 1.609344).roundToInt() else km
+
     /** Distance: input km → localized string, e.g. "137 mi" or "220 km". */
     fun range(km: Int): String =
-        if (useMiles) "${(km / 1.609344).roundToInt()} mi" else "$km km"
+        if (useMiles) "${rangeValue(km)} mi" else "${rangeValue(km)} km"
 }
