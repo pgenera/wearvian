@@ -237,7 +237,18 @@ class KeyTileService : TileService() {
             .build()
     }
 
-    /** A tinted icon sized explicitly (Material's default tile-button glyph is too small). */
+    /**
+     * A tinted icon sized explicitly (Material's default tile-button glyph is too small).
+     *
+     * Uses the string-resource-id model (`Image.Builder().setResourceId(id)` + the id→image map in
+     * [onTileResourcesRequest]), which protolayout 1.4 deprecates in favor of `ProtoLayoutScope` +
+     * `setImageResource(ImageResource)` (resources collected inline). That model unifies layout and
+     * resources, but this `TileService` serves them from two independent callbacks with the instance
+     * recycled between — so adopting the scope would mean caching `collectResources()` by version
+     * across callbacks. Not worth that risk on a working tile; suppress until we migrate the whole
+     * resource flow (or the Material components we build on move off the id model too).
+     */
+    @Suppress("DEPRECATION")
     private fun iconElement(iconId: String, sizeDp: Float, tintArgb: Int): Image =
         Image.Builder()
             .setResourceId(iconId)

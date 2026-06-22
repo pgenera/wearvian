@@ -4,4 +4,6 @@
     <string name="presence_channel_name">Phone key presence</string>
     <string name="presence_notification_title">wearvian</string>
     <string name="presence_notification_text">Acting as your Rivian phone key</string>
+    <string name="complication_soc_label">Rivian battery</string>
+    <string name="complication_range_label">Rivian range</string>
 </resources>

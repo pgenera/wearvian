@@ -67,5 +67,42 @@
                 android:resource="@drawable/ic_tile_preview" />
         </service>
 
+        <!-- Watch-face complication: battery state-of-charge (arc + %). Pushed on change by
+             ComplicationRefresher; UPDATE_PERIOD_SECONDS=0 means no system polling. -->
+        <service
+            android:name=".complication.SocComplicationService"
+            android:exported="true"
+            android:icon="@drawable/ic_complication_battery"
+            android:label="@string/complication_soc_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="RANGED_VALUE,SHORT_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- Watch-face complication: estimated remaining range (localized mi/km). -->
+        <service
+            android:name=".complication.RangeComplicationService"
+            android:exported="true"
+            android:icon="@drawable/ic_complication_range"
+            android:label="@string/complication_range_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,LONG_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
     </application>
 </manifest>

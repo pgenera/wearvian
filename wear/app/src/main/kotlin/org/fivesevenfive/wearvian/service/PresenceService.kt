@@ -43,10 +43,12 @@ import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.ble.RivianBle
 import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
+import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.TelemetryStore
 import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
@@ -213,6 +215,8 @@ class PresenceService : Service() {
         lockJob = scope.launch { monitorLock() }
         // Keep the (background) tile's vehicle-state shading in sync, heavily debounced.
         tileJob = scope.launch { refreshTileOnStatusChange() }
+        // Persist battery SoC + range and refresh the watch-face complications when they change.
+        scope.launch { persistTelemetryOnChange() }
         // Drop the wake lock + heartbeats while the car is in gear (phone mode; watch mode handles
         // gear itself via monitorWatchPresence).
         drivingJob = scope.launch { monitorDriving() }
@@ -538,6 +542,27 @@ class PresenceService : Service() {
             .distinctUntilChanged()
             .debounce(TILE_REFRESH_DEBOUNCE_MS)
             .collect { TileRefresher.refresh(this) }
+    }
+
+    /**
+     * Persist the latest battery SoC + estimated range to [TelemetryStore] and re-query the
+     * watch-face complications when either value changes. The complications read the persisted
+     * value (this process is usually dead when the system binds them), so the store must hold the
+     * last-known reading. Keyed on (soc, range) only — door/lock churn doesn't write — and debounced
+     * so the fast-flickering 0x1c stream doesn't thrash SharedPreferences.
+     */
+    @OptIn(FlowPreview::class)
+    private suspend fun persistTelemetryOnChange() {
+        VehicleStatus.state
+            .map { it.socPercent to it.rangeKm }
+            .distinctUntilChanged()
+            .debounce(TILE_REFRESH_DEBOUNCE_MS)
+            .collect { (soc, range) ->
+                if (soc == null && range == null) return@collect // nothing decoded yet
+                TelemetryStore(this).save(soc, range)
+                ComplicationRefresher.refresh(this)
+                DebugLog.add("telemetry: soc=${soc}% range=${range}km → complications")
+            }
     }
 
     /** Auto idle→passive (always on, except while locked). @return true iff passive. */
