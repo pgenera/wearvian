@@ -31,7 +31,7 @@ android {
         // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
         // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
         versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1027
-        versionName = "0.7.0"
+        versionName = "0.8.0"
     }
 
     signingConfigs {
@@ -146,6 +146,10 @@ dependencies {
     implementation("androidx.wear.protolayout:protolayout:1.4.0")
     implementation("androidx.wear.protolayout:protolayout-material:1.4.0")
     implementation("androidx.concurrent:concurrent-futures:1.2.0")
+
+    // Wear OS watch-face complications: publish battery SoC + estimated range as data sources
+    // a watch face can show. The -ktx artifact gives the suspending data-source base class.
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.1")
 
     // Encrypted on-device storage for keys / enrollment data
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
