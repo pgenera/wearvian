@@ -94,6 +94,9 @@ class PresenceService : Service() {
     /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
     @Volatile private var locked = false
 
+    /** Snapshot of [passive] taken at lock, so unlock restores the same mode instead of forcing active. */
+    @Volatile private var wasPassive = false
+
     /**
      * True when this key was registered with Rivian as a WATCH (keyDeviceSubtype="WATCH") — the car
      * does NO passive lock/unlock for it, so proximity presence on approach/departure is wasted. The
@@ -282,13 +285,20 @@ class PresenceService : Service() {
                 locked = nowLocked
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
+                    wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
                     if (passive) { ProximityWake.stopScan(this, proximityCallback); departJob?.cancel(); passive = false; _passive.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
                     updateNotification(LOCKED_TEXT)
+                } else if (wasPassive) {
+                    // Were idling passively (car out of range) → come back up passive: re-arm the proximity
+                    // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
+                    // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
+                    DebugLog.add("presence: watch unlocked — restoring passive idle")
+                    enterPassive() // sets PASSIVE_TEXT itself
                 } else {
-                    DebugLog.add("presence: watch unlocked — restoring presence")
+                    DebugLog.add("presence: watch unlocked — restoring active presence")
                     startActivePresence()
                     updateNotification(PresenceStatus.summary.value)
                 }
