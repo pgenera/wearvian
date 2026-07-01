@@ -159,12 +159,18 @@ fun AmbientScreen(
     }
 }
 
-/** Outline stand-in for the live LabeledIcon: a glyph over its label, in the same footprint, no fill. */
+/**
+ * Outline stand-in for the live LabeledIcon: same footprint so the glyph + label land in exactly
+ * the same spot across ambient/active. KeyPage's button is a 48dp RoundIcon holding a `48*0.52`
+ * glyph; we reproduce that 48dp box and glyph size but skip the filled circle.
+ */
 @Composable
 private fun OutlineButton(icon: ImageVector, label: String, lit: Boolean, dim: Color) {
     val tint = if (lit) Color.White else dim
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(25.dp))
+        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(48.dp * 0.52f))
+        }
         Spacer(Modifier.height(3.dp))
         Text(label, color = tint, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
