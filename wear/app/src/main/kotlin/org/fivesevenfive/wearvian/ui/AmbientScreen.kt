@@ -1,5 +1,6 @@
 package org.fivesevenfive.wearvian.ui
 
+import android.text.format.DateFormat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -18,14 +20,16 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.Route
 import androidx.compose.material.icons.outlined.Thermostat
-import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,19 +39,20 @@ import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.PresenceStatus
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.util.Units
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
+import java.util.Date
+
+private val DIM = Color(0xFF9A9A9A)
 
 /**
- * Custom always-on (ambient) idle screen. Replaces the system's blur-with-clock fallback with a
- * low-fidelity echo of the interactive KEY page ([ControlScreens]): the same key glyph, status
- * label, telemetry flanks, and lock row — but drawn as thin OUTLINES with nothing filled in, so
- * far fewer pixels are lit.
+ * Custom always-on (ambient) idle screen. Mirrors the interactive KEY page ([ControlScreens]) as
+ * closely as makes sense — same column geometry (18dp pad, 10dp spacing), same status label with
+ * range/temp flanks, same lock/unlock row and lock-state line, so elements sit where the live UI
+ * puts them. Differences for always-on: the round key button is dropped for a large localized clock,
+ * and everything is thin OUTLINES with nothing filled in, so far fewer pixels are lit.
  *
- * Burn-in safety: black background, outline glyphs, thin fonts, no filled/gold areas, and the whole
- * layout is nudged a few pixels per ambient update ([tick]) so no pixel stays lit in one spot. In
- * low-bit ambient the panel can't render alpha/anti-aliasing, so we drop to pure white only (no
- * dimmed grays).
+ * Burn-in safety: black background, outline glyphs, no filled areas, and the whole layout is nudged
+ * a few pixels per ambient update ([tick]). In low-bit ambient the panel can't dim, so secondary
+ * detail is drawn pure white instead of gray.
  */
 @Composable
 fun AmbientScreen(
@@ -57,106 +62,120 @@ fun AmbientScreen(
 ) {
     val running by PresenceService.running.collectAsStateWithLifecycle()
     val passive by PresenceService.passive.collectAsStateWithLifecycle()
-    val connected by PresenceStatus.connected.collectAsStateWithLifecycle()
     val status by VehicleStatus.state.collectAsStateWithLifecycle()
+    @Suppress("UNUSED_VARIABLE") // collected so the label recomputes as links come/go
+    val connected by PresenceStatus.connected.collectAsStateWithLifecycle()
 
-    // Low-bit panels can't dim, so secondary detail must be pure white too; otherwise a muted gray.
-    val primary = Color.White
-    val secondary = if (lowBit) Color.White else Color(0xFF9E9E9E)
+    // Low-bit panels can't dim, so secondary detail must be pure white too; otherwise the app's gray.
+    val dim = if (lowBit) Color.White else DIM
+
+    // Respect the watch's 12/24h setting and locale (java's DateFormat, no seconds). Keyed on [tick].
+    val context = LocalContext.current
+    val timeText = remember(tick) { DateFormat.getTimeFormat(context).format(Date()) }
 
     // Nudge the whole layout within a small box each ambient update so no pixel burns in.
-    val range = if (burnInProtection) 3 else 0
-    val dx = (tick % (range * 2 + 1) - range).dp
-    val dy = ((tick / 3) % (range * 2 + 1) - range).dp
+    val r = if (burnInProtection) 3 else 0
+    val dx = (tick % (r * 2 + 1) - r).dp
+    val dy = ((tick / 3) % (r * 2 + 1) - r).dp
 
-    // Same tri-state as KeyPage: off → not armed; passive → armed but idling; active → armed + up.
-    val armed = running
     val keyLabel = when {
-        !armed -> "Key off"
+        !running -> "Key off"
         passive -> "Key passive"
         else -> "Key active"
     }
-    val keyTint = if (armed) primary else secondary
 
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-        contentAlignment = Alignment.Center,
-    ) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         Column(
-            modifier = Modifier.fillMaxSize().offset(dx, dy).padding(horizontal = 18.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+            Modifier.fillMaxSize().offset(dx, dy).padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = LocalTime.now().format(TIME_FMT),
-                color = secondary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Light,
-            )
+            // Large clock in the slot the round key button occupies on the live screen.
+            Text(timeText, color = Color.White, fontSize = 46.sp, fontWeight = FontWeight.Thin)
 
-            Icon(
-                imageVector = Icons.Outlined.VpnKey,
-                contentDescription = null,
-                tint = keyTint,
-                modifier = Modifier.size(44.dp),
-            )
-
-            // Key status, flanked by range (left) and cabin temp (right) — mirrors KeyPage.
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            // Key status flanked by range (left) / cabin temp (right) — same geometry as KeyPage.
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         status.rangeKm?.takeIf { status.valid }?.let {
-                            FlankStat(Icons.Outlined.Route, Units.range(it), secondary)
+                            FlankStat(Icons.Outlined.Route, Units.range(it), dim)
                         }
                     }
                     Spacer(Modifier.weight(1f))
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         status.cabinTempC?.takeIf { status.valid }?.let {
-                            FlankStat(Icons.Outlined.Thermostat, Units.temp(it), secondary)
+                            FlankStat(Icons.Outlined.Thermostat, Units.temp(it), dim)
                         }
                     }
                 }
-                Text(keyLabel, color = primary, fontSize = 17.sp, fontWeight = FontWeight.Light)
+                Text(keyLabel, color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
             }
 
-            // Lock/unlock glyphs, OUTLINE only — nothing filled in (the "fewer pixels" ask). The
-            // current lock state is spelled out below, colorblind-safe like the interactive screen.
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                Icon(Icons.Outlined.LockOpen, null, tint = secondary, modifier = Modifier.size(22.dp))
-                Icon(Icons.Outlined.Lock, null, tint = secondary, modifier = Modifier.size(22.dp))
+            // Unlock / Lock in the same slots as the live buttons, but OUTLINE only (no fills). The
+            // glyph matching the current lock state is lit white; the other stays dim.
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                OutlineButton(Icons.Outlined.LockOpen, "Unlock", lit = status.valid && !status.locked, dim = dim)
+                OutlineButton(Icons.Outlined.Lock, "Lock", lit = status.valid && status.locked, dim = dim)
             }
 
+            // Lock/drive state line — same glyph+word as KeyPage.
             if (status.valid) {
                 val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
-                FlankStat(
-                    icon = when {
-                        inGear -> Icons.Outlined.DirectionsCar
-                        status.locked -> Icons.Outlined.Lock
-                        else -> Icons.Outlined.LockOpen
-                    },
-                    text = when {
-                        inGear -> when (status.gear) {
-                            VehicleStatus.Gear.REVERSE -> "Reverse"
-                            VehicleStatus.Gear.NEUTRAL -> "Neutral"
-                            else -> "Driving"
-                        }
-                        status.locked -> "Locked"
-                        else -> "Unlocked"
-                    },
-                    tint = secondary,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        when {
+                            inGear -> Icons.Outlined.DirectionsCar
+                            status.locked -> Icons.Outlined.Lock
+                            else -> Icons.Outlined.LockOpen
+                        },
+                        null, tint = dim, modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        when {
+                            inGear -> when (status.gear) {
+                                VehicleStatus.Gear.REVERSE -> "Reverse"
+                                VehicleStatus.Gear.NEUTRAL -> "Neutral"
+                                else -> "Driving"
+                            }
+                            status.locked -> "Locked"
+                            else -> "Unlocked"
+                        },
+                        color = dim, fontSize = 11.sp,
+                    )
+                }
+            }
+
+            if (status.valid && (status.anyDoorOpen || status.anyWindowOpen)) {
+                Text(
+                    listOfNotNull(
+                        if (status.anyDoorOpen) "door open" else null,
+                        if (status.anyWindowOpen) "window open" else null,
+                    ).joinToString(" · "),
+                    color = dim, fontSize = 10.sp, textAlign = TextAlign.Center,
                 )
             }
         }
     }
 }
 
+/** Outline stand-in for the live LabeledIcon: a glyph over its label, in the same footprint, no fill. */
 @Composable
-private fun FlankStat(icon: ImageVector, text: String, tint: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
-        Spacer(Modifier.width(4.dp))
-        Text(text = text, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Light)
+private fun OutlineButton(icon: ImageVector, label: String, lit: Boolean, dim: Color) {
+    val tint = if (lit) Color.White else dim
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(25.dp))
+        Spacer(Modifier.height(3.dp))
+        Text(label, color = tint, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
 }
 
-private val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm")
+/** Vertical icon-over-value flank, mirroring KeyPage's FlankStat (outline glyph, no fill). */
+@Composable
+private fun FlankStat(icon: ImageVector, text: String, tint: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(12.dp))
+        Spacer(Modifier.height(2.dp))
+        Text(text, color = tint, fontSize = 10.sp, maxLines = 1, softWrap = false)
+    }
+}
