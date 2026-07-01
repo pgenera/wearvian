@@ -30,8 +30,8 @@ android {
         // Must stay unique across BOTH apps and only ever increase.
         // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
         // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
-        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1033
-        versionName = "0.8.1"
+        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1034
+        versionName = "0.9.0"
     }
 
     signingConfigs {
@@ -138,6 +138,10 @@ dependencies {
     // Wear OS Ongoing Activity: surface the presence FGS as a small key icon on the watch
     // face (instead of a persistent notification card). Decorates the FGS notification.
     implementation("androidx.wear:wear-ongoing:1.0.0")
+
+    // Wear OS ambient (always-on) support: AmbientLifecycleObserver lets us render our own
+    // low-fidelity idle screen instead of the system's blur-with-clock fallback.
+    implementation("androidx.wear:wear:1.3.0")
 
     // Wear OS Tile: quick lock/unlock/key without opening the app.
     implementation("androidx.wear.tiles:tiles:1.4.0")
