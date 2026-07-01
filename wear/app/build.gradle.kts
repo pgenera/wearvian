@@ -139,6 +139,10 @@ dependencies {
     // face (instead of a persistent notification card). Decorates the FGS notification.
     implementation("androidx.wear:wear-ongoing:1.0.0")
 
+    // Wear OS ambient (always-on) support: AmbientLifecycleObserver lets us render our own
+    // low-fidelity idle screen instead of the system's blur-with-clock fallback.
+    implementation("androidx.wear:wear:1.3.0")
+
     // Wear OS Tile: quick lock/unlock/key without opening the app.
     implementation("androidx.wear.tiles:tiles:1.4.0")
     // protolayout 1.4.0: 1.2.0 bundled a vulnerable protolayout-external-protobuf (pre-fix
