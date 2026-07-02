@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -538,7 +539,17 @@ private fun ClosureRow(
         Row(Modifier.width(LABEL_W), verticalAlignment = Alignment.CenterVertically) {
             Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
             Spacer(Modifier.width(5.dp))
-            Text(name, color = Color.White, fontSize = 13.sp)
+            // Clip (don't wrap) on narrow displays so a long label truncates on the right
+            // — "Windows" → "Windo…"-less clip — keeping every row a single line.
+            Text(
+                name,
+                color = Color.White,
+                fontSize = 13.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+                modifier = Modifier.weight(1f),
+            )
         }
         // One arrow button, by the role it fires (open vs close). The lit button is the one whose
         // ROLE matches the current state: `open == opens` is true exactly for the open button when
