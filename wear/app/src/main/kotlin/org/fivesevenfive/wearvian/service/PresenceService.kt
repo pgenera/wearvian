@@ -38,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.CommandBus
+import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.ble.RivianBle
@@ -70,6 +71,8 @@ class PresenceService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val keyManager = KeyManager()
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
+    /** Passive wake: an autoConnect pending on the bonded PK, alongside the FIRST_MATCH scan. */
+    private val passiveLink = PassiveAutoConnect { scope.launch { exitPassive() } }
     private var wakeLock: PowerManager.WakeLock? = null
     private var loopJob: Job? = null   // owns the BLE work (sessions + scan); torn down when locked
     private var notifJob: Job? = null
@@ -286,7 +289,7 @@ class PresenceService : Service() {
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); departJob?.cancel(); passive = false; _passive.value = false }
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); passive = false; _passive.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
@@ -600,12 +603,14 @@ class PresenceService : Service() {
         // (parked-idle, or the manual button while at the car) wait for a MATCH_LOST first, so the
         // ever-present car doesn't snap us straight back to active via FIRST_MATCH.
         seenDeparture = !PresenceStatus.connected.value
-        scope.launch { stopBle() }
+        // Tear the active sessions down, THEN arm the autoConnect wake on PK — after stopBle so the
+        // old PK GATT is closed and we don't briefly hold two clients to the same device.
+        scope.launch { stopBle(); passiveLink.arm(this@PresenceService) }
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         driving = false; VehicleSession.heartbeatsPaused = false // leaving active — clear driving-doze
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
-        DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching")
+        DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching + PK autoConnect")
         updateNotification(PASSIVE_TEXT)
         TileRefresher.refresh(this) // active→passive: tile state changed
         return true
@@ -618,6 +623,7 @@ class PresenceService : Service() {
         _passive.value = false
         departJob?.cancel()
         ProximityWake.stopScan(this, proximityCallback)
+        passiveLink.disarm() // hand PK off to the full session
         if (locked) {
             DebugLog.add("presence: proximity woke but watch locked — staying down")
             updateNotification(LOCKED_TEXT)
@@ -759,6 +765,7 @@ class PresenceService : Service() {
         _passive.value = false
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
+        passiveLink.disarm()
         departJob?.cancel()
         // Tear down the coroutine scope (the notification observer lives here) and reset shared
         // state, then remove the FG notification explicitly so deactivating the key clears it.
