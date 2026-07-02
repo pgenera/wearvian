@@ -11,9 +11,13 @@ class SettingsStore(context: Context) {
      * Whether the user has the mobile key armed (operational intent, not a preference).
      * Distinct from "presence service currently running": when auto power-save drops the
      * service to passive, the key is still armed — the UI shows "Key passive", not "off".
+     *
+     * Defaults to ARMED when there's no stored value: with no prior state (fresh install / first
+     * launch) the key should come up active, not off. Once the user explicitly toggles it, that
+     * choice (true or false) is persisted and honored.
      */
     var keyArmed: Boolean
-        get() = prefs.getBoolean(KEY_KEY_ARMED, false)
+        get() = prefs.getBoolean(KEY_KEY_ARMED, true)
         set(value) = prefs.edit().putBoolean(KEY_KEY_ARMED, value).apply()
 
     /**
