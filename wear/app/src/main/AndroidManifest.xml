@@ -19,6 +19,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Keep the CPU running so the presence heartbeat keeps streaming with the screen off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Re-arm the key after a reboot (see BootReceiver); MY_PACKAGE_REPLACED needs no permission. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
@@ -57,6 +59,17 @@
         <receiver
             android:name=".service.KeyOffReceiver"
             android:exported="false" />
+
+        <!-- Re-arm the key (start presence) after a reboot or an app upgrade, so it comes back
+             ACTIVE without opening the app. Gated on keyArmed inside the receiver. -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Quick lock/unlock/key tile. Lock/unlock run in-process (no app UI);
              the key control launches MainActivity. -->
