@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
@@ -120,12 +121,14 @@ fun AmbientScreen(
                 OutlineButton(Icons.Outlined.Lock, "Lock", lit = status.valid && !inGear && status.locked, dim = dim)
             }
 
-            // Lock/drive state line — same glyph+word as KeyPage.
+            // Lock/drive state line — same glyph+word as KeyPage (incl. "Charging" when parked+charging).
             if (status.valid) {
+                val charging = !inGear && status.chargeState == VehicleStatus.ChargeState.CHARGING
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         when {
                             inGear -> Icons.Outlined.DirectionsCar
+                            charging -> Icons.Outlined.Bolt
                             status.locked -> Icons.Outlined.Lock
                             else -> Icons.Outlined.LockOpen
                         },
@@ -139,6 +142,7 @@ fun AmbientScreen(
                                 VehicleStatus.Gear.NEUTRAL -> "Neutral"
                                 else -> "Driving"
                             }
+                            charging -> "Charging"
                             status.locked -> "Locked"
                             else -> "Unlocked"
                         },
