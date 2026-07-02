@@ -211,6 +211,8 @@ private fun KeyPage(
                 },
             )
         }
+        // Don't allow unlocking a moving vehicle: while in gear the Unlock button is disabled.
+        val driving = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             // Lit button MATCHES the current lock state (like Rivian's app): Unlock fills when
             // unlocked, Lock fills when locked — white if live, gray (DIM) if stale/last-known.
@@ -218,6 +220,7 @@ private fun KeyPage(
                 Icons.Filled.LockOpen, "Unlock", busy = Cmd.UNLOCK_ALL in state.inFlight,
                 active = status.valid && !status.locked,
                 activeFill = if (status.live) Color.White else DIM,
+                enabled = !driving,
             ) {
                 onCommand(Cmd.UNLOCK_ALL, "UNLOCK")
             }
@@ -581,12 +584,13 @@ private fun LabeledIcon(
     busy: Boolean = false,
     active: Boolean = false,
     activeFill: Color = Color.White,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundIcon(icon, label, tint, 48.dp, busy = busy, active = active, activeFill = activeFill, onClick = onClick)
+        RoundIcon(icon, label, tint, 48.dp, busy = busy, active = active, activeFill = activeFill, enabled = enabled, onClick = onClick)
         Spacer(Modifier.height(3.dp))
-        Text(label, color = Color.White, fontSize = 11.sp, textAlign = TextAlign.Center)
+        Text(label, color = if (enabled) Color.White else DIM, fontSize = 11.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -605,6 +609,8 @@ private fun RoundIcon(
     active: Boolean = false,
     /** Fill used when [active]; white for live state, gray for a stale (persisted) one. */
     activeFill: Color = Color.White,
+    /** When false the button is non-tappable and dimmed (e.g. Unlock while the car is in gear). */
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val alpha = if (busy) {
@@ -625,11 +631,11 @@ private fun RoundIcon(
     // state fills gray instead of white, so it reads as "last known, not confirmed".
     Box(
         Modifier.size(diameter).clip(CircleShape).background(if (active) activeFill else BTN_BG)
-            .clickable(enabled = !busy, onClick = onClick),
+            .clickable(enabled = !busy && enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Image(
-            icon, desc, Modifier.size(diameter * 0.52f), alpha = alpha,
+            icon, desc, Modifier.size(diameter * 0.52f), alpha = if (enabled) alpha else 0.3f,
             colorFilter = ColorFilter.tint(if (active) Color.Black else tint),
         )
     }
