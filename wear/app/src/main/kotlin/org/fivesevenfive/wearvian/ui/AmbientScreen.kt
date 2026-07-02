@@ -2,6 +2,8 @@ package org.fivesevenfive.wearvian.ui
 
 import android.text.format.DateFormat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -35,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.material.Icon
+import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import androidx.wear.compose.material.Text
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.PresenceStatus
@@ -60,6 +64,7 @@ fun AmbientScreen(
     burnInProtection: Boolean,
     lowBit: Boolean,
     tick: Int,
+    onCommand: (Int, String) -> Unit,
 ) {
     val running by PresenceService.running.collectAsStateWithLifecycle()
     val passive by PresenceService.passive.collectAsStateWithLifecycle()
@@ -86,7 +91,13 @@ fun AmbientScreen(
     }
     val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    // Consume background taps so a wake tap can't fall through to the live UI underneath (which
+    // would e.g. toggle the key). Taps on the lock/unlock glyphs are handled by their own clickable
+    // and take precedence; everything else here just absorbs the tap (the system still wakes).
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .pointerInput(Unit) { detectTapGestures { } },
+    ) {
         Column(
             Modifier.fillMaxSize().offset(dx, dy).padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
@@ -117,8 +128,15 @@ fun AmbientScreen(
             // glyph matching the current lock state is lit white; the other stays dim. While in gear
             // both stay dim — the auto-lock makes a lit padlock noise, not signal.
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                OutlineButton(Icons.Outlined.LockOpen, "Unlock", lit = status.valid && !inGear && !status.locked, dim = dim)
-                OutlineButton(Icons.Outlined.Lock, "Lock", lit = status.valid && !inGear && status.locked, dim = dim)
+                // Unlock is disabled in gear, same safety lockout as the live screen.
+                OutlineButton(
+                    Icons.Outlined.LockOpen, "Unlock", lit = status.valid && !inGear && !status.locked,
+                    dim = dim, enabled = !inGear,
+                ) { onCommand(Cmd.UNLOCK_ALL, "UNLOCK") }
+                OutlineButton(
+                    Icons.Outlined.Lock, "Lock", lit = status.valid && !inGear && status.locked,
+                    dim = dim, enabled = true,
+                ) { onCommand(Cmd.LOCK_ALL, "LOCK") }
             }
 
             // Lock/drive state line — same glyph+word as KeyPage (incl. "Charging" when parked+charging).
@@ -170,10 +188,20 @@ fun AmbientScreen(
  * glyph; we reproduce that 48dp box and glyph size but skip the filled circle.
  */
 @Composable
-private fun OutlineButton(icon: ImageVector, label: String, lit: Boolean, dim: Color) {
+private fun OutlineButton(
+    icon: ImageVector,
+    label: String,
+    lit: Boolean,
+    dim: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
     val tint = if (lit) Color.White else dim
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.size(48.dp).clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(icon, null, tint = tint, modifier = Modifier.size(48.dp * 0.52f))
         }
         Spacer(Modifier.height(3.dp))

@@ -217,7 +217,12 @@ class MainActivity : ComponentActivity() {
                 // Custom always-on idle screen: an opaque low-fidelity overlay while the system is in
                 // ambient. The interactive tree stays composed underneath and resumes on exit.
                 if (ambient.active) {
-                    AmbientScreen(burnInProtection = ambient.burnIn, lowBit = ambient.lowBit, tick = ambient.tick)
+                    AmbientScreen(
+                        burnInProtection = ambient.burnIn,
+                        lowBit = ambient.lowBit,
+                        tick = ambient.tick,
+                        onCommand = vm::sendCommand,
+                    )
                 }
             }
         }
