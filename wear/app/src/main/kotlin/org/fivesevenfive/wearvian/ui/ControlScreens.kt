@@ -239,10 +239,13 @@ private fun KeyPage(
         if (status.valid) {
             val stateColor = if (status.live) Color.White else DIM
             val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
+            // Parked + actively charging: show "Charging" in place of the lock word (can't charge in gear).
+            val charging = !inGear && status.chargeState == VehicleStatus.ChargeState.CHARGING
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
                     when {
                         inGear -> Icons.Filled.DirectionsCar
+                        charging -> Icons.Filled.Bolt
                         status.locked -> Icons.Filled.Lock
                         else -> Icons.Filled.LockOpen
                     },
@@ -256,6 +259,7 @@ private fun KeyPage(
                             VehicleStatus.Gear.NEUTRAL -> "Neutral"
                             else -> "Driving"
                         }
+                        charging -> "Charging"
                         status.locked -> "Locked"
                         else -> "Unlocked"
                     },

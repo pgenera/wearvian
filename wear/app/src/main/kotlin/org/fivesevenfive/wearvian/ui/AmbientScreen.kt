@@ -83,6 +83,7 @@ fun AmbientScreen(
         passive -> "Key passive"
         else -> "Key active"
     }
+    val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Column(
@@ -112,15 +113,15 @@ fun AmbientScreen(
             }
 
             // Unlock / Lock in the same slots as the live buttons, but OUTLINE only (no fills). The
-            // glyph matching the current lock state is lit white; the other stays dim.
+            // glyph matching the current lock state is lit white; the other stays dim. While in gear
+            // both stay dim — the auto-lock makes a lit padlock noise, not signal.
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                OutlineButton(Icons.Outlined.LockOpen, "Unlock", lit = status.valid && !status.locked, dim = dim)
-                OutlineButton(Icons.Outlined.Lock, "Lock", lit = status.valid && status.locked, dim = dim)
+                OutlineButton(Icons.Outlined.LockOpen, "Unlock", lit = status.valid && !inGear && !status.locked, dim = dim)
+                OutlineButton(Icons.Outlined.Lock, "Lock", lit = status.valid && !inGear && status.locked, dim = dim)
             }
 
             // Lock/drive state line — same glyph+word as KeyPage.
             if (status.valid) {
-                val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         when {
