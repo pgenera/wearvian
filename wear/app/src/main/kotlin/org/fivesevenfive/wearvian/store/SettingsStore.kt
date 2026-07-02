@@ -12,12 +12,12 @@ class SettingsStore(context: Context) {
      * Distinct from "presence service currently running": when auto power-save drops the
      * service to passive, the key is still armed — the UI shows "Key passive", not "off".
      *
-     * Defaults to ARMED when there's no stored value: with no prior state (fresh install / first
-     * launch) the key should come up active, not off. Once the user explicitly toggles it, that
-     * choice (true or false) is persisted and honored.
+     * Defaults to false (no key ⇒ not armed): presence only ever auto-starts once bonded, and
+     * enrollment writes this true explicitly, so the default is only read pre-key — where armed
+     * would be meaningless.
      */
     var keyArmed: Boolean
-        get() = prefs.getBoolean(KEY_KEY_ARMED, true)
+        get() = prefs.getBoolean(KEY_KEY_ARMED, false)
         set(value) = prefs.edit().putBoolean(KEY_KEY_ARMED, value).apply()
 
     /**
