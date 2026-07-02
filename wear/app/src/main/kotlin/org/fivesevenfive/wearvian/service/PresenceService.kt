@@ -154,7 +154,11 @@ class PresenceService : Service() {
                     departJob = scope.launch {
                         delay(DEPART_DEBOUNCE_MS)
                         seenDeparture = true
-                        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes")
+                        // Car has actually left → now arm the autoConnect so its RETURN reconnects PK
+                        // directly. We don't arm it while parked nearby, or it would immediately
+                        // reconnect and bounce us straight out of passive.
+                        passiveLink.arm(this@PresenceService)
+                        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes (scan + PK autoConnect)")
                     }
                 }
                 else -> { // CALLBACK_TYPE_FIRST_MATCH
@@ -603,14 +607,17 @@ class PresenceService : Service() {
         // (parked-idle, or the manual button while at the car) wait for a MATCH_LOST first, so the
         // ever-present car doesn't snap us straight back to active via FIRST_MATCH.
         seenDeparture = !PresenceStatus.connected.value
-        // Tear the active sessions down, THEN arm the autoConnect wake on PK — after stopBle so the
-        // old PK GATT is closed and we don't briefly hold two clients to the same device.
-        scope.launch { stopBle(); passiveLink.arm(this@PresenceService) }
+        // Tear the active sessions down, THEN arm the autoConnect wake on PK — but ONLY if the car is
+        // already gone (seenDeparture). While parked nearby it's still advertising, so an autoConnect
+        // would reconnect immediately and bounce us out of passive; in that case we wait for the scan's
+        // MATCH_LOST to confirm departure and arm autoConnect then. (After stopBle so the old PK GATT
+        // is closed and we don't briefly hold two clients to the same device.)
+        scope.launch { stopBle(); if (seenDeparture) passiveLink.arm(this@PresenceService) }
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         driving = false; VehicleSession.heartbeatsPaused = false // leaving active — clear driving-doze
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
-        DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching + PK autoConnect")
+        DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching, autoConnect=${seenDeparture}")
         updateNotification(PASSIVE_TEXT)
         TileRefresher.refresh(this) // active→passive: tile state changed
         return true
