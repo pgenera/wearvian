@@ -51,7 +51,9 @@ object PresenceStatus {
         val connecting = links.values.count { it == Link.CONNECTING || it == Link.CONNECTED }
         _connected.value = up > 0
         _summary.value = when {
-            up > 0 -> "Vehicle connected · $up link${if (up == 1) "" else "s"}"
+            // Link count first: on the watch-face/recents ongoing-activity chip the text is heavily
+            // truncated, so lead with the important bit ("1 link", "3 links") over the fixed prefix.
+            up > 0 -> "$up link${if (up == 1) "" else "s"} · Vehicle connected"
             connecting > 0 -> "Connecting to vehicle…"
             links.isEmpty() -> "Searching for vehicle…"
             else -> "Vehicle disconnected"
