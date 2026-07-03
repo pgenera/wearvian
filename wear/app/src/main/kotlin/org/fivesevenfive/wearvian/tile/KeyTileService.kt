@@ -263,9 +263,11 @@ class KeyTileService : TileService() {
         }
         logi("tile: dispatch $label")
         DebugLog.add("tile: $label tapped")
-        // If the presence session is up, ride it (running counter + presence-gated
-        // commands) instead of opening a second GATT connection to the same device.
-        if (PresenceService.isRunning) {
+        // If a LIVE session is up, ride it (running counter + presence-gated commands) instead of
+        // opening a second GATT connection. But NOT while passive: the PRIMARY session is torn down
+        // then, so the bus has no drainer and the command would sit queued until the car returns and
+        // fire stale — so fall through to a one-shot connect (matches SetupViewModel.sendCommand).
+        if (PresenceService.isRunning && !PresenceService.passive.value) {
             CommandBus.submit(code, label)
             return
         }
@@ -287,7 +289,9 @@ class KeyTileService : TileService() {
 
     private companion object {
         // Bumped when the resource (icon) set changes so the system refreshes the tile images.
-        const val RESOURCES_VERSION = "2"
+        // "3": frunk/hatch drawables replaced with the car-silhouette art (0.9.1) — the renderer
+        // caches resources by this version, so the swap only shows once the version changes.
+        const val RESOURCES_VERSION = "3"
         const val ID_KEY = "key"
         const val ID_UNLOCK = "cmd_unlock"
         const val ID_LOCK = "cmd_lock"

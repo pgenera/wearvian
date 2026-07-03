@@ -29,7 +29,7 @@ class PresenceStatusTest {
     @Test
     fun oneUpLinkIsConnectedSingular() {
         PresenceStatus.set("PK", Link.UP)
-        assertEquals("Vehicle connected · 1 link", PresenceStatus.summary.value)
+        assertEquals("1 link · Vehicle connected", PresenceStatus.summary.value)
         assertTrue(PresenceStatus.connected.value)
     }
 
@@ -37,7 +37,7 @@ class PresenceStatusTest {
     fun multipleUpLinksArePluralized() {
         PresenceStatus.set("PK", Link.UP)
         PresenceStatus.set("S1", Link.UP)
-        assertEquals("Vehicle connected · 2 links", PresenceStatus.summary.value)
+        assertEquals("2 links · Vehicle connected", PresenceStatus.summary.value)
         assertTrue(PresenceStatus.connected.value)
     }
 
@@ -53,7 +53,7 @@ class PresenceStatusTest {
     fun aDownLinkAlongsideAnUpLinkStaysConnected() {
         PresenceStatus.set("PK", Link.UP)
         PresenceStatus.set("S1", Link.DOWN)
-        assertEquals("Vehicle connected · 1 link", PresenceStatus.summary.value)
+        assertEquals("1 link · Vehicle connected", PresenceStatus.summary.value)
         assertTrue(PresenceStatus.connected.value)
     }
 

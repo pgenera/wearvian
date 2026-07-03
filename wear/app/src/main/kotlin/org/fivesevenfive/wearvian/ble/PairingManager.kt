@@ -27,6 +27,7 @@ import org.fivesevenfive.wearvian.util.logw
 import org.fivesevenfive.wearvian.util.toHexString
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Performs the local BLE pairing handshake with the vehicle, mirroring
@@ -64,7 +65,8 @@ class PairingManager(
     private var servicesReady = CompletableDeferred<Boolean>()
     private var descriptorWritten = CompletableDeferred<Boolean>()
     private var charWritten = CompletableDeferred<Boolean>()
-    private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
+    // Written by the pairing coroutine, read/completed by the GATT callback thread → concurrent.
+    private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
 
     suspend fun pair(
         enrollment: Enrollment,
@@ -104,7 +106,7 @@ class PairingManager(
             writeChar(gatt, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
             logi("pair: wrote vasPhoneId; awaiting echoed vehicle id")
             val vehicleId = withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(phoneIdChar.uuid).await() }
-            logi("pair: vehicle echoed id=${vehicleId.toHexString()} (expect vasVehicleId=${enrollment.vasVehicleId})")
+            logi("pair: vehicle echoed id=${vehicleId.toHexString().take(12)}… (matching vasVehicleId)")
             require(PairingFrames.vehicleIdMatches(vehicleId, enrollment.vasVehicleId)) {
                 "Vehicle id mismatch — wrong vehicle or wrong enrollment"
             }
@@ -112,7 +114,8 @@ class PairingManager(
             // Step 2: prove possession of the enrolled key via HMAC over a fresh nonce.
             val nonce = ByteArray(PairingFrames.PHONE_NONCE_LEN).also { SecureRandom().nextBytes(it) }
             val hmac = keyManager.signNonce(enrollment.vehiclePublicKey, nonce)
-            logi("pair: nonce=${nonce.toHexString()} hmac=${hmac.toHexString()}; writing pairing frame")
+            // Don't log the nonce/HMAC values — they're the pairing auth proof. Sizes only.
+            logi("pair: nonce(${nonce.size}B)+hmac(${hmac.size}B) ready; writing pairing frame")
             notifications[nonceChar.uuid] = CompletableDeferred()
             writeChar(gatt, nonceChar, PairingFrames.pairingWrite(nonce, hmac))
             withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(nonceChar.uuid).await() }

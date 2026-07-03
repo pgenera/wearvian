@@ -20,6 +20,7 @@ import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.toHexString
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Sends an authenticated active-entry command to the bonded vehicle over BLE,
@@ -40,7 +41,8 @@ class ActiveCommandManager(
     private var servicesReady = CompletableDeferred<Boolean>()
     private var descriptorWritten = CompletableDeferred<Boolean>()
     private var charWritten = CompletableDeferred<Boolean>()
-    private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
+    // Written by the command coroutine, read/completed by the GATT callback thread → concurrent.
+    private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
 
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 

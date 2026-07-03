@@ -19,6 +19,7 @@ import androidx.wear.ongoing.OngoingActivity
 import androidx.wear.ongoing.Status
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -68,7 +69,17 @@ import org.fivesevenfive.wearvian.util.logi
 @SuppressLint("MissingPermission")
 class PresenceService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Single-thread confinement. Every lifecycle transition (enterPassive / exitPassive /
+    // startActivePresence / lock / driving-doze) mutates shared @Volatile flags with non-atomic
+    // check-then-act, and they're triggered from many coroutines (the idle/stable/lock/driving
+    // monitors, the proximity + autoConnect callbacks, onStartCommand). Limiting the scope to a
+    // single dispatcher thread makes each transition's synchronous body atomic w.r.t. the others,
+    // removing the interleave races (e.g. a FIRST_MATCH exitPassive racing enterPassive's deferred
+    // `passiveLink.arm`, which could strand an autoConnect armed while active). BLE work here is
+    // callback-driven and suspends on every await/delay, so one thread doesn't bottleneck it. All
+    // transition entry points therefore run on `scope` (onStartCommand launches onto it below).
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val keyManager = KeyManager()
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     /** Passive wake: an autoConnect pending on the bonded PK, alongside the FIRST_MATCH scan. */
@@ -194,9 +205,11 @@ class PresenceService : Service() {
         DebugLog.add("presence: key acts as ${if (watchMode) "WATCH — manual lock/unlock, no passive entry" else "PHONE — full proximity"} (enrolled asWatch=${enrollment.asWatch}, forceWatch=${DebugOverrides.forceWatch})")
         // lockJob is the "service is already running" marker (loopJob can be inactive while locked).
         if (lockJob?.isActive == true) {
+            // Transitions run on `scope` (the single-thread lane) so they can't interleave with the
+            // monitors — onStartCommand itself is on the main thread, so launch onto scope.
             when {
-                goPassiveNow -> { DebugLog.add("presence: manual passive (already running)"); enterPassive() }
-                passive -> { DebugLog.add("presence: start while passive → wake"); exitPassive() }
+                goPassiveNow -> { DebugLog.add("presence: manual passive (already running)"); scope.launch { enterPassive() } }
+                passive -> { DebugLog.add("presence: start while passive → wake"); scope.launch { exitPassive() } }
                 else -> DebugLog.add("presence: already running; ignoring duplicate start")
             }
             return START_STICKY
@@ -204,11 +217,12 @@ class PresenceService : Service() {
         _running.value = true
         // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
         // restores it on unlock. Otherwise go straight to passive (manual button) or active.
+        // Transitions launch onto `scope` (single-thread lane) so they serialize with the monitors.
         locked = keyguard?.isDeviceLocked == true
         when {
             locked -> updateNotification(LOCKED_TEXT)
-            goPassiveNow -> { DebugLog.add("presence: manual passive requested"); enterPassive() }
-            else -> startActivePresence()
+            goPassiveNow -> { DebugLog.add("presence: manual passive requested"); scope.launch { enterPassive() } }
+            else -> scope.launch { startActivePresence() }
         }
         // Mirror the aggregate connection state into the ongoing notification, like the official
         // app's "vehicle connected / disconnected" persistent notification — but while locked or

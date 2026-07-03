@@ -25,6 +25,7 @@ import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.toHexString
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One presence connection to a single vehicle BLE device — the phone-key PRIMARY
@@ -66,7 +67,8 @@ class VehicleSession(
     private var servicesReady = CompletableDeferred<Boolean>()
     private var descriptorWritten = CompletableDeferred<Boolean>()
     private var charWritten = CompletableDeferred<Boolean>()
-    private val notifications = HashMap<UUID, CompletableDeferred<ByteArray>>()
+    // Written by the session coroutine, read/completed by the GATT callback thread → concurrent.
+    private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
     @Volatile private var sessionAlive = false
     /** Live phone→device RSSI, fed into the heartbeat. −128 (=0x80) until the first read. */
     @Volatile private var latestRssi: Int = RSSI_DEFAULT
