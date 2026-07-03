@@ -30,12 +30,10 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.DirectionsCar
-import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Luggage
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Route
@@ -59,8 +57,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,6 +71,7 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.BuildConfig
+import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.util.Units
@@ -298,29 +300,34 @@ private fun ClosuresPage(
         // is NOT in that frame (cloud-only), so it has no live indicator. A stale (persisted)
         // state still lights the state-matching button, just dimmed (gray, via [stale]).
         val stale = status.valid && !status.live
-        ClosureRow(Icons.Filled.Inventory2, "Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
+        ClosureRow("Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
             "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
-            open = status.frunkOpen, stateKnown = status.valid, stale = stale)
+            open = status.frunkOpen, stateKnown = status.valid, stale = stale,
+            iconOpenRes = R.drawable.ic_tile_frunk_open, iconClosedRes = R.drawable.ic_tile_frunk_close)
         // Rear closure: R1S liftgate (open + close) vs R1T tailgate (open only — there is no
         // tailgate-close command). The 0x1c rear-closure bit is model-agnostic, so liftgateOpen
         // reflects the tailgate state on an R1T too. See VehicleModel / ActiveCommandFrames.Cmd.
         if (isTruck) {
-            ClosureRow(Icons.Filled.Luggage, "Tailgate", Cmd.OPEN_TAILGATE, null,
+            ClosureRow("Tailgate", Cmd.OPEN_TAILGATE, null,
                 "OPEN_TAILGATE", null, inFlight, onCommand,
-                open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale,
+                iconOpenRes = R.drawable.ic_tile_hatch_open, iconClosedRes = R.drawable.ic_tile_hatch_close)
         } else {
-            ClosureRow(Icons.Filled.Luggage, "Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
+            ClosureRow("Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
                 "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
-                open = status.liftgateOpen, stateKnown = status.valid, stale = stale)
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale,
+                iconOpenRes = R.drawable.ic_tile_hatch_open, iconClosedRes = R.drawable.ic_tile_hatch_close)
         }
         // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
         // now that commands ride the live session (the old one-shot path no-op'd them).
-        ClosureRow(Icons.Filled.Window, "Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
+        ClosureRow("Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
             "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand,
-            open = status.anyWindowOpen, stateKnown = status.valid, stale = stale, upOpens = false)
+            open = status.anyWindowOpen, stateKnown = status.valid, stale = stale, upOpens = false,
+            icon = Icons.Filled.Window)
         // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
-        ClosureRow(Icons.Filled.Bolt, "Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
-            "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand)
+        ClosureRow("Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
+            "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand,
+            icon = Icons.Filled.Bolt)
     }
 }
 
@@ -513,7 +520,6 @@ private fun SettingsPage(
 
 @Composable
 private fun ClosureRow(
-    icon: ImageVector,
     name: String,
     openCode: Int,
     closeCode: Int?,
@@ -525,6 +531,12 @@ private fun ClosureRow(
     stateKnown: Boolean = false,
     stale: Boolean = false,
     upOpens: Boolean = true,
+    // Leading glyph is EITHER a static Material [icon] (windows, charge) OR a state-reflecting pair
+    // of vector drawables ([iconOpenRes]/[iconClosedRes]) — the frunk & rear car art, showing the
+    // open silhouette when that closure is open, mirroring the tile. Exactly one form is supplied.
+    icon: ImageVector? = null,
+    iconOpenRes: Int? = null,
+    iconClosedRes: Int? = null,
 ) {
     // Category icon + label, then open/close. The leading cluster has a FIXED width so the
     // open (▲) buttons line up in one vertical column and the close (▼) buttons in another
@@ -537,7 +549,13 @@ private fun ClosureRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(Modifier.width(LABEL_W), verticalAlignment = Alignment.CenterVertically) {
-            Image(icon, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
+            val leading: Painter =
+                if (iconOpenRes != null && iconClosedRes != null) {
+                    painterResource(if (stateKnown && open) iconOpenRes else iconClosedRes)
+                } else {
+                    rememberVectorPainter(icon ?: Icons.Filled.Window)
+                }
+            Image(leading, name, Modifier.size(20.dp), colorFilter = ColorFilter.tint(Color.White))
             Spacer(Modifier.width(5.dp))
             // Clip (don't wrap) on narrow displays so a long label truncates on the right
             // — "Windows" → "Windo…"-less clip — keeping every row a single line.
