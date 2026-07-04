@@ -29,8 +29,34 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_FORCE_R1T, false)
         set(value) = prefs.edit().putBoolean(KEY_FORCE_R1T, value).apply()
 
+    /**
+     * Persisted passive-idle mode. Honored ONLY on a near-instant restart — an app upgrade
+     * (`MY_PACKAGE_REPLACED` → [org.fivesevenfive.wearvian.service.PresenceService.ACTION_UPGRADE_RESTORE]) —
+     * so the key resumes passive instead of snapping back to ACTIVE (re-acquiring the wake lock + BLE
+     * while parked nearby, the parked-idle battery win lost). Every OTHER start (app open, OS restart)
+     * deliberately ignores this and comes up active: after a longer gap the car may have come and gone,
+     * and a stale "parked nearby" would wrongly ignore its real return. Written by PresenceService on
+     * each active↔passive transition (active clears it).
+     */
+    var passiveIdle: Boolean
+        get() = prefs.getBoolean(KEY_PASSIVE_IDLE, false)
+        set(value) = prefs.edit().putBoolean(KEY_PASSIVE_IDLE, value).apply()
+
+    /**
+     * The `seenDeparture` sub-state saved alongside [passiveIdle]: false = "parked nearby" (car still
+     * in range — wait for it to leave before a return can wake us), true = the car had departed (a
+     * return should wake). On the upgrade restore it's RESTORED, not recomputed: a fresh process has no
+     * link, which recompute would read as "departed", arming a PK autoConnect that bounces straight
+     * back to active next to the parked car — exactly the "parked-nearby passive didn't persist" symptom.
+     */
+    var passiveSeenDeparture: Boolean
+        get() = prefs.getBoolean(KEY_PASSIVE_SEEN_DEPARTURE, false)
+        set(value) = prefs.edit().putBoolean(KEY_PASSIVE_SEEN_DEPARTURE, value).apply()
+
     private companion object {
         const val KEY_KEY_ARMED = "key_armed"
         const val KEY_FORCE_R1T = "force_r1t"
+        const val KEY_PASSIVE_IDLE = "passive_idle"
+        const val KEY_PASSIVE_SEEN_DEPARTURE = "passive_seen_departure"
     }
 }

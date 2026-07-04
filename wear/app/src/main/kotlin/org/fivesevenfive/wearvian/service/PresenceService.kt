@@ -50,6 +50,7 @@ import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
+import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.store.TelemetryStore
 import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
@@ -81,6 +82,7 @@ class PresenceService : Service() {
     @OptIn(ExperimentalCoroutinesApi::class)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val keyManager = KeyManager()
+    private val settings by lazy { SettingsStore(this) }
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     /** Passive wake: an autoConnect pending on the bonded PK, alongside the FIRST_MATCH scan. */
     private val passiveLink = PassiveAutoConnect { scope.launch { exitPassive() } }
@@ -165,6 +167,7 @@ class PresenceService : Service() {
                     departJob = scope.launch {
                         delay(DEPART_DEBOUNCE_MS)
                         seenDeparture = true
+                        settings.passiveSeenDeparture = true // keep the persisted sub-state current
                         // Car has actually left → now arm the autoConnect so its RETURN reconnects PK
                         // directly. We don't arm it while parked nearby, or it would immediately
                         // reconnect and bounce us straight out of passive.
@@ -218,10 +221,17 @@ class PresenceService : Service() {
         // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
         // restores it on unlock. Otherwise go straight to passive (manual button) or active.
         // Transitions launch onto `scope` (single-thread lane) so they serialize with the monitors.
+        // On an app upgrade (ACTION_UPGRADE_RESTORE — a near-instant process swap) resume the persisted
+        // passive idle so a parked-nearby key doesn't snap back to active; any other start ignores it.
+        val restoreMode = intent?.action == ACTION_UPGRADE_RESTORE && settings.passiveIdle
         locked = keyguard?.isDeviceLocked == true
         when {
-            locked -> updateNotification(LOCKED_TEXT)
+            locked -> { if (restoreMode) wasPassive = true; updateNotification(LOCKED_TEXT) }
             goPassiveNow -> { DebugLog.add("presence: manual passive requested"); scope.launch { enterPassive() } }
+            restoreMode -> {
+                DebugLog.add("presence: upgrade — resuming passive idle (seenDeparture=${settings.passiveSeenDeparture})")
+                scope.launch { enterPassive(restoreSeenDeparture = settings.passiveSeenDeparture) }
+            }
             else -> scope.launch { startActivePresence() }
         }
         // Mirror the aggregate connection state into the ongoing notification, like the official
@@ -283,6 +293,7 @@ class PresenceService : Service() {
      * bursts presence on only around the drive window.
      */
     private fun startActivePresence() {
+        settings.passiveIdle = false // going active — a later upgrade restart should NOT resume passive
         if (watchMode) {
             VehicleSession.heartbeatsPaused = true // doze by default; bursts un-pause it
             startBle()
@@ -611,7 +622,7 @@ class PresenceService : Service() {
      * arm the in-process proximity watch. The foreground notification stays up (so we can rebuild
      * on approach without a background FGS-start). Used by auto-idle AND the manual button.
      */
-    private fun enterPassive(): Boolean {
+    private fun enterPassive(restoreSeenDeparture: Boolean? = null): Boolean {
         if (passive) return true
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
         passive = true
@@ -619,8 +630,13 @@ class PresenceService : Service() {
         departJob?.cancel()
         // If no link is up the car is already gone → watch for its return immediately. If one is up
         // (parked-idle, or the manual button while at the car) wait for a MATCH_LOST first, so the
-        // ever-present car doesn't snap us straight back to active via FIRST_MATCH.
-        seenDeparture = !PresenceStatus.connected.value
+        // ever-present car doesn't snap us straight back to active via FIRST_MATCH. On an upgrade
+        // restore, use the PERSISTED sub-state instead — a fresh process has no link, which recompute
+        // would read as "departed" and arm an autoConnect that bounces us active next to the car.
+        seenDeparture = restoreSeenDeparture ?: !PresenceStatus.connected.value
+        // Persist so a near-instant restart (app upgrade) can resume passive with the same sub-state.
+        settings.passiveIdle = true
+        settings.passiveSeenDeparture = seenDeparture
         // Tear the active sessions down, THEN arm the autoConnect wake on PK — but ONLY if the car is
         // already gone (seenDeparture). While parked nearby it's still advertising, so an autoConnect
         // would reconnect immediately and bounce us out of passive; in that case we wait for the scan's
@@ -851,8 +867,19 @@ class PresenceService : Service() {
 
         const val ACTION_GO_PASSIVE = "org.fivesevenfive.wearvian.GO_PASSIVE"
 
+        /** Marks a start as an app-upgrade restart (from [UpgradeReceiver]) — the one case where the
+         *  persisted passive-idle state is trusted and resumed (see onStartCommand / SettingsStore). */
+        const val ACTION_UPGRADE_RESTORE = "org.fivesevenfive.wearvian.UPGRADE_RESTORE"
+
         fun start(context: Context) {
             context.startForegroundService(Intent(context, PresenceService::class.java))
+        }
+
+        /** Re-arm after an app upgrade, resuming the prior mode (active, or persisted passive idle). */
+        fun startAfterUpgrade(context: Context) {
+            context.startForegroundService(
+                Intent(context, PresenceService::class.java).setAction(ACTION_UPGRADE_RESTORE),
+            )
         }
 
         /** Drop a running service to passive immediately (manual button). */
