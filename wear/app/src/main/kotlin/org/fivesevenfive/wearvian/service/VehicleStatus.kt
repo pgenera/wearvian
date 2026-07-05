@@ -15,62 +15,74 @@ import kotlinx.coroutines.flow.StateFlow
  * shows the same affordances from a stale state, just dimmed (gray instead of white) to signal it
  * isn't being confirmed right now.
  *
- * Frame = `[le32 counter] ‖ [16-byte status]`; layout decoded on-vehicle 2026-06-06/06-07
- * (docs/passive-entry-protocol.md):
- *   status[0] bit0      = asleep
- *   status[1] hi-nibble = locked;  lo-nibble = doors  (bit 0x08 driver, 0x04 passenger,
- *                                                       0x02 rear-driver, 0x01 rear-pass; 1=closed)
- *   status[2] hi-nibble = locked;  bit 0x08 = frunk, bit 0x04 = liftgate  (1=closed)
- *   status[3]           = windows (same bit layout as doors; 1=closed)
- *   status[4]           = HVAC + drive flags: 0x04 preconditioning starting, 0x08 running
- *                         (`& 0x0c` != 0 = climate on); bit 0x20 = in-motion/drive flag (decoded
- *                         2026-06-16 from prndl.log — it trails the gear by ~1 frame).
- *   status[5]           = state of charge, integer %        (decoded 2026-06-07)
- *   status[6] hi-nibble = GEAR / PRNDL (decoded 2026-06-16 from prndl.log): 1=Park, 2=Reverse,
- *                         3=Neutral, 4=Drive. Was only ever 0x1 before because every prior capture
- *                         was parked. lo-nibble = charge state enum (decoded 2026-06-07; [ChargeState]).
- *   status[7]           = cabin temperature, °C             (decoded 2026-06-07)
- *   status[8..9]        = estimated range, km, LE16 (280km==174mi, confirmed 2026-06-10 by mileage.log).
- *                         Range OVERLAPS the charge ETA in [9]: it's really a 9-bit field — [8] plus
- *                         bit0 of [9] — so while charging (when [9..10] carries the ETA) range must be
- *                         masked to 9 bits (`[8..9] & 0x1ff`); the ETA's higher bits in [9] are dropped.
- *                         Confirmed 2026-06-12 by mileage-charging.log (0xcd36 & 0x1ff = 310km = 193mi;
- *                         [8]-only read 54km = 34mi — the reported bug). When NOT charging the ETA is
- *                         absent so [9] is a clean range high byte and full [8..9] is used (so range can
- *                         exceed the 9-bit 511km / 317mi ceiling, which the field only constrains while
- *                         charging — and you can't be near max range while actively charging).
- *   status[9..10]       = charge ETA to the set LIMIT, LE16, 15 s per count = raw/4 min (NOT power). Proven
- *                         by a fixed-SoC (50%) amperage sweep 2026-06-09 (20A→1483, 28A→1042,
- *                         44A→654: falls as current rises, raw×current ≈ const ⇒ time ∝ 1/power,
- *                         impossible for power) plus a 70%→90% limit A/B (raw 654→1184 ⇒ tracks the
- *                         limit, not 100%). Scale pinned by a simultaneous app reading (10h 13m =
- *                         613 min vs settled raw 2468 ⇒ 14.9 s/count) and the field's step-by-4
- *                         (4×15 = clean 60 s display res). The old "1/70 kW power" read was a
- *                         coincidence — both prior captures sat in the same ~9–10 kW band where
- *                         power and time are numerically degenerate. True charge POWER is not in
- *                         this frame at all (no other byte tracks current across the sweep).
- *   status[11],[12]     = constant config (0x50/0x78); charge LIMIT + climate setpoint are NOT
- *                         here (both cloud-only — setpoint never varied across captures)
+ * ## Layout — authoritative, recovered from the official app's decompile
  *
- * The telemetry (SoC/cabin/range/charge) overturns the earlier "battery/range are cloud-only"
- * read: they ARE on BLE here. Ground truth pinned SoC/cabin/range (48.4%→[5]=48; 86°F=30°C→[7]=30;
- * 137mi=220km→[8]=220) and the charge-state enum (the failed/idle/charging narrative).
+ * The byte/bit layout is **not** guessed: it is the official Rivian app's own status schema
+ * `n50.f.SCHEMA_VERSION_1` (the `BLEPath_LegacyBleVehicleStatusInterceptor`, class `m6/b` method
+ * `A`), a byte-index → {bitmask → field} dictionary. Frame = `[le32 counter] ‖ [status]`; the
+ * plaintext 0x1c push carries `status[0..15]`, which are the first 16 bytes of the same
+ * SCHEMA_VERSION_1 layout (version byte 0x10 = `status[0] & 0xf0`, size 35). We decode the fields
+ * that live in `status[0..10]`; the richer fields the schema places at `[27..34]` (pet mode,
+ * pending "next actions", driver occupancy, immobilizer, trailer, power mode) are only in the full
+ * 35-byte VAS status message (the app's `requestFullVehicleStatusMessage`), not this push.
+ *
+ * Boolean sense (schema `n50.d.getDefaultValue`): OPEN_CLOSED — masked bit **0 = open**, else
+ * closed; LOCK_UNLOCK — masked **0 = unlocked**, else locked.
+ *
+ *   status[0] &0x03 = CGM (Gear Guard) arm-alarm: 0 off, 1 armed, 2 n/a, 3 faulted. We read bit0 as
+ *                     [State.asleep] — a proxy: Gear Guard arms when the car is parked/unattended,
+ *                     so this tracks the car going to sleep. &0x0c = Gear Guard sound alarm.
+ *                     (High nibble = schema version, 0x10.)
+ *   status[1] lo     = the four DOORS, open/closed: 0x08 L-front, 0x04 R-front, 0x02 L-rear,
+ *                     0x01 R-rear (1=closed). hi = the four door LOCK bits (we don't surface these).
+ *   status[2] 0x04 = liftgate; 0x08 = frunk (1=closed). hi nibble = tonneau/liftgate/tailgate/frunk
+ *                     LOCK bits. Schema also puts charge-port door at 0x01 and tonneau at 0x02, but
+ *                     the compact push leaves those 0 on every capture — i.e. a closed charge port
+ *                     reads "open" (0) here, so they're effectively unpopulated. Don't surface them
+ *                     without an on-vehicle capture that actually toggles them.
+ *   status[3] lo     = the four WINDOWS (same bit order as doors; 1=closed). hi = R1T side bins.
+ *   status[4] &0x3c = cabin-preconditioning status (4-bit enum, >>2): 0 undef, 1 initiate,
+ *                     2 active, 3 active_warning, 4 complete_maintain, 5 timeout, 6 err_soc_low,
+ *                     7 err_sys_fault, 8 unavailable (reported while driving), 9 timeout_complete.
+ *                     [State.climateOn] = value in 1..4. (0x02 = R1T tailgate; 0x40 gear-guard lock;
+ *                     0x80 bomb-bay-bin lock.) NB: the old "in-motion 0x20" flag was a misread — it's
+ *                     bit3 of this enum (value 8 = unavailable while driving); driving is detected
+ *                     from [gear], not here.
+ *   status[5] &0x7f = state of charge, integer %. Bit 0x80 = anti-theft alarm active (schema field;
+ *                     never observed set in a capture, so not surfaced — confirm on-vehicle first).
+ *   status[6] hi     = GEAR / PRNDL: 1 Park, 2 Reverse, 3 Neutral, 4 Drive. lo = charge state enum
+ *                     ([ChargeState]).
+ *   status[7]        = cabin temperature, °C.
+ *   status[8..9]     = estimated range, km. A 9-bit field ([8] + bit0 of [9]) that OVERLAPS the
+ *                     charge ETA in [9]: full [8..9] LE16 when not charging (280 km == 174 mi), but
+ *                     masked to 9 bits while charging (`& 0x1ff`) since [9]'s upper bits are then the
+ *                     ETA. Confirmed 2026-06-12 (mileage-charging.log: 0xcd36 & 0x1ff = 310 km).
+ *   status[9..10]    = charge ETA to the set LIMIT, LE16, 15 s per count = raw/4 min (NOT power;
+ *                     proven by a fixed-SoC amperage sweep where raw ∝ 1/current). [10] &0xc0 =
+ *                     battery-level status (normal/low/red/critical), which we don't surface.
+ *   status[11..15]   = reserved. The schema maps no fields to bytes 11..26, so this is framing/pad,
+ *                     not data — it varies between captures but the app decodes nothing from it.
  */
 object VehicleStatus {
 
     /** Transmission gear from status[6]'s HIGH nibble (PRNDL order). */
     enum class Gear { UNKNOWN, PARK, REVERSE, NEUTRAL, DRIVE }
 
-    /** Charge state from status[6]'s low nibble (the high nibble is the [Gear]). */
+    /**
+     * Charge state from status[6]'s low nibble (the high nibble is the [Gear]). Names are ours; the
+     * mapping follows the schema's VEHICLE_CHARGING_STATUS enum (`n50.d`): 1 ready, 2 connecting,
+     * 3 active, 4 complete, 5 scheduled, 6 vehicle-error, 7 station-error, 8 user-stopped. Value 1
+     * is the vehicle's idle/ready baseline, which we've only ever observed unplugged, hence
+     * [UNPLUGGED]. The 4-bit nibble can't reach the schema's higher codes (they need a 5th bit that
+     * only the full 35-byte message carries).
+     */
     enum class ChargeState {
-        UNKNOWN,      // not yet parsed / unrecognized code (0x_8 seen once at charge start, ETA 0
-                      // — semantics unidentified, so it intentionally maps here and the UI shows
-                      // no state line for it)
-        UNPLUGGED,    // 0x_1
-        STARTING,     // 0x_2 — brief negotiating frame before charging
-        CHARGING,     // 0x_3 — actively charging (ETA-to-limit counts down in [9..10])
-        PLUGGED_IDLE, // 0x_5 — cord connected, not charging (e.g. waiting for schedule)
-        FAULT,        // 0x_7 — charge fault ("check charger")
+        UNKNOWN,      // not present / unrecognized code
+        UNPLUGGED,    // 0x_1 — schema "charging_ready" (idle baseline; only seen unplugged)
+        STARTING,     // 0x_2 — schema "charging_connecting" (negotiating)
+        CHARGING,     // 0x_3 — schema "charging_active" (ETA-to-limit counts down in [9..10])
+        PLUGGED_IDLE, // 0x_5 scheduled / 0x_8 user-stopped — cord connected, not charging
+        FAULT,        // 0x_7 — schema "charging_station_error" ("check charger")
     }
 
     data class State(
@@ -78,6 +90,11 @@ object VehicleStatus {
         val valid: Boolean = false,
         /** True while a current session is confirming this state; false when stale (last-known). */
         val live: Boolean = false,
+        /**
+         * Proxy for "vehicle asleep". This is really status[0]'s CGM_ARM_ALARM low bit (Gear Guard
+         * armed) per the schema; Gear Guard arms when the car is parked and unattended, so it tracks
+         * sleep closely enough to drive the watch-presence wake trigger (see PresenceService).
+         */
         val asleep: Boolean = false,
         val locked: Boolean = false,
         val frunkOpen: Boolean = false,
@@ -85,9 +102,8 @@ object VehicleStatus {
         val anyDoorOpen: Boolean = false,
         val anyWindowOpen: Boolean = false,
         /**
-         * Cabin preconditioning (climate) is running. status[4] is a dedicated HVAC-state byte (0
-         * with climate off across every charge/idle capture); a climate on→off capture showed it
-         * step 0 → 0x04 (starting) → 0x08 (running) → 0 (off). We treat `0x0c` (either bit) as on.
+         * Cabin preconditioning (climate) is running: the status[4] preconditioning enum
+         * (`& 0x3c >> 2`) is in 1..4 (initiate / active / active_warning / complete_maintain).
          */
         val climateOn: Boolean = false,
         /**
@@ -96,8 +112,6 @@ object VehicleStatus {
          * PresenceService driving-doze). Decoded 2026-06-16 from prndl.log.
          */
         val gear: Gear = Gear.UNKNOWN,
-        /** status[4] bit 0x20 — set while actively driving (trails [gear] by ~1 frame); semantics TBD. */
-        val inMotion: Boolean = false,
         /** State of charge, integer percent; null when the frame is too short to carry it. */
         val socPercent: Int? = null,
         /** Cabin temperature in °C; null when not present in the frame. */
@@ -148,16 +162,15 @@ object VehicleStatus {
         _state.value = State(
             valid = true,
             live = true,
-            asleep = (s(0) and 0x01) != 0,
+            asleep = (s(0) and 0x01) != 0, // CGM_ARM_ALARM low bit — see [State.asleep]
             locked = (s(2) and 0xf0) != 0,
             frunkOpen = (s(2) and 0x08) == 0,
             liftgateOpen = (s(2) and 0x04) == 0,
             anyDoorOpen = (s(1) and 0x0f) != 0x0f,
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
-            climateOn = frame.size >= 4 + 5 && (s(4) and 0x0c) != 0,
-            inMotion = frame.size >= 4 + 5 && (s(4) and 0x20) != 0,
+            climateOn = frame.size >= 4 + 5 && ((s(4) and 0x3c) shr 2) in 1..4,
             gear = if (hasTelemetry) gearOf(s(6)) else Gear.UNKNOWN,
-            socPercent = if (hasTelemetry) s(5) else null,
+            socPercent = if (hasTelemetry) s(5) and 0x7f else null,
             cabinTempC = if (hasTelemetry) s(7) else null,
             rangeKm = when {
                 !hasTelemetry -> null
@@ -182,11 +195,13 @@ object VehicleStatus {
         else -> Gear.UNKNOWN
     }
 
+    /** Charge state from status[6]'s low nibble (schema VEHICLE_CHARGING_STATUS; see [ChargeState]). */
     private fun chargeStateOf(b6: Int): ChargeState = when (b6 and 0x0f) {
         0x1 -> ChargeState.UNPLUGGED
         0x2 -> ChargeState.STARTING
         0x3 -> ChargeState.CHARGING
-        0x5 -> ChargeState.PLUGGED_IDLE
+        0x5 -> ChargeState.PLUGGED_IDLE // schema: charging_scheduled
+        0x8 -> ChargeState.PLUGGED_IDLE // schema: charging_user_stopped (plugged, stopped by user)
         0x7 -> ChargeState.FAULT
         else -> ChargeState.UNKNOWN
     }

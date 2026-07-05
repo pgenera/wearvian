@@ -768,3 +768,56 @@ state distinct from `0x_2` starting and `0x_5` plugged-idle. One observation, se
 so it maps to `ChargeState.UNKNOWN` (the UI shows SoC/range with no state line) and
 `decode_status.py` prints it as `?0x8`. Identify it by catching what the official app displays
 the next time it appears.
+
+## 2026-07-05 — 0x1c layout recovered authoritatively from the app decompile (SCHEMA_VERSION_1)
+
+Everything above about the `0x1c` byte/bit map was reverse-engineered empirically from on-vehicle
+captures. We can now stop guessing: the official app's own status schema was recovered from the
+decompile, and it names every byte, bitmask, and value enum.
+
+**Where it lives.** The BLE library (`classes3`) subscribes `0x1c` (`em/f0.e`, non-secured branch)
+but does not field-parse it. The parser is in the app layer: `m6/b` =
+`BLEPath_LegacyBleVehicleStatusInterceptor`, method `A([B J l60.t)`. It HMAC-verifies the body
+(`jh.q.j(VEHICLE_STATUS, …)` over `pnonce‖vnonce‖body`), selects a schema **version** from
+`payload[0] & 0xF0`, then walks a byte-index → {bitmask → field} dictionary. The dictionary is
+`n50.f.SCHEMA_VERSION_1` (**version byte = 0x10**, size 35); field names + value maps are in `n50.d`.
+This is *also* the parser for the richer 35-byte `requestFullVehicleStatusMessage` VAS response the
+app uses when the cloud is down — same schema, more bytes.
+
+**Our plaintext 0x1c push = `status[0..15]` of this SCHEMA_VERSION_1 layout.** Every mapped byte
+reproduces real values from our captures (battery, gear, charge, temp, range, doors, windows, frunk,
+liftgate). Boolean sense (`n50.d.getDefaultValue`): OPEN_CLOSED → masked bit **0 = open**, else
+closed; LOCK_UNLOCK → **0 = unlocked**, else locked.
+
+| Byte | Mask | Field |
+|---|---|---|
+| 0 | 0x03 / 0x0C | CGM (Gear Guard) arm-alarm / sound-alarm. High nibble = schema version 0x10 |
+| 1 | 0x0F / 0xF0 | four doors open/closed / four door lock bits |
+| 2 | 0x01/02/04/08 | charge-port-door / tonneau / liftgate / frunk open-closed; hi nibble = their locks |
+| 3 | 0x0F / 0xF0 | four windows / R1T side bins |
+| 4 | 0x3C | cabin-preconditioning enum (>>2): 1 initiate, 2 active, 3 active_warning, 4 complete_maintain, 5 timeout, 6 err_soc_low, 7 err_sys_fault, 8 unavailable (while driving), 9 timeout_complete. (0x02 tailgate, 0x40 gear-guard lock, 0x80 bomb-bay lock) |
+| 5 | 0x7F / 0x80 | state-of-charge % / anti-theft alarm |
+| 6 | 0x0F / 0xF0 | charging status / gear (1 P, 2 R, 3 N, 4 D) |
+| 7 | 0xFF | cabin temperature °C |
+| 8..9 | — | distance-to-empty (9-bit, overlaps ETA in [9]) |
+| 9..10 | — | time-to-end-of-charge (to the limit); [10] &0xC0 = battery-level status |
+| 11..26 | — | **no schema entries — reserved/framing, not data.** Resolves the old "config tail" mystery |
+| 27..34 | — | full-35-byte-message only: pet mode, cabin-precondition type, per-closure NEXT_ACTION (pending-command) states, BTM_IC fault, vehicle power mode, charge-port control state, driver occupancy, immobilizer auth, trailer status, drive-authorization |
+
+**Corrections to the earlier empirical map (now in `VehicleStatus.kt` / `decode_status.py`):**
+- `[0]` bit0 "asleep" is really **CGM_ARM_ALARM** (Gear Guard armed). Kept as an `asleep` proxy
+  (Gear Guard arms when the car parks/sleeps) since it drives the watch-presence wake trigger, but
+  it is not literally a sleep bit.
+- `[4]` — the old `climateOn (0x0C)` + `inMotion (0x20)` were two slices of the single 4-bit
+  **preconditioning enum** (`0x3C >> 2`). `climateOn` is now `enum in 1..4`; `inMotion` is deleted
+  (0x20 = bit3 = value 8 "unavailable", which is what shows while driving — driving is detected from
+  `gear`, not this).
+- `[5]` SoC is **7-bit** (`& 0x7F`); bit7 = anti-theft alarm.
+- `[6]` charge code **`0x_8` = user_stopped** (schema VEHICLE_CHARGING_STATUS 8), resolving the
+  "unidentified 0x_8" note above — mapped to `PLUGGED_IDLE` ("Plugged in").
+
+**Not surfaced (schema field present but the compact push doesn't populate it):** `[2]` bit0
+charge-port-door and bit1 tonneau read 0 ("open") on every capture even with the port closed, so the
+push appears to leave them unset; anti-theft alarm (`[5]`0x80) was never observed set. These need an
+on-vehicle capture that actually toggles them before we trust/surface them. This is the one place a
+targeted on-vehicle capture (last resort) would still add value — everything else is now named.

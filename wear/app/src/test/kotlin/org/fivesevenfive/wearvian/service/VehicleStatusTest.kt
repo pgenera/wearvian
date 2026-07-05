@@ -10,11 +10,12 @@ import org.junit.Test
  * Decode tests for the plaintext 0x1c status frame. The byte layout was decoded on-vehicle
  * (docs/passive-entry-protocol.md); these lock it so an accidental bit/mask edit is caught.
  *
- * Frame = `[le32 counter] ‖ [16-byte status]`; only status[0..3] carry the decoded fields:
- *   [0] bit0 = asleep
- *   [1] hi-nibble = locked, lo-nibble = doors (1=closed; all closed → 0x0f)
- *   [2] hi-nibble = locked, bit 0x08 = frunk, bit 0x04 = liftgate (1=closed)
+ * Layout is the official app's schema `n50.f.SCHEMA_VERSION_1` (see VehicleStatus doc):
+ *   [0] bit0 = CGM arm-alarm, read as `asleep`
+ *   [1] hi-nibble = door locks, lo-nibble = doors (1=closed; all closed → 0x0f)
+ *   [2] hi-nibble = closure locks, bit 0x08 = frunk, bit 0x04 = liftgate (1=closed)
  *   [3] lo-nibble = windows (1=closed; all closed → 0x0f)
+ *   [4] &0x3c >>2 = cabin-preconditioning enum (1..4 = climate on)
  */
 class VehicleStatusTest {
 
@@ -67,14 +68,30 @@ class VehicleStatusTest {
     }
 
     @Test
-    fun inMotionFlagFromByte4() {
-        // [4] bit 0x20 sets while driving (prndl.log locked-in-Drive frames), clear when parked.
+    fun preconditioningStatusFromByte4() {
+        // [4] &0x3c >>2 is the cabin-preconditioning enum; climateOn = value in 1..4. The old
+        // "in-motion 0x20" flag was a misread: 0x20 is bit3 of this enum (value 8 = "unavailable",
+        // reported while driving), which must NOT read as climate on.
         VehicleStatus.update(frame(0x10, 0xff, 0xac, 0x0f, 0x20, 0x43, 0x41, 0x18, 0x31, 0x01, 0x00))
-        assertTrue(VehicleStatus.state.value.inMotion)
+        assertFalse("0x20 (enum 8 = unavailable) is not climate on", VehicleStatus.state.value.climateOn)
         VehicleStatus.update(frame(0x10, 0x0f, 0x0c, 0x0f, 0x00, 0x43, 0x11, 0x18, 0x31, 0x01, 0x00))
-        assertFalse(VehicleStatus.state.value.inMotion)
-        // The climate bits (0x0c) are independent of the 0x20 drive flag.
         assertFalse(VehicleStatus.state.value.climateOn)
+        VehicleStatus.update(frame(0x10, 0x0f, 0x0c, 0x0f, 0x08, 0x43, 0x11, 0x18, 0x31, 0x01, 0x00))
+        assertTrue("0x08 (enum 2 = active) is climate on", VehicleStatus.state.value.climateOn)
+    }
+
+    @Test
+    fun socMaskedToSevenBits() {
+        // status[5] &0x7f is SoC; bit 0x80 is anti-theft alarm, not part of the percentage.
+        VehicleStatus.update(hex("01000000" + "100f0c0f00b0111edc00005078000000")) // [5]=0xb0 = 0x80|0x30
+        assertEquals(48, VehicleStatus.state.value.socPercent)
+    }
+
+    @Test
+    fun chargeUserStoppedIsPluggedIdle() {
+        // status[6] low nibble 0x8 = schema charging_user_stopped (plugged, stopped) → PLUGGED_IDLE.
+        VehicleStatus.update(hex("01000000" + "100f0c0f0030181edc00005078000000"))
+        assertEquals(VehicleStatus.ChargeState.PLUGGED_IDLE, VehicleStatus.state.value.chargeState)
     }
 
     @Test
