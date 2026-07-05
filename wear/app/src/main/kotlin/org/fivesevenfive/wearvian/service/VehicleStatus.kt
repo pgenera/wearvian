@@ -35,11 +35,12 @@ import kotlinx.coroutines.flow.StateFlow
  *                     (High nibble = schema version, 0x10.)
  *   status[1] lo     = the four DOORS, open/closed: 0x08 L-front, 0x04 R-front, 0x02 L-rear,
  *                     0x01 R-rear (1=closed). hi = the four door LOCK bits (we don't surface these).
- *   status[2] 0x04 = liftgate; 0x08 = frunk (1=closed). hi nibble = tonneau/liftgate/tailgate/frunk
- *                     LOCK bits. Schema also puts charge-port door at 0x01 and tonneau at 0x02, but
- *                     the compact push leaves those 0 on every capture — i.e. a closed charge port
- *                     reads "open" (0) here, so they're effectively unpopulated. Don't surface them
- *                     without an on-vehicle capture that actually toggles them.
+ *   status[2] 0x01 = charge-port door open/closed ([State.chargePortDoorOpen]); 0x04 = liftgate;
+ *                     0x08 = frunk (1=closed). hi nibble = tonneau/liftgate/tailgate/frunk LOCK bits.
+ *                     The charge-port bit read 0 ("open") on every capture — possibly unpopulated in
+ *                     the compact push — so it's surfaced on the charge page to CONFIRM on-vehicle by
+ *                     physically opening/closing the port and watching whether it tracks. Schema also
+ *                     puts tonneau at 0x02 (likewise always 0, not surfaced).
  *   status[3] lo     = the four WINDOWS (same bit order as doors; 1=closed). hi = R1T side bins.
  *   status[4] &0x3c = cabin-preconditioning status (4-bit enum, >>2): 0 undef, 1 initiate,
  *                     2 active, 3 active_warning, 4 complete_maintain, 5 timeout, 6 err_soc_low,
@@ -99,6 +100,12 @@ object VehicleStatus {
         val locked: Boolean = false,
         val frunkOpen: Boolean = false,
         val liftgateOpen: Boolean = false,
+        /**
+         * Charge-port door open (status[2] bit 0x01; schema sense masked-0 = open). Surfaced on the
+         * charge page to confirm on-vehicle whether the compact push actually populates this bit —
+         * it read 0 ("open") in every capture, so a physical open/close toggle is the real test.
+         */
+        val chargePortDoorOpen: Boolean = false,
         val anyDoorOpen: Boolean = false,
         val anyWindowOpen: Boolean = false,
         /**
@@ -166,6 +173,7 @@ object VehicleStatus {
             locked = (s(2) and 0xf0) != 0,
             frunkOpen = (s(2) and 0x08) == 0,
             liftgateOpen = (s(2) and 0x04) == 0,
+            chargePortDoorOpen = (s(2) and 0x01) == 0, // schema: masked-0 = open (confirming on-vehicle)
             anyDoorOpen = (s(1) and 0x0f) != 0x0f,
             anyWindowOpen = (s(3) and 0x0f) != 0x0f,
             climateOn = frame.size >= 4 + 5 && ((s(4) and 0x3c) shr 2) in 1..4,

@@ -52,6 +52,15 @@ class VehicleStatusTest {
     }
 
     @Test
+    fun chargePortDoorFromByte2Bit0() {
+        // status[2] bit0 = schema charge-port door (masked-0 = open); wired for on-vehicle confirm.
+        VehicleStatus.update(frame(0x00, 0xff, 0xac, 0x0f)) // [2]=0xac, bit0 clear → open
+        assertTrue(VehicleStatus.state.value.chargePortDoorOpen)
+        VehicleStatus.update(frame(0x00, 0xff, 0xad, 0x0f)) // [2]=0xad, bit0 set → closed
+        assertFalse(VehicleStatus.state.value.chargePortDoorOpen)
+    }
+
+    @Test
     fun gearFromByte6HighNibble() {
         // prndl.log walked P→D→N→R→P: [6] HIGH nibble is the gear, LOW nibble stays 1 (unplugged).
         // Needs full telemetry (>= status[0..10]).

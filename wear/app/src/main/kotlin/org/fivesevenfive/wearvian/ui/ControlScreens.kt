@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thermostat
@@ -391,6 +392,20 @@ private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, on
             }
         } else {
             Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
+        }
+        // Charge-port door (status[2] bit0). Newly wired from the app's status schema — "open" is
+        // drawn gold so a physical open/close toggle is easy to confirm on-vehicle.
+        if (status.valid) {
+            val portOpen = status.chargePortDoorOpen
+            val portColor = if (!live) DIM else if (portOpen) GOLD else primary
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(Icons.Filled.Power, null, Modifier.size(12.dp), colorFilter = ColorFilter.tint(portColor))
+                Spacer(Modifier.width(2.dp))
+                Text(
+                    if (portOpen) "Charge port open" else "Charge port closed",
+                    color = portColor, fontSize = 10.sp, textAlign = TextAlign.Center,
+                )
+            }
         }
         // Climate: cabin preconditioning. status[4] tells us if it's running, so the Climate
         // button fills (gold live / gray stale) while on — the same state-matching highlight the

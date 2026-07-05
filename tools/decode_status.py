@@ -158,6 +158,8 @@ def decode_status(s):
         "locked": bool(s[2] & 0xF0),
         "frunk_open": (s[2] & 0x08) == 0,
         "hatch_open": (s[2] & 0x04) == 0,
+        "charge_port_open": (s[2] & 0x01) == 0,  # schema bit; 0 on every capture — confirm on-vehicle
+
         "door_open": (s[1] & 0x0F) != 0x0F,
         "window_open": (s[3] & 0x0F) != 0x0F,
         "climate_on": 1 <= ((s[4] & 0x3C) >> 2) <= 4,  # [4] preconditioning enum 1..4 = climate on
