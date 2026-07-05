@@ -73,6 +73,7 @@ import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.BuildConfig
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
+import org.fivesevenfive.wearvian.service.FullVehicleStatus
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.util.Units
 
@@ -300,9 +301,12 @@ private fun ClosuresPage(
         // is NOT in that frame (cloud-only), so it has no live indicator. A stale (persisted)
         // state still lights the state-matching button, just dimmed (gray, via [stale]).
         val stale = status.valid && !status.live
+        // Per-closure command feedback (opening/closing throb + disable-when-not-allowed) from the
+        // full status — inert (all IDLE) until an on-vehicle session confirms the watch gets it.
+        val full by FullVehicleStatus.state.collectAsStateWithLifecycle()
         ClosureRow("Frunk", Cmd.OPEN_FRUNK, Cmd.CLOSE_FRUNK,
             "OPEN_FRUNK", "CLOSE_FRUNK", inFlight, onCommand,
-            open = status.frunkOpen, stateKnown = status.valid, stale = stale,
+            open = status.frunkOpen, stateKnown = status.valid, stale = stale, motion = full.frunk,
             iconOpenRes = R.drawable.ic_tile_frunk_open, iconClosedRes = R.drawable.ic_tile_frunk_close)
         // Rear closure: R1S liftgate (open + close) vs R1T tailgate (open only — there is no
         // tailgate-close command). The 0x1c rear-closure bit is model-agnostic, so liftgateOpen
@@ -310,12 +314,12 @@ private fun ClosuresPage(
         if (isTruck) {
             ClosureRow("Tailgate", Cmd.OPEN_TAILGATE, null,
                 "OPEN_TAILGATE", null, inFlight, onCommand,
-                open = status.liftgateOpen, stateKnown = status.valid, stale = stale,
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale, motion = full.tailgate,
                 iconOpenRes = R.drawable.ic_tile_hatch_open, iconClosedRes = R.drawable.ic_tile_hatch_close)
         } else {
             ClosureRow("Hatch", Cmd.OPEN_LIFTGATE, Cmd.CLOSE_LIFTGATE,
                 "OPEN_LIFTGATE", "CLOSE_LIFTGATE", inFlight, onCommand,
-                open = status.liftgateOpen, stateKnown = status.valid, stale = stale,
+                open = status.liftgateOpen, stateKnown = status.valid, stale = stale, motion = full.liftgate,
                 iconOpenRes = R.drawable.ic_tile_hatch_open, iconClosedRes = R.drawable.ic_tile_hatch_close)
         }
         // Windows: OPEN_ALL_WINDOWS (0x15) vents/opens all, CLOSE (0x16) closes. Re-enabled
@@ -323,11 +327,12 @@ private fun ClosuresPage(
         ClosureRow("Windows", Cmd.OPEN_ALL_WINDOWS, Cmd.CLOSE_ALL_WINDOWS,
             "OPEN_ALL_WINDOWS", "CLOSE_ALL_WINDOWS", inFlight, onCommand,
             open = status.anyWindowOpen, stateKnown = status.valid, stale = stale, upOpens = false,
-            icon = Icons.Filled.Window)
-        // Charge-port door state is NOT in the 0x1c frame (cloud-only) — no live indicator.
+            motion = full.windows, icon = Icons.Filled.Window)
+        // Charge-port door: state isn't in the 0x1c push, but the full status has it (charge-port
+        // door next-action) — inert until on-vehicle, then it throbs/disables like the others.
         ClosureRow("Charge", Cmd.OPEN_CHARGE_PORT, Cmd.CLOSE_CHARGE_PORT,
             "OPEN_CHARGE_PORT", "CLOSE_CHARGE_PORT", inFlight, onCommand,
-            icon = Icons.Filled.Bolt)
+            motion = full.chargePortDoor, icon = Icons.Filled.Bolt)
     }
 }
 
@@ -355,6 +360,8 @@ private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, on
         val live = status.live
         val primary = if (live) Color.White else DIM
         val charging = status.chargeState == VehicleStatus.ChargeState.CHARGING
+        // Charge-port state comes from the full status (not the 0x1c push) — inert until on-vehicle.
+        val full by FullVehicleStatus.state.collectAsStateWithLifecycle()
         if (status.valid && status.socPercent != null) {
             // SoC hero — battery icon bolts + golds while charging.
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -391,6 +398,19 @@ private fun ChargeStatusPage(inFlight: Set<Int>, status: VehicleStatus.State, on
             }
         } else {
             Text("No vehicle data", color = DIM, fontSize = 12.sp, textAlign = TextAlign.Center)
+        }
+        // Charge-port state (from the full status; hidden until on-vehicle populates it).
+        if (full.valid && full.chargePort != FullVehicleStatus.ChargePort.UNKNOWN) {
+            val (txt, col) = when (full.chargePort) {
+                FullVehicleStatus.ChargePort.OPEN -> "Charge port open" to GOLD
+                FullVehicleStatus.ChargePort.CLOSED -> "Charge port closed" to primary
+                FullVehicleStatus.ChargePort.OPENING -> "Charge port opening…" to primary
+                FullVehicleStatus.ChargePort.CLOSING -> "Charge port closing…" to primary
+                FullVehicleStatus.ChargePort.IN_TRANSITION -> "Charge port moving…" to primary
+                FullVehicleStatus.ChargePort.FAULT -> "Charge port fault" to (if (live) WARN else DIM)
+                FullVehicleStatus.ChargePort.UNKNOWN -> "" to primary
+            }
+            Text(txt, color = if (live) col else DIM, fontSize = 10.sp, textAlign = TextAlign.Center)
         }
         // Climate: cabin preconditioning. status[4] tells us if it's running, so the Climate
         // button fills (gold live / gray stale) while on — the same state-matching highlight the
@@ -531,6 +551,11 @@ private fun ClosureRow(
     stateKnown: Boolean = false,
     stale: Boolean = false,
     upOpens: Boolean = true,
+    // Live command feedback from the full status ([FullVehicleStatus], inert until on-vehicle): the
+    // in-progress direction throbs ("opening/closing"), and a direction the vehicle reports as
+    // not-allowed/faulted is disabled. IDLE (the default, and whenever we have no full status) leaves
+    // both buttons enabled and quiet — i.e. exactly today's behaviour.
+    motion: FullVehicleStatus.Motion = FullVehicleStatus.Motion.IDLE,
     // Leading glyph is EITHER a static Material [icon] (windows, charge) OR a state-reflecting pair
     // of vector drawables ([iconOpenRes]/[iconClosedRes]) — the frunk & rear car art, showing the
     // open silhouette when that closure is open, mirroring the tile. Exactly one form is supplied.
@@ -583,9 +608,13 @@ private fun ClosureRow(
                 Spacer(Modifier.size(CLOSURE_BTN))
                 return
             }
+            val blocked = if (opens) motion == FullVehicleStatus.Motion.OPEN_BLOCKED
+                else motion == FullVehicleStatus.Motion.CLOSE_BLOCKED
+            val moving = if (opens) motion == FullVehicleStatus.Motion.OPENING
+                else motion == FullVehicleStatus.Motion.CLOSING
             RoundIcon(glyph, if (opens) "Open $name" else "Close $name", Color.White, CLOSURE_BTN,
-                busy = code in inFlight, active = stateKnown && open == opens,
-                activeFill = if (stale) DIM else Color.White) {
+                busy = code in inFlight || moving, active = stateKnown && open == opens,
+                activeFill = if (stale) DIM else Color.White, enabled = !blocked) {
                 onCommand(code, label)
             }
         }

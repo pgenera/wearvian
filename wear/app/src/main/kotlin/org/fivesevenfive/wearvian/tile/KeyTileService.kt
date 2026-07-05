@@ -43,13 +43,14 @@ import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
 
 /**
- * A Wear Tile: the key in the center, ringed by six controls — unlock/lock, frunk open/close,
- * hatch open/close — laid out as a hexagon:
+ * A Wear Tile: the key in the center, ringed by six controls, laid out as a hexagon. Frunk and the
+ * rear closure are single state-aware TOGGLES (we know open/closed from 0x1c), which frees two slots
+ * for window vent/close vs. the old open+close pairs:
  *
  * ```
- *        unlock        lock
- *   frunk‹open›  KEY  frunk‹close›
- *        hatch‹open›  hatch‹close›
+ *        unlock          lock
+ *   frunk‹tog›  KEY  hatch‹tog›
+ *        window‹vent›  window‹close›
  * ```
  *
  * Tapping a control:
@@ -77,16 +78,23 @@ class KeyTileService : TileService() {
         // forceR1t is the debug test override (Settings page); honored here so the tile matches the app.
         val isTruck = VehicleModel.fromVin(EnrollmentStore(this).load()?.vin.orEmpty()).isTruck ||
             SettingsStore(this).forceR1t
-        // A LoadAction reloads the tile and reports the tapped element here.
+        // A LoadAction reloads the tile and reports the tapped element here. Frunk & hatch are single
+        // state-aware TOGGLES now (we know open/closed from 0x1c): tap opens if closed, closes if open
+        // — freeing two ring slots for window vent/close. Unknown state defaults to open (the usual
+        // intent); the R1T tailgate is open-only (no close command exists).
+        val rear = VehicleStatus.state.value
         when (requestParams.currentState.lastClickableId) {
             ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")
             ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
-            ID_FRUNK_OPEN -> dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
-            ID_FRUNK_CLOSE -> dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
-            ID_HATCH_OPEN ->
+            ID_FRUNK ->
+                if (rear.valid && rear.frunkOpen) dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
+                else dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
+            ID_HATCH ->
                 if (isTruck) dispatch(Cmd.OPEN_TAILGATE, "OPEN_TAILGATE")
+                else if (rear.valid && rear.liftgateOpen) dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE")
                 else dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
-            ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE") // R1S only (no truck close button)
+            ID_WINDOW_VENT -> dispatch(Cmd.OPEN_ALL_WINDOWS, "OPEN_ALL_WINDOWS")
+            ID_WINDOW_CLOSE -> dispatch(Cmd.CLOSE_ALL_WINDOWS, "CLOSE_ALL_WINDOWS")
         }
 
         // Gold when the key is armed (active OR passively power-saving), not only while running.
@@ -122,29 +130,27 @@ class KeyTileService : TileService() {
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
-            // middle: frunk open / KEY / frunk close
+            // middle: frunk toggle / KEY / rear-closure toggle. Each toggle shows the current state
+            // (open icon + filled when open, closed icon otherwise) and flips it on tap. The rear is
+            // the R1T tailgate or R1S hatch; liftgateOpen is the rear-closure state for both bodies.
             .addContent(
                 Row.Builder()
                     .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
-                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, inState(st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_FRUNK, if (st.frunkOpen) ICON_FRUNK_OPEN else ICON_FRUNK_CLOSE, inState(st.frunkOpen), st.live, cmdBtn, cmdIcon))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
                     .addContent(keyButton(keyArmed, keyBtn, keyIcon))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
-                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, inState(!st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_HATCH, if (st.liftgateOpen) ICON_HATCH_OPEN else ICON_HATCH_CLOSE, inState(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
-            // bottom: rear closure. R1T tailgate = open only (no tailgate-close command exists);
-            // R1S hatch = open + close. liftgateOpen is the rear-closure state for both bodies.
+            // bottom: windows — vent (open) + close, for both bodies. Vent fills when a window is
+            // open, close fills when all are closed (the state-matching fill the app uses).
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, inState(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
-                    .apply {
-                        if (!isTruck) {
-                            addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, inState(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
-                        }
-                    }
+                    .addContent(commandButton(ID_WINDOW_VENT, ICON_WINDOW_VENT, inState(st.anyWindowOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
+                    .addContent(commandButton(ID_WINDOW_CLOSE, ICON_WINDOW_CLOSE, inState(!st.anyWindowOpen), st.live, cmdBtn, cmdIcon))
                     .build(),
             )
             .build()
@@ -176,6 +182,8 @@ class KeyTileService : TileService() {
             .addIdToImageMapping(ICON_FRUNK_CLOSE, drawable(R.drawable.ic_tile_frunk_close))
             .addIdToImageMapping(ICON_HATCH_OPEN, drawable(R.drawable.ic_tile_hatch_open))
             .addIdToImageMapping(ICON_HATCH_CLOSE, drawable(R.drawable.ic_tile_hatch_close))
+            .addIdToImageMapping(ICON_WINDOW_VENT, drawable(R.drawable.ic_tile_window_vent))
+            .addIdToImageMapping(ICON_WINDOW_CLOSE, drawable(R.drawable.ic_tile_window_close))
             .build()
         return immediate(res)
     }
@@ -289,16 +297,17 @@ class KeyTileService : TileService() {
 
     private companion object {
         // Bumped when the resource (icon) set changes so the system refreshes the tile images.
-        // "3": frunk/hatch drawables replaced with the car-silhouette art (0.9.1) — the renderer
-        // caches resources by this version, so the swap only shows once the version changes.
-        const val RESOURCES_VERSION = "3"
+        // "3": frunk/hatch drawables replaced with the car-silhouette art (0.9.1).
+        // "4": added window vent/close icons for the single-toggle redesign (0.9.6). The renderer
+        // caches resources by this version, so new icons only show once the version changes.
+        const val RESOURCES_VERSION = "4"
         const val ID_KEY = "key"
         const val ID_UNLOCK = "cmd_unlock"
         const val ID_LOCK = "cmd_lock"
-        const val ID_FRUNK_OPEN = "cmd_frunk_open"
-        const val ID_FRUNK_CLOSE = "cmd_frunk_close"
-        const val ID_HATCH_OPEN = "cmd_hatch_open"
-        const val ID_HATCH_CLOSE = "cmd_hatch_close"
+        const val ID_FRUNK = "cmd_frunk"   // single state-aware toggle (open if closed, close if open)
+        const val ID_HATCH = "cmd_hatch"   // rear closure toggle (R1S hatch / R1T tailgate open-only)
+        const val ID_WINDOW_VENT = "cmd_window_vent"
+        const val ID_WINDOW_CLOSE = "cmd_window_close"
         const val ICON_KEY = "ic_key"
         const val ICON_UNLOCK = "ic_unlock"
         const val ICON_LOCK = "ic_lock"
@@ -306,6 +315,8 @@ class KeyTileService : TileService() {
         const val ICON_FRUNK_CLOSE = "ic_frunk_close"
         const val ICON_HATCH_OPEN = "ic_hatch_open"
         const val ICON_HATCH_CLOSE = "ic_hatch_close"
+        const val ICON_WINDOW_VENT = "ic_window_vent"
+        const val ICON_WINDOW_CLOSE = "ic_window_close"
         const val GOLD = 0xFFFEDD5C.toInt()
         const val BLACK = 0xFF000000.toInt()
         const val WHITE = 0xFFFFFFFF.toInt()

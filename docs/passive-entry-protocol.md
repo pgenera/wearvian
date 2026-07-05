@@ -824,3 +824,35 @@ not a sense bug. So charge-port state is **not in this push** — it's only in t
 message (`CHARGE_PORT_DOOR_OPEN_CLOSED` / `CHARGE_PORT_CONTROL_STATE`) or cloud. The wiring was
 reverted in 0.9.5. Anti-theft alarm (`[5]`0x80) was likewise never observed set. Net: the plaintext
 push carries exactly the `[0..10]` fields we decode; the rest of the schema needs the poll message.
+
+## 2026-07-05 (pm) — the FULL vehicle status (type-0x18) and why the watch doesn't get it yet
+
+The 16-byte 0x1c push is the *compact* status. There's also a **full status**: the same
+SCHEMA_VERSION_1 layout but all 35 bytes (indices 0..34), including the per-closure **NEXT_ACTION**
+states (opening / closing / not-allowed / faulted / trailer-detected) and **CHARGE_PORT_CONTROL_STATE**.
+
+**How it flows (btsnoop + decompile):** the vehicle *pushes* it as a **type-0x18** message on the
+**VEHICLE_MESSAGE / P** characteristic (`5ae32b92…` = our `CHAR_ACTIVE_COMMAND`, the same channel we
+already write PhoneProfile to and subscribe). It is **not** an explicit request/response — the only
+phone→vehicle writes on P are PhoneProfile (`1080`) and SensorInfo (`01`), both of which we already
+send. In the passive-unlock-drive capture the phone app got 13 of these, ~event-driven. Each is a
+**126-byte GCM-encrypted** frame `[18 01][12B IV][ct+tag]`; decrypting (same key schedule as our
+active commands) yields the plaintext, which per `jh.q.j`/`m6/b.A` is `[body][32B HMAC-SHA256 trailer]`
+with the 35-byte status at **body offset 4** (HMAC over `pnonce‖vnonce‖body`).
+
+**Why the watch doesn't have it yet (the open on-vehicle question):** in every one of *our* watch
+captures the vehicle instead sends **20-byte** `1801` frames — below the 30-byte GCM minimum, so
+`ActiveCommandFrames.decryptInbound` returns null (they log as "STATUS undecryptable … compact
+beacon"). The phone app gets the 126-byte full frames on the same characteristic. So the difference is
+session/subtype, prime suspect `keyDeviceSubtype=WATCH` (which we already know changes vehicle
+behaviour — it skips passive lock/unlock). Resolving it needs an on-vehicle probe (e.g. phone-subtype
+enrollment, or a PhoneProfile capability byte).
+
+**What shipped (0.9.6, speculative + gated):** `service/FullVehicleStatus.kt` decrypts+parses the full
+status if we ever receive a decryptable frame, and feeds the UI (per-closure opening/closing throb +
+disable-when-not-allowed; charge-port state on the charge page). It is **inert** until such a frame
+arrives (`Full.valid` stays false → the UI is exactly the 0x1c-only behaviour). `onActiveChannelMessage`
+logs every status frame's size/shape so an on-vehicle session is fully diagnosable from logs alone:
+a `>=30B` frame here (or a "FULL-STATUS" line) would confirm the watch *can* get it. The per-closure
+NEXT_ACTION bit-assembly follows `m6/b.A` but is UNVALIDATED against real frames — the raw per-field
+values are logged so the masks/offset can be confirmed on-vehicle.

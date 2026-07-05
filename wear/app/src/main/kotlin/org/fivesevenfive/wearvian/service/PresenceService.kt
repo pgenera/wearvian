@@ -644,6 +644,7 @@ class PresenceService : Service() {
         // is closed and we don't briefly hold two clients to the same device.)
         scope.launch { stopBle(); if (seenDeparture) passiveLink.arm(this@PresenceService) }
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
+        FullVehicleStatus.clear()
         driving = false; VehicleSession.heartbeatsPaused = false // leaving active — clear driving-doze
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
@@ -810,6 +811,7 @@ class PresenceService : Service() {
         driving = false; VehicleSession.heartbeatsPaused = false // never leak the pause to a future session
         PresenceStatus.reset()
         VehicleStatus.clear() // keep last-known state but mark it stale (no session confirming it)
+        FullVehicleStatus.clear()
         TileRefresher.refresh(this) // active/passive→off: key no longer armed; refresh the tile
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }

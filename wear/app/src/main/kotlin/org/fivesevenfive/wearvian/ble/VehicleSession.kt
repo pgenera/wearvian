@@ -19,6 +19,7 @@ import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.service.PresenceStatus
+import org.fivesevenfive.wearvian.service.FullVehicleStatus
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.util.DebugLog
@@ -407,22 +408,28 @@ class VehicleSession(
         val v = vNonce
         when (value.firstOrNull()) {
             ActiveCommandFrames.TYPE_VEHICLE_STATUS -> {
-                // Decrypted vehicle status (lock/closure/charge) — sensitive usage data, so don't
-                // log it on production builds. (Closure state still reaches the UI via 0x1c.)
-                if (BuildConfig.PRODUCTION) return
+                // The vehicle streams status as a type-0x18 message here. Two shapes are known:
+                //  - our WATCH session gets a SHORT ~20-byte frame (below the 30-byte GCM minimum, so
+                //    decryptInbound returns null) — a compact beacon we can't parse;
+                //  - the phone app gets the FULL ~126-byte encrypted frame → decrypts to the 35-byte
+                //    SCHEMA_VERSION_1 status ([FullVehicleStatus]).
+                // We attempt decrypt on every frame. If it ever succeeds on the watch, the full-status
+                // pipeline lights up (and logs itself). Whether that happens is the open on-vehicle
+                // question, so log the size/shape of EVERY status frame so it's diagnosable from logs.
                 val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
-                when {
-                    pt == null -> {
-                        if (value.toHexString() != lastStatusHex) {
-                            lastStatusHex = value.toHexString()
-                            DebugLog.ble("←", "$label/0x20", "STATUS raw ${value.toHexString()}${probe(value)}", value.size)
-                        }
-                    }
-                    pt.toHexString() != lastStatusHex -> {
+                if (pt != null) {
+                    FullVehicleStatus.update(pt, logRaw = !BuildConfig.PRODUCTION)
+                    if (!BuildConfig.PRODUCTION && pt.toHexString() != lastStatusHex) {
                         lastStatusHex = pt.toHexString()
-                        DebugLog.ble("←", "$label/0x20", "STATUS pt=${pt.toHexString()}", pt.size)
+                        DebugLog.ble("←", "$label/0x20", "FULL-STATUS ${value.size}B → pt ${pt.size}B", value.size)
                     }
-                    // else: identical to the last status — suppress the repeat.
+                } else if (!BuildConfig.PRODUCTION && value.toHexString() != lastStatusHex) {
+                    // Undecryptable status frame — almost always the compact 20-byte beacon. Log the
+                    // size prominently: seeing a large (>=30B) frame here would mean the watch CAN get
+                    // the full status (the thing we're waiting to confirm on-vehicle).
+                    lastStatusHex = value.toHexString()
+                    val note = if (value.size >= ActiveCommandFrames.MIN_FRAME_LEN) " [DECRYPT FAILED on a full-size frame!]" else " [compact beacon, too short to decrypt]"
+                    DebugLog.ble("←", "$label/0x20", "STATUS undecryptable ${value.size}B ${value.toHexString()}$note${probe(value)}", value.size)
                 }
             }
             ActiveCommandFrames.TYPE_ACTIVE_CMD_RESPONSE -> {
