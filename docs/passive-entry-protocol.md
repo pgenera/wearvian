@@ -816,8 +816,11 @@ closed; LOCK_UNLOCK → **0 = unlocked**, else locked.
 - `[6]` charge code **`0x_8` = user_stopped** (schema VEHICLE_CHARGING_STATUS 8), resolving the
   "unidentified 0x_8" note above — mapped to `PLUGGED_IDLE` ("Plugged in").
 
-**Not surfaced (schema field present but the compact push doesn't populate it):** `[2]` bit0
-charge-port-door and bit1 tonneau read 0 ("open") on every capture even with the port closed, so the
-push appears to leave them unset; anti-theft alarm (`[5]`0x80) was never observed set. These need an
-on-vehicle capture that actually toggles them before we trust/surface them. This is the one place a
-targeted on-vehicle capture (last resort) would still add value — everything else is now named.
+**Not populated by the compact push (CONFIRMED on-vehicle 2026-07-05):** `[2]` bit0 charge-port-door
+and bit1 tonneau are stuck at 0. 0.9.4-debug wired bit0 to a "Charge port open/closed" line on the
+charge page; on a *closed* port it showed **"open"** (bit 0) and never changed — and the sibling
+frunk/liftgate bits use the identical masked-0 = open sense and work, so this is an unpopulated bit,
+not a sense bug. So charge-port state is **not in this push** — it's only in the poll/full-status
+message (`CHARGE_PORT_DOOR_OPEN_CLOSED` / `CHARGE_PORT_CONTROL_STATE`) or cloud. The wiring was
+reverted in 0.9.5. Anti-theft alarm (`[5]`0x80) was likewise never observed set. Net: the plaintext
+push carries exactly the `[0..10]` fields we decode; the rest of the schema needs the poll message.
