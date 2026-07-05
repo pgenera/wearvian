@@ -418,7 +418,7 @@ class VehicleSession(
                 // question, so log the size/shape of EVERY status frame so it's diagnosable from logs.
                 val pt = if (p != null && v != null) ActiveCommandFrames.decryptInbound(sharedSecret, p, v, value) else null
                 if (pt != null) {
-                    FullVehicleStatus.update(pt, logRaw = !BuildConfig.PRODUCTION)
+                    FullVehicleStatus.update(pt, log = !BuildConfig.PRODUCTION)
                     if (!BuildConfig.PRODUCTION && pt.toHexString() != lastStatusHex) {
                         lastStatusHex = pt.toHexString()
                         DebugLog.ble("←", "$label/0x20", "FULL-STATUS ${value.size}B → pt ${pt.size}B", value.size)

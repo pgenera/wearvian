@@ -63,17 +63,19 @@ object FullVehicleStatus {
      * derived field — so on-vehicle we can confirm the offset/masks from logs without a phone snoop.
      * No-op (with a log) when the plaintext is too short to hold the schema.
      */
-    fun update(plaintext: ByteArray, logRaw: Boolean = true) {
-        // The raw plaintext is sensitive usage data (lock/closure/charge) — only dump it on debug
-        // builds. The derived state-NAME summary below is safe to log always (per the logging rules).
-        if (logRaw) DebugLog.add("fullstatus: plaintext ${plaintext.size}B ${plaintext.toHex()}")
+    fun update(plaintext: ByteArray, log: Boolean = true) {
+        // Parsing always runs (it feeds the UI); ALL of the diagnostic logging is gated by [log] so
+        // it's present on debug/debugRelease builds (which we ship to testing) but silent on the
+        // production release — the plaintext + derived state are sensitive usage data / dev noise.
+        // Callers pass `!BuildConfig.PRODUCTION`.
+        if (log) DebugLog.add("fullstatus: plaintext ${plaintext.size}B ${plaintext.toHex()}")
         if (plaintext.size < STATUS_OFFSET + STATUS_LEN) {
-            DebugLog.add("fullstatus: too short for schema (${plaintext.size}B, need ${STATUS_OFFSET + STATUS_LEN}B); not parsed")
+            if (log) DebugLog.add("fullstatus: too short for schema (${plaintext.size}B, need ${STATUS_OFFSET + STATUS_LEN}B); not parsed")
             return
         }
         val s = IntArray(STATUS_LEN) { plaintext[STATUS_OFFSET + it].toInt() and 0xff }
         val version = s[0] and 0xf0
-        if (version != 0x10) {
+        if (version != 0x10 && log) {
             // Not fatal — parse anyway, but flag it: the offset or format may differ from m6/b.A.
             DebugLog.add("fullstatus: WARNING schema-version byte s[0]=0x%02x (expected hi-nibble 0x10) — offset may be off".format(s[0]))
         }
@@ -100,7 +102,7 @@ object FullVehicleStatus {
             chargePortDoor = chargePortDoorMotionOf(chargePortDoorRaw),
         )
         _state.value = full
-        DebugLog.add(
+        if (log) DebugLog.add(
             "fullstatus: v=0x%02x cpDoor=%s cpState=%s frunk=%s(%d) liftgate=%s(%d) tailgate=%s(%d) windows=%s(%d) cpDoorAct=%s(%d)".format(
                 version, if (chargePortDoorOpen) "open" else "closed", full.chargePort,
                 full.frunk, frunkRaw, full.liftgate, liftgateRaw, full.tailgate, tailgateRaw,
