@@ -856,3 +856,35 @@ logs every status frame's size/shape so an on-vehicle session is fully diagnosab
 a `>=30B` frame here (or a "FULL-STATUS" line) would confirm the watch *can* get it. The per-closure
 NEXT_ACTION bit-assembly follows `m6/b.A` but is UNVALIDATED against real frames — the raw per-field
 values are logged so the masks/offset can be confirmed on-vehicle.
+
+## 2026-07-08 — on-vehicle test of the full status: watch does NOT get it (WATCH-subtype theory DISPROVEN)
+
+Tested 0.9.7's full-status pipeline on-vehicle (adb logcat, VIN …021246). Result: **the watch never
+receives the 126-byte full status** — and the reasons we'd guessed above are wrong.
+
+What the logs showed (a clean lock→unlock cycle):
+- The device is enrolled as a **PHONE**, not a watch: `asWatch=false, forceWatch=false` →
+  `presence: key acts as PHONE — full proximity`. So the earlier **`keyDeviceSubtype=WATCH` suspicion
+  is DISPROVEN** — a PHONE-subtype key still doesn't get the full status.
+- 5 links up (PK + S1–S4). `LOCK` and `UNLOCK` both sent, both **ACK'd** (`17 01` CommandReturnValue
+  on PK/0x20), and both reflected in the **0x1c push** (`10ffac0f…` locked → `100f0c0f…` unlocked).
+- **Exactly one** type-0x18 frame the entire session: a **20-byte compact beacon**
+  `1801 758939a0 …` at connect. **Zero** 126-byte full frames — even across two state changes.
+  `decryptInbound` correctly returned null on it (below the 30-byte GCM minimum) → logged
+  "compact beacon, too short to decrypt".
+
+Conclusions:
+- On our watch session the vehicle sends the **compact 20-byte 0x20 beacon + the plaintext 0x1c push**,
+  and withholds the 126-byte full status. State changes ride 0x1c, which we already parse.
+- **Root cause is UNKNOWN.** Disproven: WATCH subtype (we're PHONE). Doubted (by the owner): a
+  CCC-vs-legacy session difference. There is also **no poll/request** to send — the protocol has no
+  status request-type (`l60.m0` = auth/command/passive) and no status-request opcode, and the phone
+  app gets the full status *pushed* (its only P-channel writes are PhoneProfile + SensorInfo).
+- The mechanism itself is fully understood (type-0x18 GCM on P → decrypt → schema at body offset 4),
+  so `FullVehicleStatus.kt` stays **inert on branch `wearvian-0x1c-schema`**: if a decryptable frame
+  ever arrives it lights up and logs. We just don't know how to make the vehicle send us one.
+
+Net for a future revisit: don't re-investigate WATCH subtype or an app-side poll. The open question is
+purely *why the vehicle chooses the compact beacon for our session* — likely a session-class/handshake
+detail we haven't matched, and probably only answerable by diffing a full official-app session against
+ours on the same vehicle.
