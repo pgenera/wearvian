@@ -15,6 +15,7 @@ import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
 import org.fivesevenfive.wearvian.store.DebugOverrides
@@ -222,9 +223,12 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     // Key off, or passive (running but no live session): one-shot
                     // connect→handshake→command. Fine for lock/unlock (the security module answers
-                    // half-asleep). If passive, also nudge the service back to active so the next
-                    // interaction has a live session ready.
-                    if (PresenceService.passive.value) PresenceService.start(getApplication())
+                    // half-asleep). While parked nearby, an explicit UNLOCK means "I'm using the car"
+                    // → also reactivate the key so the next interaction has a live session ready. Other
+                    // commands (lock as you leave, closures) stay in power-save — one-shot only.
+                    if (PresenceService.parkedNearby.value && commandCode == ActiveCommandFrames.Cmd.UNLOCK_ALL) {
+                        PresenceService.start(getApplication())
+                    }
                     withContext(Dispatchers.IO) {
                         ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
                     }

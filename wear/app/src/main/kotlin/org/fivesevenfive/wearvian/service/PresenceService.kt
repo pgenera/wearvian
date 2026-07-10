@@ -168,6 +168,8 @@ class PresenceService : Service() {
                         delay(DEPART_DEBOUNCE_MS)
                         seenDeparture = true
                         settings.passiveSeenDeparture = true // keep the persisted sub-state current
+                        _parkedNearby.value = false // no longer parked beside it — now waiting for return
+                        updateNotification(PASSIVE_TEXT) // relabel from "Parked nearby" → "Waiting for vehicle"
                         // Car has actually left → now arm the autoConnect so its RETURN reconnects PK
                         // directly. We don't arm it while parked nearby, or it would immediately
                         // reconnect and bounce us straight out of passive.
@@ -318,7 +320,7 @@ class PresenceService : Service() {
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); passive = false; _passive.value = false }
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); passive = false; _passive.value = false; _parkedNearby.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
@@ -328,7 +330,7 @@ class PresenceService : Service() {
                     // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
                     // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
                     DebugLog.add("presence: watch unlocked — restoring passive idle")
-                    enterPassive() // sets PASSIVE_TEXT itself
+                    enterPassive() // sets its own passive notification text (parked-nearby vs waiting)
                 } else {
                     DebugLog.add("presence: watch unlocked — restoring active presence")
                     startActivePresence()
@@ -634,6 +636,7 @@ class PresenceService : Service() {
         // restore, use the PERSISTED sub-state instead — a fresh process has no link, which recompute
         // would read as "departed" and arm an autoConnect that bounces us active next to the car.
         seenDeparture = restoreSeenDeparture ?: !PresenceStatus.connected.value
+        _parkedNearby.value = !seenDeparture // in range → parked nearby; gone → waiting for return
         // Persist so a near-instant restart (app upgrade) can resume passive with the same sub-state.
         settings.passiveIdle = true
         settings.passiveSeenDeparture = seenDeparture
@@ -648,7 +651,7 @@ class PresenceService : Service() {
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching, autoConnect=${seenDeparture}")
-        updateNotification(PASSIVE_TEXT)
+        updateNotification(if (seenDeparture) PASSIVE_TEXT else PARKED_TEXT)
         TileRefresher.refresh(this) // active→passive: tile state changed
         return true
     }
@@ -658,6 +661,7 @@ class PresenceService : Service() {
         if (!passive) return
         passive = false
         _passive.value = false
+        _parkedNearby.value = false
         departJob?.cancel()
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm() // hand PK off to the full session
@@ -800,6 +804,7 @@ class PresenceService : Service() {
         stopping = true
         _running.value = false
         _passive.value = false
+        _parkedNearby.value = false
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm()
@@ -849,6 +854,7 @@ class PresenceService : Service() {
         private const val TILE_REFRESH_DEBOUNCE_MS = 3_000L
         private const val LOCKED_TEXT = "Watch locked"
         private const val PASSIVE_TEXT = "Waiting for vehicle"
+        private const val PARKED_TEXT = "Parked nearby"
         private const val DRIVING_TEXT = "In gear · presence paused"
         private const val WATCH_DOZE_TEXT = "Standby · open a door to drive"
         // Watch-mode burst presence: monitor re-eval cadence, and how long a burst holds after the
@@ -864,6 +870,12 @@ class PresenceService : Service() {
         /** Live "is the service idling passively" (running, BLE down, scanning for approach). */
         private val _passive = MutableStateFlow(false)
         val passive: StateFlow<Boolean> = _passive
+
+        /** Sub-state of [passive]: idling but the car is still in range ("parked nearby"), as opposed
+         *  to departed / waiting-for-return. Drives the "Parked nearby" label and the unlock-reactivates
+         *  policy — an explicit unlock while parked nearby means "I'm using the car" → wake to active. */
+        private val _parkedNearby = MutableStateFlow(false)
+        val parkedNearby: StateFlow<Boolean> = _parkedNearby
 
         const val ACTION_GO_PASSIVE = "org.fivesevenfive.wearvian.GO_PASSIVE"
 
