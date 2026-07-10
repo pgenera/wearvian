@@ -9,6 +9,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -148,7 +149,7 @@ fun ControlScreens(
         ) { index ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 when (pages[index]) {
-                    Page.KEY -> KeyPage(state, status, onTogglePresence, onCommand)
+                    Page.KEY -> KeyPage(state, status, onTogglePresence, onStartPassive, onCommand)
                     Page.CLOSURES -> ClosuresPage(state.inFlight, status, state.isTruck, onCommand)
                     Page.CHARGE -> ChargeStatusPage(state.inFlight, status, onCommand)
                     Page.ALARM -> AlarmPage(state.inFlight, onCommand)
@@ -168,6 +169,7 @@ private fun KeyPage(
     state: SetupUiState,
     status: VehicleStatus.State,
     onTogglePresence: (Boolean) -> Unit,
+    onStartPassive: () -> Unit,
     onCommand: (Int, String) -> Unit,
 ) {
     val armed = state.keyArmed
@@ -178,9 +180,12 @@ private fun KeyPage(
     ) {
         RoundIcon(
             icon = Icons.Filled.VpnKey,
-            desc = if (armed) "Deactivate key" else "Activate key",
+            desc = if (armed) "Deactivate key (long-press for passive)" else "Activate key (long-press for passive)",
             tint = if (armed) GOLD else Color.White,
             diameter = 60.dp,
+            // Long-press the key → drop to power-save (still armed). combinedClickable consumes the
+            // long-press so the finger-lift does NOT also fire onClick and toggle the key off.
+            onLongClick = onStartPassive,
             onClick = { onTogglePresence(!armed) },
         )
         // Key status text, flanked by small telemetry: estimated range on the left, cabin temp on
@@ -632,6 +637,7 @@ private fun LabeledIcon(
  * pulses its alpha — and taps are disabled until the command completes or times out,
  * then it returns to the steady idle graphic.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RoundIcon(
     icon: ImageVector,
@@ -644,6 +650,12 @@ private fun RoundIcon(
     activeFill: Color = Color.White,
     /** When false the button is non-tappable and dimmed (e.g. Unlock while the car is in gear). */
     enabled: Boolean = true,
+    /**
+     * Optional long-press action (e.g. long-press the key to drop to power-save). Uses
+     * [combinedClickable], which consumes the long-press so the finger lift afterwards does NOT
+     * also fire [onClick] — otherwise the release would immediately toggle the key back off.
+     */
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val alpha = if (busy) {
@@ -664,7 +676,7 @@ private fun RoundIcon(
     // state fills gray instead of white, so it reads as "last known, not confirmed".
     Box(
         Modifier.size(diameter).clip(CircleShape).background(if (active) activeFill else BTN_BG)
-            .clickable(enabled = !busy && enabled, onClick = onClick),
+            .combinedClickable(enabled = !busy && enabled, onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,
     ) {
         Image(
