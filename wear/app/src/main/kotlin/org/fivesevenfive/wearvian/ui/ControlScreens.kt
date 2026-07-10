@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Thermostat
@@ -81,6 +82,13 @@ private val GOLD = Color(0xFFFEDD5C)
 private val DIM = Color(0xFF9A9A9A)
 private val BTN_BG = Color(0xFF1C1C1C)
 private val WARN = Color(0xFFFF6B6B)
+
+/** Cord-connected but not actively drawing current (negotiating, scheduled, or user-stopped) →
+ *  shown as "Plugged in" on the key card, distinct from CHARGING ("Charging"). */
+private val PLUGGED_NOT_CHARGING = setOf(
+    VehicleStatus.ChargeState.STARTING,
+    VehicleStatus.ChargeState.PLUGGED_IDLE,
+)
 
 /** Control-surface pages, in order. SETTINGS is development-only; everything else ships.
  *  Climate lives on the CHARGE card; ALARM is the last shipping page. */
@@ -247,13 +255,17 @@ private fun KeyPage(
         if (status.valid) {
             val stateColor = if (status.live) Color.White else DIM
             val inGear = status.gear != VehicleStatus.Gear.PARK && status.gear != VehicleStatus.Gear.UNKNOWN
-            // Parked + actively charging: show "Charging" in place of the lock word (can't charge in gear).
+            // Parked + on the cord: show the charge state in place of the lock word (can't charge in
+            // gear). Actively charging → "Charging"; cord connected but not drawing (negotiating,
+            // scheduled, or user-stopped) → "Plugged in".
             val charging = !inGear && status.chargeState == VehicleStatus.ChargeState.CHARGING
+            val plugged = !inGear && status.chargeState in PLUGGED_NOT_CHARGING
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(
                     when {
                         inGear -> Icons.Filled.DirectionsCar
                         charging -> Icons.Filled.Bolt
+                        plugged -> Icons.Filled.Power
                         status.locked -> Icons.Filled.Lock
                         else -> Icons.Filled.LockOpen
                     },
@@ -268,6 +280,7 @@ private fun KeyPage(
                             else -> "Driving"
                         }
                         charging -> "Charging"
+                        plugged -> "Plugged in"
                         status.locked -> "Locked"
                         else -> "Unlocked"
                     },
