@@ -53,10 +53,25 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_PASSIVE_SEEN_DEPARTURE, false)
         set(value) = prefs.edit().putBoolean(KEY_PASSIVE_SEEN_DEPARTURE, value).apply()
 
+    /**
+     * The nonce of the last tile tap [org.fivesevenfive.wearvian.tile.KeyTileService] has already
+     * acted on. Each tile render stamps its command clickables with a fresh nonce; the tile only
+     * dispatches when the tapped clickable's nonce differs from this. Wear re-invokes onTileRequest
+     * for refreshes (scroll-into-view, our TileRefresher requestUpdate on 0x1c changes) and
+     * re-delivers the LAST click's state, so without this a stale lastClickableId re-fires the last
+     * command on every refresh — e.g. a lingering "unlock" firing as the user reaches for "lock".
+     * Persisted (not just in-process) so a tile-triggered process restart can't replay a stale tap.
+     * [Int.MIN_VALUE] = "nothing handled yet" (no live render nonce will collide with it in practice).
+     */
+    var lastTileClickNonce: Int
+        get() = prefs.getInt(KEY_LAST_TILE_CLICK_NONCE, Int.MIN_VALUE)
+        set(value) = prefs.edit().putInt(KEY_LAST_TILE_CLICK_NONCE, value).apply()
+
     private companion object {
         const val KEY_KEY_ARMED = "key_armed"
         const val KEY_FORCE_R1T = "force_r1t"
         const val KEY_PASSIVE_IDLE = "passive_idle"
         const val KEY_PASSIVE_SEEN_DEPARTURE = "passive_seen_departure"
+        const val KEY_LAST_TILE_CLICK_NONCE = "last_tile_click_nonce"
     }
 }

@@ -14,6 +14,10 @@ import androidx.wear.protolayout.LayoutElementBuilders.Row
 import androidx.wear.protolayout.LayoutElementBuilders.Spacer
 import androidx.wear.protolayout.LayoutElementBuilders.VERTICAL_ALIGN_CENTER
 import androidx.wear.protolayout.ModifiersBuilders.Clickable
+import androidx.wear.protolayout.StateBuilders
+import androidx.wear.protolayout.expression.AppDataKey
+import androidx.wear.protolayout.expression.DynamicBuilders.DynamicInt32
+import androidx.wear.protolayout.expression.DynamicDataBuilders.DynamicDataValue
 import androidx.wear.protolayout.ResourceBuilders.AndroidImageResourceByResId
 import androidx.wear.protolayout.ResourceBuilders.ImageResource
 import androidx.wear.protolayout.ResourceBuilders.Resources
@@ -41,6 +45,7 @@ import org.fivesevenfive.wearvian.store.SettingsStore
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
+import kotlin.random.Random
 
 /**
  * A Wear Tile: the key in the center, ringed by six controls — unlock/lock, frunk open/close,
@@ -77,17 +82,46 @@ class KeyTileService : TileService() {
         // forceR1t is the debug test override (Settings page); honored here so the tile matches the app.
         val isTruck = VehicleModel.fromVin(EnrollmentStore(this).load()?.vin.orEmpty()).isTruck ||
             SettingsStore(this).forceR1t
-        // A LoadAction reloads the tile and reports the tapped element here.
-        when (requestParams.currentState.lastClickableId) {
-            ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")
-            ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
-            ID_FRUNK_OPEN -> dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
-            ID_FRUNK_CLOSE -> dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
-            ID_HATCH_OPEN ->
-                if (isTruck) dispatch(Cmd.OPEN_TAILGATE, "OPEN_TAILGATE")
-                else dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
-            ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE") // R1S only (no truck close button)
+        // A LoadAction reloads the tile and reports the tapped element as lastClickableId — but so
+        // do REFRESHES (scroll-into-view, our TileRefresher.requestUpdate on 0x1c state changes),
+        // and the platform re-delivers the LAST click's State on those. Dispatching straight off
+        // lastClickableId therefore re-fires the last-tapped command on every refresh: if the last
+        // tap was UNLOCK, a status refresh as the user reaches for LOCK re-sends UNLOCK — the truck
+        // unlocks when lock was pressed. Guard with a per-render nonce (stamped on each command
+        // clickable, below) so a given tap dispatches exactly once: act only when the tapped
+        // clickable's nonce differs from the last one we consumed. Covers both platform behaviours —
+        // if a refresh clears the state, clickNonce is null and we skip; if it re-delivers the stale
+        // state, the nonce matches what we already handled and we skip.
+        val settings = SettingsStore(this)
+        val clickNonce = requestParams.currentState.keyToValueMapping[CLICK_NONCE_KEY]
+            ?.takeIf { it.hasIntValue() }?.intValue
+        val freshTap = clickNonce != null && clickNonce != settings.lastTileClickNonce
+        // Diagnostic: if a refresh re-delivers a command clickable we've already handled (or with no
+        // fresh nonce), we're seeing the replay bug in the wild — log it so the debug console proves
+        // whether this path fires without a real tap. Genuine taps still log via dispatch().
+        val clickedCmd = requestParams.currentState.lastClickableId.takeIf { it.startsWith("cmd_") }
+        if (clickedCmd != null && !freshTap) {
+            DebugLog.add("tile: ignored $clickedCmd — refresh replay (nonce=${clickNonce ?: "none"})")
         }
+        if (freshTap) {
+            settings.lastTileClickNonce = clickNonce!! // consume: refreshes replaying this tap now skip
+            when (requestParams.currentState.lastClickableId) {
+                ID_UNLOCK -> dispatch(Cmd.UNLOCK_ALL, "UNLOCK")
+                ID_LOCK -> dispatch(Cmd.LOCK_ALL, "LOCK")
+                ID_FRUNK_OPEN -> dispatch(Cmd.OPEN_FRUNK, "OPEN_FRUNK")
+                ID_FRUNK_CLOSE -> dispatch(Cmd.CLOSE_FRUNK, "CLOSE_FRUNK")
+                ID_HATCH_OPEN ->
+                    if (isTruck) dispatch(Cmd.OPEN_TAILGATE, "OPEN_TAILGATE")
+                    else dispatch(Cmd.OPEN_LIFTGATE, "OPEN_LIFTGATE")
+                ID_HATCH_CLOSE -> dispatch(Cmd.CLOSE_LIFTGATE, "CLOSE_LIFTGATE") // R1S only (no truck close button)
+            }
+        }
+
+        // Fresh nonce stamped on every command clickable in THIS render; a tap echoes it back in
+        // currentState so the guard above can tell a genuine press from a replayed refresh. Random
+        // (not sequential) so it survives this service being recycled between requests without a
+        // shared counter; a 1-in-2^32 collision with the stored nonce only costs one missed tap.
+        val renderNonce = Random.nextInt()
 
         // Gold when the key is armed (active OR passively power-saving), not only while running.
         val keyArmed = SettingsStore(this).keyArmed
@@ -116,9 +150,9 @@ class KeyTileService : TileService() {
             // top: unlock / lock
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, inState(!st.locked), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_UNLOCK, ICON_UNLOCK, inState(!st.locked), st.live, cmdBtn, cmdIcon, renderNonce))
                     .addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                    .addContent(commandButton(ID_LOCK, ICON_LOCK, inState(st.locked), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_LOCK, ICON_LOCK, inState(st.locked), st.live, cmdBtn, cmdIcon, renderNonce))
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
@@ -126,11 +160,11 @@ class KeyTileService : TileService() {
             .addContent(
                 Row.Builder()
                     .setVerticalAlignment(VERTICAL_ALIGN_CENTER)
-                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, inState(st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_FRUNK_OPEN, ICON_FRUNK_OPEN, inState(st.frunkOpen), st.live, cmdBtn, cmdIcon, renderNonce))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
                     .addContent(keyButton(keyArmed, keyBtn, keyIcon))
                     .addContent(Spacer.Builder().setWidth(dp(midGap)).build())
-                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, inState(!st.frunkOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_FRUNK_CLOSE, ICON_FRUNK_CLOSE, inState(!st.frunkOpen), st.live, cmdBtn, cmdIcon, renderNonce))
                     .build(),
             )
             .addContent(Spacer.Builder().setHeight(dp(rowGap)).build())
@@ -138,11 +172,11 @@ class KeyTileService : TileService() {
             // R1S hatch = open + close. liftgateOpen is the rear-closure state for both bodies.
             .addContent(
                 Row.Builder()
-                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, inState(st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                    .addContent(commandButton(ID_HATCH_OPEN, ICON_HATCH_OPEN, inState(st.liftgateOpen), st.live, cmdBtn, cmdIcon, renderNonce))
                     .apply {
                         if (!isTruck) {
                             addContent(Spacer.Builder().setWidth(dp(topGap)).build())
-                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, inState(!st.liftgateOpen), st.live, cmdBtn, cmdIcon))
+                            addContent(commandButton(ID_HATCH_CLOSE, ICON_HATCH_CLOSE, inState(!st.liftgateOpen), st.live, cmdBtn, cmdIcon, renderNonce))
                         }
                     }
                     .build(),
@@ -218,11 +252,16 @@ class KeyTileService : TileService() {
      * filled — white if [live], gray if stale — with a dark glyph, like the app's controls.
      */
     private fun commandButton(
-        id: String, icon: String, filled: Boolean, live: Boolean, sizeDp: Float, iconDp: Float,
+        id: String, icon: String, filled: Boolean, live: Boolean, sizeDp: Float, iconDp: Float, nonce: Int,
     ): Button {
+        // Stamp this render's nonce onto the LoadAction so a tap echoes it back in currentState —
+        // that's what lets onTileRequest distinguish a genuine press from a replayed refresh.
+        val requestState = StateBuilders.State.Builder()
+            .addKeyToValueMapping(CLICK_NONCE_KEY, DynamicDataValue.fromInt(nonce))
+            .build()
         val click = Clickable.Builder()
             .setId(id)
-            .setOnClick(ActionBuilders.LoadAction.Builder().build())
+            .setOnClick(ActionBuilders.LoadAction.Builder().setRequestState(requestState).build())
             .build()
         val fill = when {
             !filled -> BTN_BG
@@ -292,6 +331,10 @@ class KeyTileService : TileService() {
         // "3": frunk/hatch drawables replaced with the car-silhouette art (0.9.1) — the renderer
         // caches resources by this version, so the swap only shows once the version changes.
         const val RESOURCES_VERSION = "3"
+        // Per-render tap nonce carried in each command clickable's LoadAction requestState, read
+        // back from currentState to fire each tap exactly once (see onTileRequest). Same instance
+        // for write and read so AppDataKey equality matches.
+        val CLICK_NONCE_KEY = AppDataKey<DynamicInt32>("wv_tile_click_nonce")
         const val ID_KEY = "key"
         const val ID_UNLOCK = "cmd_unlock"
         const val ID_LOCK = "cmd_lock"
