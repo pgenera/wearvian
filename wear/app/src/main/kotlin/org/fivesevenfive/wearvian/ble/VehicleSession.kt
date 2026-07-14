@@ -222,6 +222,7 @@ class VehicleSession(
             // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
             var pauseReason: String? = null
+            var hbFailures = 0 // consecutive stalled heartbeat writes; see HB_MAX_FAILURES
             while (scope.isActive && sessionAlive) {
                 // Pause SENDING heartbeats (but keep the GATT link + 0x1c subscription) for either:
                 //  - anti-theft (Layer 1): watch locked / off-wrist — the car loses presence so a
@@ -272,7 +273,15 @@ class VehicleSession(
                 }
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
-                writeChar(g, readChar, hb, hbWriteType)
+                // Non-fatal: a stalled beat (marginal RSSI, airtime contention) is tolerated so the
+                // session doesn't flap on a single miss; force a reconnect only if beats stay stuck.
+                val hbOk = runCatching { writeChar(g, readChar, hb, hbWriteType, HB_WRITE_TIMEOUT_MS) }.isSuccess
+                if (hbOk) {
+                    hbFailures = 0
+                } else if (++hbFailures >= HB_MAX_FAILURES) {
+                    DebugLog.add("$label: $hbFailures heartbeats stalled — cycling link")
+                    break
+                }
                 if (counter % HB_LOG_EVERY == 0) {
                     DebugLog.ble("→", "$label/0x1b", "hb ctr=$counter rssi=$latestRssi", hb.size)
                 }
@@ -349,6 +358,7 @@ class VehicleSession(
         char: BluetoothGattCharacteristic,
         value: ByteArray,
         writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        timeoutMs: Long = OP_MS,
     ) {
         charWritten = CompletableDeferred()
         // Distinguish "the stack rejected the write" (in-process congestion, e.g.
@@ -356,7 +366,7 @@ class VehicleSession(
         // (airtime starvation or remote silence). A rejected submit never calls back.
         val rc = g.writeCharacteristic(char, value, writeType)
         if (rc != BluetoothStatusCodes.SUCCESS) error("write ${tag(char.uuid)} rejected rc=${rcName(rc)}")
-        withTimeout(OP_MS) { charWritten.await() }
+        withTimeout(timeoutMs) { charWritten.await() }
     }
 
     /** Decode the common BluetoothStatusCodes returned by GATT submit calls. */
@@ -510,6 +520,12 @@ class VehicleSession(
         private const val RECONNECT_BACKOFF_MS = 1_500L
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
         private const val HEARTBEAT_PERIOD_MS = 300L
+        // A single with-response heartbeat write stalling must NOT tear down the session (that was
+        // the connect→up→5 s-timeout→reconnect flap). Detect a stalled beat fast (1.5 s ≈ 5 missed
+        // beats, vs the healthy tens-of-ms), tolerate it, and only cycle the link if beats stay
+        // stuck for HB_MAX_FAILURES in a row — a genuine disconnect already exits via sessionAlive.
+        private const val HB_WRITE_TIMEOUT_MS = 1_500L
+        private const val HB_MAX_FAILURES = 5
         private const val HB_LOG_EVERY = 10
         /** Re-read RSSI every Nth heartbeat (~every 1.2 s at 300 ms cadence). */
         private const val RSSI_EVERY = 4
