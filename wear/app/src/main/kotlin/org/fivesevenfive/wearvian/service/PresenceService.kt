@@ -779,8 +779,12 @@ class PresenceService : Service() {
         // Promote the ongoing status onto the watch face as a key icon (Wear OS Ongoing Activity).
         // This decorates the FGS notification in place, so the glanceable surface is the icon — not a
         // persistent card. Tapping it opens the app (same target as the notification's content intent).
+        // CATEGORY_SERVICE ranks the key BELOW active user tasks (call / navigation / workout / media):
+        // the watch face shows the highest-ranked ongoing activity, so with a low category the key
+        // yields that slot when something more important is running and only surfaces when nothing is.
         OngoingActivity.Builder(applicationContext, NOTIFICATION_ID, builder)
             .setStaticIcon(R.drawable.ic_tile_key)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setTouchIntent(contentIntent)
             .setStatus(Status.Builder().addTemplate("$mode · $state").build())
             .build()
