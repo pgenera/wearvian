@@ -225,16 +225,21 @@ class PresenceService : Service() {
         // Transitions launch onto `scope` (single-thread lane) so they serialize with the monitors.
         // On an app upgrade (ACTION_UPGRADE_RESTORE — a near-instant process swap) resume the persisted
         // passive idle so a parked-nearby key doesn't snap back to active; any other start ignores it.
-        val restoreMode = intent?.action == ACTION_UPGRADE_RESTORE && settings.passiveIdle
+        // The mode decision itself is the pure, unit-tested [StartupPolicy]; this branch just enacts it.
+        val trigger = when (intent?.action) {
+            ACTION_UPGRADE_RESTORE -> StartTrigger.UPGRADE_RESTORE
+            ACTION_GO_PASSIVE -> StartTrigger.GO_PASSIVE
+            else -> StartTrigger.NORMAL
+        }
         locked = keyguard?.isDeviceLocked == true
-        when {
-            locked -> { if (restoreMode) wasPassive = true; updateNotification(LOCKED_TEXT) }
-            goPassiveNow -> { DebugLog.add("presence: manual passive requested"); scope.launch { enterPassive() } }
-            restoreMode -> {
-                DebugLog.add("presence: upgrade — resuming passive idle (seenDeparture=${settings.passiveSeenDeparture})")
-                scope.launch { enterPassive(restoreSeenDeparture = settings.passiveSeenDeparture) }
+        when (val decision = StartupPolicy.resolve(trigger, locked, settings.passiveIdle, settings.passiveSeenDeparture)) {
+            is StartupDecision.Locked -> { if (decision.wasPassive) wasPassive = true; updateNotification(LOCKED_TEXT) }
+            StartupDecision.ManualPassive -> { DebugLog.add("presence: manual passive requested"); scope.launch { enterPassive() } }
+            is StartupDecision.Passive -> {
+                DebugLog.add("presence: upgrade — resuming passive idle (seenDeparture=${decision.restoreSeenDeparture})")
+                scope.launch { enterPassive(restoreSeenDeparture = decision.restoreSeenDeparture) }
             }
-            else -> scope.launch { startActivePresence() }
+            StartupDecision.Active -> scope.launch { startActivePresence() }
         }
         // Mirror the aggregate connection state into the ongoing notification, like the official
         // app's "vehicle connected / disconnected" persistent notification — but while locked or
