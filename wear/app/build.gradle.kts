@@ -20,17 +20,17 @@ base { archivesName.set("wearvian") }
 
 android {
     namespace = "org.fivesevenfive.wearvian"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "org.fivesevenfive.wearvian"
         minSdk = 33          // Wear OS 4+
-        targetSdk = 35       // Play requires new apps to target API 35+ (FGS types since 34)
+        targetSdk = 36       // Play mandates API 36 (Android 16); FGS types since 34
         // versionCode lanes under the shared package: 1xxx = Wear, 2xxx = phone.
         // Must stay unique across BOTH apps and only ever increase.
         // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
         // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
-        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1053
+        versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1054
         versionName = "0.9.8"
     }
 
