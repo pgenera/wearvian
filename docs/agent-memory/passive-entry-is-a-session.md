@@ -1,0 +1,18 @@
+---
+name: passive-entry-is-a-session
+description: "Rivian passive entry is a continuous authenticated heartbeat session, not bond-and-proximity; M1 assumption was wrong"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 1a773a26-8818-4ca0-87c2-81d3e14bc129
+---
+
+**Passive entry / drive on the Gen-1 R1S is NOT "bond once and rely on proximity."** Confirmed by a full HCI snoop of the official app (2026-06-02): it's a continuous, authenticated, bidirectional BLE **session** the key must actively maintain. Our M1 watch app does only the bond + initial handshake (write phone-id `0x12` + nonce/HMAC `0x15`) then goes silent, so the vehicle terminates the link on a ~7 s loop (HCI disconnect reason `0x13` remote-terminated) and never grants entry/drive. So the user's "key exchange worked but neither passive entry nor drive worked" is explained — and it is NOT a timeout or enrollment/identityId bug.
+
+**What the official app does that we don't:** after the handshake it writes control char `0x20` (`5ae32b92-…-4774`: `01`,`10a8`), then **streams 37-byte authenticated heartbeats to "RIVIAN READ CHAR" `0x1b` (`52495649-414E-…`) at ~12 Hz** for the whole session, while the vehicle streams ~279 notifications back on `0x20` (challenge/ranging); it also connects to peripherals **"Rivian Sensor 1–4"** for RSSI localization. Heartbeat frame = `[4-byte LE counter][1 flag byte][32-byte HMAC]`. Full details + handle/UUID map in the watch repo `docs/passive-entry-protocol.md`.
+
+**FULLY REVERSE-ENGINEERED (2026-06-02) from the Android app decompile** — see `wear/docs/passive-entry-protocol.md` and [[active-commands-are-encrypted]]. The drive heartbeat is a PASSIVE_ENTRY VasRequest (serializer branch 3), written UNENCRYPTED to char 0x1b ~12×/sec: `counter(4,LE,++) ‖ flag(1, PhoneStatusMotion byte) ‖ HMAC-SHA256(sessionSecret, pNonce(16)‖vNonce(16)‖counter(4,LE)‖flag(1))` = 37B. Explains the snoop exactly (per-session keying = pNonce/vNonce differ per session). Only the initial counter + the 1-byte motion-flag semantics are minor on-vehicle confirmations.
+
+**On-vehicle (2026-06-03): unlock/lock COMMANDS WORK (validates the whole crypto stack); DRIVE does NOT.** Log showed the heartbeat froze after ctr=0 — CPU doze (no wake lock during BONDED); fixed by a PARTIAL_WAKE_LOCK in PresenceService. But decompiling classes3 (jx3/) revealed drive needs MORE: passive entry is **multi-sensor localization** via `l60/j0` "BLEPath_SensorPassiveEntryManager" — the app scans for the vehicle's sensors (by the RIVSENSORSERVICE/SERVICE_ACTIVE_ENTRY UUID they advertise) and connects to EACH (`l60.q0`): a PRIMARY + location sensors, via `VehicleSensorInfo{sensorType s60.g0, sensorLocation, sensorNodeId, rssi}`, gating on RSSI (e.g. <= -85) so the car triangulates inside-cabin (drive) vs door (unlock). Our single Phone-Key heartbeat = auth+presence but NOT localization → no drive. The motion flag is NOT the blocker (HMAC-covered, any value authenticates). Drive needs a new sensor-localization component; open Q: source of VehicleSensorInfo (enrollment vs live discovery).
+
+**How to apply:** Implementing passive entry requires a NEW presence-session component (subscribe to `0x20`/`0x15`/`0x12` notifications, write `0x20` control, stream heartbeats to `0x1b`, possibly connect sensors), not just maintaining a bonded GATT in `PresenceService`. This is substantial — given the user also wants explicit lock/unlock buttons, the M2 active-command path (`0x18` "RIV_MOBKEY_WRITE", needs its own official-app lock/unlock capture) may be the faster route to a working unlock. Raw snoops live only in `$CLAUDE_JOB_DIR/tmp`, never in a repo (companion repo is public). See [[m2-active-command-frame-unknown]] and [[queued-ux-robustness-tasks]].

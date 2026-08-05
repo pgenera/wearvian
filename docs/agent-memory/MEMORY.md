@@ -1,0 +1,42 @@
+# Memory index
+
+- [No user pip](no-user-pip.md) — never pip-install to the user env; use a venv or ask for Debian packages
+- [Subagent sandbox confinement](subagent-sandbox-confinement.md) — subagents can't write outside the project dir; parent does cross-repo work
+- [Companion app Data Layer contract](companion-app-data-layer-contract.md) — watch↔phone enrollment message paths/payloads
+- [Toolchain setup](toolchain-setup.md) — JDK 21 + Android SDK locations, build commands, repo layout, signing, host facts
+- [Gradle daemon config](gradle-daemon-config.md) — shared resident daemon + 6 GiB heap + parallel on this 14 GiB/4-core host
+- [Feature branches not prod-guards](feature-branches-not-production-guards.md) — build experimental features on a branch, not BuildConfig.PRODUCTION-gated on main
+- [Git remotes use HTTPS](git-remotes-https.md) — push wearvian repos over HTTPS (gh has creds); default SSH remotes fail host-key verification on this host
+- [No build by default](no-build-by-default.md) — don't build/send APKs unless the user explicitly asks; commit + compile-check only
+- [debugRelease build target](build-debugrelease-target.md) — Play-uploadable build with debug features/0x1c logging on; `bundleDebugRelease -PvCode=N`
+- [Play Store API access](play-store-api-access.md) — push AABs to Play internal track via SA key; watch→wear:internal, phone→internal
+- [Wear Data Layer same appId](wear-datalayer-same-appid.md) — phone+watch must share applicationId or messages aren't delivered
+- [Rivian auth UNAUTHENTICATED](rivian-auth-cookie-jar.md) — login "User is unauthenticated" = bad credentials; our client byte-matches the working python ref
+- [Rivian test account](rivian-test-account.md) — test with pg+wearvian@…; NEVER log in as production pg@fivesevenfive.org
+- [M2 active-command frame unknown](m2-active-command-frame-unknown.md) — BLE command write-frame not in reference; needs on-vehicle sniff (signing already done)
+- [Enroll requires accepted driver invite](enroll-requires-driver-invite-accepted.md) — watch's account must accept R1S driver invite in official app first, else 0 vehicles; document this for users
+- [Watch vs phone enrollment](watch-vs-phone-enrollment.md) — keyDeviceSubtype=WATCH → car skips passive lock/unlock (drive still works); basis for a watch-mode battery win
+- [Queued UX/robustness tasks](queued-ux-robustness-tasks.md) — never re-key (top prio), notification launches app, keep-awake, digit keyboard, explicit lock/unlock buttons
+- [Passive entry is a session](passive-entry-is-a-session.md) — passive entry needs a continuous authed heartbeat stream (0x1b) + control (0x20) + sensors, not bond+proximity; M1 assumption wrong
+- [Ref: the-mace rivian cloud api](ref-the-mace-rivian-cloud-api.md) — cloud client for M4 features, not BLE/drive
+- [Active commands are encrypted](active-commands-are-encrypted.md) — BLE cmd = AES-128-GCM frame on 0x20; CRACKED + codes table; unlock/lock work on-vehicle
+- [Ref: Rivian decompile archive](ref-rivian-decompile-archive.md) — persistent decompile at /home/pgenera/wearvian/rivian-re (clean Java + tools + README)
+- [Ref: btsnoop captures](ref-btsnoop-captures.md) — archived official-app HCI snoops at /home/pgenera/wearvian/rivian-re/captures (per-journey README)
+- [Official app BLE interval](official-app-ble-connection-interval.md) — official app runs 45ms baseline (never HIGH), relaxes to 90/135ms; relax intervals not teardown
+- [Drive WORKS on-vehicle](drive-gated-on-signed-params.md) — 2026-06-05 drive enable confirmed; Gen-1 sensors are in-the-clear (no bond/encryption/signed-params), RSSI heartbeats localize; stale-bond-on-re-enroll auto-cleared
+- [M2 proximity wake](m2-proximity-wake.md) — always-armed/low-battery milestone; idle→passive + offloaded BLE scan auto-arm; branch wearvian-m2-proximity-wake; FGS-start risk + CDM fallback
+- [Watch lock anti-theft](watch-lock-anti-theft.md) — stolen-watch protection; Layer 1 keyguard heartbeat gating + Layer 2 unlockedDeviceRequired new keys; branch wearvian-watch-lock; sharedSecret-cache nuance
+- [Vehicle status 0x1c decode](vehicle-status-0x1c-decode.md) — plaintext 0x1c frames; layout is the app's own schema n50.f.SCHEMA_VERSION_1 (recovered from decompile); subscribe PRIMARY post-auth
+- [Parked-idle power save](parked-idle-power-save.md) — connected-but-idle→passive; MATCH_LOST departure gating + seenDeparture flag; always-on (not toggle), MATCH_LOST reliability is the open risk
+- [No logging long strings or secrets](no-logging-long-strings-or-secrets.md) — log state names not values; never log keys/tokens
+- [HA-key import feature](ha-key-import-feature.md) — bring an existing Rivian key onto the watch via QR + hidden companion flow; branch wearvian-ha-import
+- [Be sure before release bundle](be-sure-before-release-bundle.md) — verify on debug first; build the slow AAB once when confident
+- [Companion build only on changes](companion-build-only-on-changes.md) — don't build/version-bump companion unless it has real changes; versions aren't lockstep
+- [Ambient idle screen](ambient-idle-screen.md) — Wear always-on low-fi mirror of the KEY page; burn-in safe, 10-min timeout, overlay consumes taps but lock/unlock act
+- [Passive wake autoConnect](passive-wake-autoconnect.md) — PK GATT autoConnect wakes passive (gated on seenDeparture, else it bounces); companion to FIRST_MATCH
+- [Run gradle builds foreground](gradle-builds-run-foreground.md) — backgrounded builds don't persist on this host; build in foreground and verify the AAB
+- [Code review before commit](code-review-before-commit.md) — self-review the diff before committing, not after
+- [Write tests when reasonable](write-tests-when-reasonable.md) — add/update JVM unit tests for testable logic you touch
+- [Parked-nearby power already optimal](parked-nearby-power-already-optimal.md) — driving-doze trick can't cut it; ranging needs the wake lock, watch keys already doze
+- [Battery baseline (passive day)](battery-baseline-passive-day.md) — 2026-07-14 ~17 mAh/h, BLE scan 87% of day; active-day repeat planned 2026-07-15 (on flap-fixed 1056)
+- [Query live track before vCode bump](query-live-track-before-vcode-bump.md) — committed versionCode trails Play (throwaway -PvCode= builds); query the live track before choosing a new code
