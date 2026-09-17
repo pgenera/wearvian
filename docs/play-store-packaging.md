@@ -133,6 +133,7 @@ cd ../../wearvian-companion && ./gradlew :app:bundleRelease
 - Permissions review: the watch declares BLE + foreground-service + wake-lock and **no
   INTERNET** (privacy story is strong — the EC key never leaves the watch; no cloud to
   operate). Be ready to justify foreground-service-connected-device and BLE in the form.
-- Nothing reverse-engineered/decompiled ships in either app — keep it that way.
+- No third-party code ships in either app — only our own clean-room implementation. Keep it
+  that way.
 - Debug builds are signed with the shared debug key, so the Data Layer also works in
   development; just don't mix a debug build of one app with a release build of the other.

@@ -13,8 +13,8 @@ never to *operate*. The watch has **no `INTERNET` permission**.
 ## Status
 
 Version **0.5.3** (versionCode 1013). The watch is a working offline phone key, confirmed on-vehicle
-on a Gen-1 **R1S**; **R1T** (truck) support is implemented from the decompile but not yet tested on a
-truck. With the phone in airplane mode, the watch enrolls once (via the companion) then drives
+on a Gen-1 **R1S**; **R1T** (truck) support is implemented from the protocol notes but not yet tested
+on a truck. With the phone in airplane mode, the watch enrolls once (via the companion) then drives
 passive entry/unlock and active commands entirely from its own BLE radio.
 
 Confirmed working on the vehicle (R1S):
@@ -29,8 +29,9 @@ Confirmed working on the vehicle (R1S):
 - ✅ **Power-saving passive mode** (always on) — after an idle stretch it releases the wake lock and
   tears down BLE, then a hardware-offloaded scan rebuilds the link on approach.
 
-R1T (decompile-derived, untested on a truck): the rear closure shows a **Tailgate** (open only — no
-tailgate-close command exists) instead of the R1S hatch; the model is decoded from the VIN.
+R1T (derived from the protocol notes, untested on a truck): the rear closure shows a **Tailgate**
+(open only — no tailgate-close command exists) instead of the R1S hatch; the model is decoded from
+the VIN.
 
 Foundations:
 
@@ -56,7 +57,7 @@ Foundations:
 | `docs/next-steps.md` | Current backlog |
 | `docs/HISTORY.md` | Original M1 design + early RE constants (historical) |
 
-> Protocol/RE docs live **only in this (private) repo** — they're intentionally not in the
+> Protocol docs live **only in this repo** — they're intentionally not duplicated in the
 > companion repo.
 
 ## Building

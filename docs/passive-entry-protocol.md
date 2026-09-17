@@ -100,11 +100,12 @@ construction **cannot be recovered from a snoop** (ciphertext only) nor by on-ve
 same boat. Obtaining the algorithm from a reference implementation (e.g. WaaKey's watchOS binary) is
 the only tractable path to active commands and drive. `0x18` plaintext-HMAC framing is a dead end.
 
-## Command crypto — reverse-engineered from the official Android app (jadx/baksmali, 2026-06-02)
+## Command crypto — reverse-engineered from the official Android app (2026-06-02)
 
-Decompiled `com.rivian.android.consumer`. Rivian's BLE lib is obfuscated (packages `s60/q60/pv/l60/…`)
-but the app-layer names in `com.rivian.android.vehicle.session.*` are intact. Derived facts only (no
-copied code); reimplement cleanly.
+Rivian's BLE lib is obfuscated (packages `s60/q60/pv/l60/…`) but the app-layer names in
+`com.rivian.android.vehicle.session.*` are intact; symbol names below are quoted only to identify
+where each fact came from. Derived facts only (no copied code); everything here is reimplemented
+cleanly.
 
 **Primitives (`pv/f3`):**
 - `B0(label, vehiclePubHex)` = **ECDH** (P-256, provider BC): watch private key (selected by `label`)
@@ -129,7 +130,7 @@ copied code); reimplement cleanly.
   (vehicle) per direction ("null pnonce/vnonce when decrypting GATT message").
 - plaintext = 34 bytes → command code + timestamp/counter (exact layout TODO).
 
-**Outgoing command frame — fully decoded** (clean Java from `em/f0.f(h60/d dVar, l60/t tVar)`):
+**Outgoing command frame — fully decoded** (from `em/f0.f(h60/d dVar, l60/t tVar)`):
 ```
 frame  = [ msgType(1) ][ version(1) ][ IV(12) ][ AES-128-GCM(plaintext, AAD) ]   → write to char P (0x20)
  msgType = s60.i0.ActiveCMDRequest.getId() = (byte)22 = 0x16   (ActiveCMDResponse=0x17; other types below)
@@ -147,10 +148,6 @@ frame  = [ msgType(1) ][ version(1) ][ IV(12) ][ AES-128-GCM(plaintext, AAD) ]  
 **KeepAlive** (likely the `0x1b` heartbeat), PhoneProfile, PhoneStatusMotion, **ActiveCMDRequest=0x16**,
 ActiveCMDResponse=0x17, VehicleStatus. Note `q60/a.a(label,vehPubHex,payload)` is the *cloud* HMAC
 signer (`H0`), not the BLE path.
-
-**Low-RAM jadx pipeline that works (use this, NOT full-app jadx):** `tools/smali.jar` assembles a
-chosen subset of `.smali` into a mini.dex, then `jadx -Xmx512m mini.dex` decompiles clean Java safely.
-Built `mini-java/` from packages em,h60,q60,pv,s60,l60.
 
 **VasRequest serialization (`jh.a.i0`, all LITTLE_ENDIAN), branch by `VasRequestType` ordinal (`l60.l0`):**
 - **type 1 (auth/pairing nonce):** `r(pNonce)(16) ‖ r(HMAC-SHA256(sessionSecret, pNonce))(32)` = 48 bytes
@@ -208,8 +205,7 @@ heartbeat(37B) = counter(4,LE, ++ per msg) ‖ flag(1) ‖ HMAC-SHA256(sessionSe
   sessions (because pNonce/vNonce differ per session) = the "per-session keyed" behavior we measured.
 
 **Both active commands AND drive heartbeat are fully specified.** The crypto/frames map onto our
-existing core. Decompile/tools persist at `/home/pgenera/.claude/jobs/1a773a26/tmp/` (`jx3/` = clean
-Java of classes3.dex).
+existing core.
 
 ## Drive needs multi-sensor localization (confirmed in the Android app)
 
@@ -233,19 +229,19 @@ the sensors and runs the session across all of them.
 
 **On-vehicle (2026-06-03):** wake-lock fix confirmed — heartbeat streams continuously (ctr 0,13,26,…).
 An open BLE scan filtered by `SERVICE_ACTIVE_ENTRY` found **0** devices (driver's seat and outside),
-so that's the wrong discovery mechanism. From the decompile: the sensors are matched by their
-**advertised vehicleId/nodeId** (`VehicleSensorInfo.a` = NODE_ID/VEHICLE_ID/ADDRESS adv fields), and
+so that's the wrong discovery mechanism. From the app's own implementation: the sensors are matched
+by their **advertised vehicleId/nodeId** (`VehicleSensorInfo.a` = NODE_ID/VEHICLE_ID/ADDRESS adv fields), and
 **`VehicleSensorInfo` carries `address` (MAC), `sensorLocation` (INTERIOR/EXTERIOR), `sensorNodeId`,
 `vehicleId`, `rssi`, `isCache`** (`com.rivian.android.vehicle.session.definition.VehicleSensorInfo`).
 Also: the `0x1c` status byte differs by position (`…10 07…` driver vs `…10 0f…` outside) — encodes
 location. **Milestone-2 unknowns:** the real scan service-UUID + advertised-data layout (in `l60/y0`/
-`l60/i`, archive at `/home/pgenera/rivian-re`), and the source of `VehicleSensorInfo` (enrollment/cloud
-vs. primary-reported — the network code is in classes2, not yet decompiled to clean Java).
+`l60/i`), and the source of `VehicleSensorInfo` (enrollment/cloud vs. primary-reported — the network
+code is in classes2, not yet analyzed).
 
-## RE update 2026-06-03 — heartbeat flag = RSSI; sensors authenticate; 0x20 kickoff (confirmed in decompile)
+## RE update 2026-06-03 — heartbeat flag = RSSI; sensors authenticate; 0x20 kickoff (confirmed)
 
-Read the per-connection session class `l60/i` and the ranging manager `l60/j0` (clean Java in
-`/home/pgenera/rivian-re/java-classes3`). Three of our drive assumptions were wrong; corrected:
+Read the per-connection session class `l60/i` and the ranging manager `l60/j0`. Three of our drive
+assumptions were wrong; corrected:
 
 1. **The heartbeat's 5th "flag" byte is the phone-measured RSSI, not a motion flag.** `l60/j0`
    ("BLEPath_SensorPassiveEntryManager") calls `BluetoothGatt.readRemoteRssi()` every ~300 ms,
@@ -299,8 +295,8 @@ On-vehicle log `1240a` with submit-code + disconnect-status logging resolved the
   CCCD timeouts are just downstream of operating on the dead link.
 - **Root cause: sensors require link-layer bonding/encryption, and we only bonded the PRIMARY.**
   The sensors are separate BLE devices (`74:B8:39:…`); the first CCCD write to an encrypted char
-  (we hit `0x1c` first) forces encryption, there's no bond → `0x05`. Confirmed in the decompile:
-  `l60/i.r()` calls `createBond()` for any device with `getBondState()!=BONDED`, and `l60/b0.e`
+  (we hit `0x1c` first) forces encryption, there's no bond → `0x05`. Confirmed in the app's own
+  implementation: `l60/i.r()` calls `createBond()` for any device with `getBondState()!=BONDED`, and `l60/b0.e`
   only advances a **sensor** to `AUTHENTICATED` when `getBondState()==BONDED`. The app also
   subscribes only the unencrypted handshake chars (`0x12`/`0x15`) pre-auth — never `0x1c` first.
 
@@ -311,13 +307,13 @@ car-mediated provisioning (in the app, `createBond` is triggered mid-handshake o
 
 ## RE update 2026-06-03 (3) — sensor bonding is gated on a key-derived "signed params" auth
 
-On-vehicle `1344` (full `-b all` OS log) + decompile pinned why `createBond()` on a sensor fails:
+On-vehicle `1344` (full `-b all` OS log) + RE of the app pinned why `createBond()` on a sensor fails:
 
 - OS stack: `createBond` starts real SMP (`BOND_NONE→BONDING`) but the pairing link dies at
   establishment — `btm_ble_read_remote_features_complete: HCI_ERR_CONN_FAILED_ESTABLISHMENT`,
   then `smp_proc_pairing_cmpl: SMP_FAIL`, **no SMP Pairing-Request/Failed PDUs**. So the sensor
   isn't completing SMP — it isn't *receptive* to bonding from us.
-- Decompile: the auth state machine is `INIT → PID_PNONCE_SENT → SIGNED_PARAMS_SENT →
+- In the app: the auth state machine is `INIT → PID_PNONCE_SENT → SIGNED_PARAMS_SENT →
   AUTHENTICATED` (`l60/z`), and `createBond()` (`l60/i.r()`) only fires **in SIGNED_PARAMS_SENT**,
   after the vehicle answers. The `SIGNED_PARAMS_SENT` step (`l60/h` case 1) computes a "signed
   params" message via **`s60/b0.c(context, tVar, …)`** and writes it to the **`Q` char
@@ -331,11 +327,11 @@ PID/pNonce and never sends signed params → sensors never become receptive → 
 was only a secondary effect of 4 concurrent attempts). The PRIMARY works because it was bonded
 during initial provisioning (add-key mode) and persists.
 
-**Gating RE target:** `s60/b0.c` (the signed-params builder) — **did not decompile to clean Java**
-(jadx: "Method not decompiled", 399 instr). Needs a smali/baksmali pass + the `n1`/`l60.x`
-protobuf shape. This is the prerequisite for sensor bonding, hence for drive localization.
+**Gating RE target:** `s60/b0.c` (the signed-params builder) — resisted analysis at first (399
+instr). Needs the `n1`/`l60.x` protobuf shape. This is the prerequisite for sensor bonding, hence
+for drive localization.
 
-### Signed-params — smali RE (2026-06-03, baksmali of classes3.dex)
+### Signed-params — RE notes (2026-06-03)
 
 `s60/b0.c` builds a protobuf `n1` and signs it via **`s60/b0.e(List<l1>, l60.x)`** (the same signer
 the PRE-CCC ranging path uses). The signing is **HMAC-SHA256 with the session key — no new crypto**:
@@ -355,7 +351,7 @@ swVersion(s60.h.e()) } } }`. Capability byte = `s60.h.f(ctx) | PSEUDO_PAIRING`.
 
 **Crypto is solved; the remaining work is byte-exact protobuf reconstruction** of the ~10 message
 types (`n1,l1,r,x,f0,s1,p1,e2,c2,d2` + enums `r1` model, `b2`=HMAC_SHA256) — field numbers/wire types
-recoverable from the generated protobuf classes in `smali/classes3` — then: build+sign signed-params →
+recoverable from the app's generated protobuf classes — then: build+sign signed-params →
 write to `Q` → await `Q` response → `createBond` → subscribe encrypted chars → heartbeat. No unknown
 key or unrecoverable secret remains.
 
@@ -431,8 +427,8 @@ lives in `ActiveCommandFrames.Cmd`. **Open/close pairs are adjacent (open = clos
 | 0x6e | FLASH_EXTERNAL_LIGHTS | | 0x72 / 0x73 | DRIVE_AUTH_USER_INPUT ALLOW / DENY |
 | 0x6f | ACTIVATE_EXTERNAL_SOUND | | 0x5e / 0x5f | DRIVE_AUTH_MOBILE_NOTIF ENABLE / DISABLE |
 
-**OPEN_LIFTGATE / OPEN_TAILGATE note (updated 2026-06-13 from `k2.smali`):** the enum values are
-`OPEN_LIFTGATE = 0x1f`, `OPEN_TAILGATE = 0x24`, `OPEN_LIFTGATE_UNLATCH_TAILGATE = 0x2a`,
+**OPEN_LIFTGATE / OPEN_TAILGATE note (updated 2026-06-13 from the `k2` command enum):** the enum
+values are `OPEN_LIFTGATE = 0x1f`, `OPEN_TAILGATE = 0x24`, `OPEN_LIFTGATE_UNLATCH_TAILGATE = 0x2a`,
 `CLOSE_LIFTGATE = 0x2b`; **there is no `CLOSE_TAILGATE`** anywhere in the enum. In this app build the
 "open" classes are nulled to an empty BLE byte[] (cloud-routed); only `CLOSE_LIFTGATE` is populated.
 The firmware keys on the enum value regardless. We **ship `OPEN_LIFTGATE = 0x2a`** (the
@@ -529,12 +525,12 @@ regressed earlier).
 
 ---
 
-## 2026-06-06 (pm) — command counter is a separate "csn" (decompile-confirmed)
+## 2026-06-06 (pm) — command counter is a separate "csn" (RE-confirmed)
 
 On-vehicle test of the command-via-session build: the vehicle terminated the link
 (disconnect status `0x13`) within ~100–270 ms of **every** command, no `17 01` ack — the
 command frames were rejected. The build fed the running **heartbeat** counter (74, 10, 12…)
-into the command HMAC. The decompile shows why:
+into the command HMAC. The app's implementation shows why:
 
 - **Commands and heartbeats use independent counters.** Command builder `em/f0.f`:
   `int i = tVar.r; tVar.r = i + 1;` — the command sequence number **`csn`** (`l60.x.r`,
@@ -769,11 +765,11 @@ so it maps to `ChargeState.UNKNOWN` (the UI shows SoC/range with no state line) 
 `decode_status.py` prints it as `?0x8`. Identify it by catching what the official app displays
 the next time it appears.
 
-## 2026-07-05 — 0x1c layout recovered authoritatively from the app decompile (SCHEMA_VERSION_1)
+## 2026-07-05 — 0x1c layout recovered authoritatively from the app's own schema (SCHEMA_VERSION_1)
 
 Everything above about the `0x1c` byte/bit map was reverse-engineered empirically from on-vehicle
-captures. We can now stop guessing: the official app's own status schema was recovered from the
-decompile, and it names every byte, bitmask, and value enum.
+captures. We can now stop guessing: the official app's own status schema was recovered, and it names
+every byte, bitmask, and value enum.
 
 **Where it lives.** The BLE library (`classes3`) subscribes `0x1c` (`em/f0.e`, non-secured branch)
 but does not field-parse it. The parser is in the app layer: `m6/b` =

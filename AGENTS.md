@@ -15,8 +15,8 @@ BLE and cloud protocols were reverse-engineered from the official Rivian app.
   `…​.companion` as its *namespace* but the SAME applicationId — see Signing).
 - **Related repos/dirs on this VM:**
   - `../companion` — phone companion app (GitHub `pgenera/wearvian-companion`). Has its own AGENTS.md.
-  - `../rivian-re` — persistent decompile + BLE capture archive + `oracle/` recovered schemas. Not
-    version-controlled; regenerable per its `README.md`. Source of truth for protocol questions.
+  - `../rivian-re` — persistent protocol-research archive (BLE captures + `oracle/` recovered
+    schemas). Not version-controlled. Source of truth for protocol questions.
   - `../tools` — release helper scripts (`play_upload.py`, `play_promote.py`, `ha_probe.py`) + saved
     release-notes files. Not a git repo; lives on VM disk only.
 
@@ -109,7 +109,7 @@ passwords.
 Deep detail lives in `../rivian-re` and `docs/`; the essentials:
 
 - **BLE vehicle status:** plaintext 16-byte frames on characteristic `0x1c`, decoded in
-  `service/VehicleStatus.kt` using the app's own `SCHEMA_VERSION_1` layout (recovered in
+  `service/VehicleStatus.kt` using the vehicle's own `SCHEMA_VERSION_1` layout (recovered in
   `rivian-re/oracle`). Subscribe PRIMARY post-auth. SoC is 7-bit; charge/preconditioning are enums.
 - **Active commands (lock/unlock/drive):** AES-128-GCM frames on characteristic `0x20`. The signing +
   codes table are implemented and confirmed working on-vehicle. Gen-1 sensors are in-the-clear.

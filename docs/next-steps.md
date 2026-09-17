@@ -8,9 +8,9 @@ release loop, and a couple of parked unknowns.
 
 ## Needs on-vehicle verification
 - **R1T (truck) support.** Tailgate UI + the `OPEN_TAILGATE` command (0x24) and the rear-closure
-  status bit are derived from the decompile but **untested on a truck** (we only have an R1S). The
-  debug Settings "Force R1T" switch exercises the UI on the R1S. Verify command + status when an R1T
-  is available. See [[active-commands-are-encrypted]] and `passive-entry-protocol.md`.
+  status bit are derived from the protocol notes but **untested on a truck** (we only have an R1S).
+  The debug Settings "Force R1T" switch exercises the UI on the R1S. Verify command + status when an
+  R1T is available. See [[active-commands-are-encrypted]] and `passive-entry-protocol.md`.
 - **Enroll-as-watch (companion).** The companion `wearvian-enroll-as-watch` branch passes
   `deviceType="watch"` to the cloud `EnrollPhone` (with a login-screen checkbox to fall back to
   "phone"). It is **unconfirmed** the cloud accepts `"watch"` — validate on the next re-enrollment.

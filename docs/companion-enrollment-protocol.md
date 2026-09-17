@@ -1,6 +1,6 @@
 # Companion ↔ watch enrollment protocol (Wear OS Data Layer)
 
-> Kept in the (private) watch repo. The companion app implements this contract on its side
+> Kept in the watch repo. The companion app implements this contract on its side
 > (`comms`/`wear` packages), but the protocol is documented here, not in the companion repo.
 
 The companion **phone** app performs the one-time / periodic (~monthly) Rivian cloud enrollment
