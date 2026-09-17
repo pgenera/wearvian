@@ -48,15 +48,19 @@ nice -n 19 ./wear/gradlew -p wear :app:assembleDebug            # sideload APK -
 nice -n 19 ./wear/gradlew -p wear :app:bundleRelease            # Play AAB (R8 + lintVital)
 ```
 
-### Build variants (buildType → `BuildConfig.PRODUCTION`)
+### Build variants (buildType → `BuildConfig` flags)
 
-| Variant | PRODUCTION | R8 | Signing | Use |
-|---|---|---|---|---|
-| `debug` | false | no | debug key | development / sideload |
-| `release` | true | yes | upload key | production Play release |
-| `debugRelease` | false | yes | upload key | Play **testing track** with debug features + verbose logging on; versionName gets a `-debug` suffix |
+| Variant | PRODUCTION | DEBUG_CONSOLE | R8 | Signing | Use |
+|---|---|---|---|---|---|
+| `debug` | false | true | no | debug key | development / sideload |
+| `release` | true | **false** | yes | upload key | **public** production Play release |
+| `debugRelease` | false | true | yes | upload key | Play **testing track** (trusted testers) with debug features + verbose logging on; versionName gets a `-debug` suffix |
 
-`PRODUCTION` gates the published feature set, protocol exposure, and verbose logging. Notably the
+`PRODUCTION` gates the published feature set, protocol exposure, and verbose logging.
+`DEBUG_CONSOLE` separately gates the swipe-left BLE debug console (`ui/MainActivity.kt`) — the two
+are independent because a trusted-tester build wants the published feature set *plus* the console.
+Both are compile-time constants, so `release` has R8 strip `DebugScreen` from the APK outright
+(`mapping/release/mapping.txt` contains no `DebugScreen`); it is removed, not hidden. Notably the
 persistent **crash recorder** (`util/CrashLog` → `WearvianApp`) is **debug-only** (`if
 (BuildConfig.PRODUCTION) return`): it writes stack traces to `filesDir/crashes/`. Pull them with
 `adb root && adb shell cat /data/data/org.fivesevenfive.wearvian/files/crashes/*`. Production builds

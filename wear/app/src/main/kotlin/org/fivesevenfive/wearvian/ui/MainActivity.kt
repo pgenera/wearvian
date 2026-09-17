@@ -26,6 +26,7 @@ import androidx.wear.ambient.AmbientLifecycleObserver
 import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
 import androidx.wear.compose.material.SwipeToDismissBox
+import org.fivesevenfive.wearvian.BuildConfig
 import org.fivesevenfive.wearvian.util.AppForeground
 import org.fivesevenfive.wearvian.util.logi
 
@@ -168,11 +169,25 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            // Swipe left → BLE debug console; native Wear swipe-right → back.
+            // Swipe left → BLE debug console; native Wear swipe-right → back. Gated on
+            // BuildConfig.DEBUG_CONSOLE (a compile-time constant), so the public release carries
+            // neither the gesture nor DebugScreen — R8 strips the dead branches rather than the
+            // app merely hiding a surface that is still shipped.
             var showDebug by remember { mutableStateOf(false) }
             val ambient by ambientUi
+            val debugSwipe = if (BuildConfig.DEBUG_CONSOLE) {
+                Modifier.pointerInput(Unit) {
+                    var dx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f },
+                        onDragEnd = { if (dx < -60f) showDebug = true },
+                    ) { _, amount -> dx += amount }
+                }
+            } else {
+                Modifier
+            }
             Box(Modifier.fillMaxSize()) {
-                if (showDebug) {
+                if (BuildConfig.DEBUG_CONSOLE && showDebug) {
                     val dismiss = rememberSwipeToDismissBoxState()
                     LaunchedEffect(dismiss.currentValue) {
                         if (dismiss.currentValue == SwipeToDismissValue.Dismissed) {
@@ -186,17 +201,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(Unit) {
-                                var dx = 0f
-                                detectHorizontalDragGestures(
-                                    onDragStart = { dx = 0f },
-                                    onDragEnd = { if (dx < -60f) showDebug = true },
-                                ) { _, amount -> dx += amount }
-                            },
-                    ) {
+                    Box(modifier = Modifier.fillMaxSize().then(debugSwipe)) {
                         WearvianApp(
                             state = state,
                             onRefresh = vm::refresh,

@@ -60,16 +60,30 @@ CI; you can't upload an unsigned bundle).
 
 ## Debug vs production builds
 
-The **release** build type is "production" (what goes to Play); **debug** is the full
-development build. `BuildConfig.PRODUCTION` (`build.gradle.kts` build types) carries this at
-runtime:
+Three build types, and **two** independent `BuildConfig` flags (`build.gradle.kts`):
 
-- **Production hides debug-only surfaces.** `ui/ControlScreens.kt` shows the working pager pages —
+| Build type | Goes to | `PRODUCTION` | `DEBUG_CONSOLE` |
+|---|---|---|---|
+| `debug` | local development | false | true |
+| `debugRelease` | Play **internal / trusted testers** | false | true |
+| `release` | Play **production — the public build** | true | false |
+
+The flags answer different questions, which is why they are separate: `PRODUCTION` is *which
+features are finished enough to publish*, `DEBUG_CONSOLE` is *may this build expose a raw BLE log
+surface*. A trusted-tester build wants the published feature set **plus** the console, which one
+flag could not express.
+
+- **`PRODUCTION` hides unfinished surfaces.** `ui/ControlScreens.kt` shows the working pager pages —
   **Key, Closures, Charge, Alarm** — on production. The **Settings** page (now just the debug
-  "Force R1T" test switch + manual passive) is **debug-only**. The swipe-left BLE debug console
-  stays in both for now. Also: the plaintext `0x1c`/`0x20` vehicle-status frames are logged only in
-  debug (`VehicleSession` gates them on `!BuildConfig.PRODUCTION`).
-- To gate more later: read `BuildConfig.PRODUCTION` (false in debug, true in release).
+  "Force R1T" test switch + manual passive) is **debug-only**. The plaintext `0x1c`/`0x20`
+  vehicle-status frames are logged only when `!PRODUCTION` (`VehicleSession`).
+- **`DEBUG_CONSOLE` controls the swipe-left BLE debug console** (`ui/MainActivity.kt`). It is a
+  compile-time constant, so on `release` R8 drops both the swipe gesture and `DebugScreen` —
+  verified: `DebugScreen` has **0** entries in `mapping/release/mapping.txt` and 283 in
+  `mapping/debugRelease/mapping.txt`. The console is *removed from the APK*, not just hidden, so
+  the public build cannot be coaxed into showing it.
+- `DebugLog` itself still runs on every build (a 200-line in-memory ring that mirrors to logcat);
+  only the on-watch UI is gone. Nothing is written to disk.
 
 ## Local sideload testing of the release build
 

@@ -49,11 +49,20 @@ android {
         // PRODUCTION gates the published feature set + protocol exposure: the release build
         // (Play Store) is production, debug is the full development build. Read at runtime via
         // BuildConfig.PRODUCTION (e.g. ControlScreens hides unfinished pages on production).
+        // DEBUG_CONSOLE gates the swipe-left BLE debug console. It is separate from PRODUCTION
+        // because the two answer different questions: PRODUCTION is "which features are finished
+        // enough to publish", DEBUG_CONSOLE is "may this build expose a raw BLE log surface".
+        // Trusted-tester builds want the console with the published feature set; the public build
+        // wants neither. Being a compile-time constant, a false value lets R8 drop the branch —
+        // DebugScreen is not merely hidden, it isn't in the APK.
         debug {
             buildConfigField("boolean", "PRODUCTION", "false")
+            buildConfigField("boolean", "DEBUG_CONSOLE", "true")
         }
         release {
             buildConfigField("boolean", "PRODUCTION", "true")
+            // The public build: no debug console.
+            buildConfigField("boolean", "DEBUG_CONSOLE", "false")
             // R8 shrink + obfuscate: renames classes/methods so the Rivian protocol isn't
             // trivially readable from the shipped APK (the wire bytes are unchanged, so it
             // stays functional). Modest by design — a courtesy to Rivian, not hardened DRM.
@@ -73,16 +82,19 @@ android {
                 signingConfigs.getByName("debug")
             }
         }
-        // Play-uploadable build with debug features ON. Inherits release (upload-key signing + R8,
-        // so Play accepts it and it installs over the enrolled app without re-enroll), but flips
-        // PRODUCTION off — enabling the SETTINGS page and the 0x1c/0x20 vehicle-status logging used
-        // to capture frames — and marks the version "-debug". Build with a fresh code each time:
+        // Play-uploadable build with debug features ON — the TRUSTED TESTER target. Inherits
+        // release (upload-key signing + R8, so Play accepts it and it installs over the enrolled
+        // app without re-enroll), but flips PRODUCTION off — enabling the SETTINGS page and the
+        // 0x1c/0x20 vehicle-status logging used to capture frames — restores the swipe-left debug
+        // console that `release` drops, and marks the version "-debug". Build with a fresh code:
         //     ./gradlew bundleDebugRelease -PvCode=1019
         // NEVER upload to the production track: it logs sensitive usage data and exposes dev UI.
         create("debugRelease") {
             initWith(getByName("release"))
             matchingFallbacks += "release"
             buildConfigField("boolean", "PRODUCTION", "false")
+            // initWith copied release's false — testers keep the console.
+            buildConfigField("boolean", "DEBUG_CONSOLE", "true")
             versionNameSuffix = "-debug"
         }
     }
