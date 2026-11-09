@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -90,8 +91,8 @@ class PairingManager(
         try {
             withTimeout(CONNECT_TIMEOUT_MS) { connected.await() }
             logi("pair: GATT connected; discovering services")
-            gatt.discoverServices()
-            withTimeout(GATT_OP_TIMEOUT_MS) { servicesReady.await() }
+            if (!gatt.discoverServices()) error("Failed to start service discovery")
+            if (!withTimeout(GATT_OP_TIMEOUT_MS) { servicesReady.await() }) error("Service discovery failed")
             logi("pair: services discovered: ${gatt.services.map { it.uuid }}")
 
             onProgress(Progress.Handshaking)
@@ -177,8 +178,11 @@ class PairingManager(
         gatt.setCharacteristicNotification(char, true)
         val cccd = char.getDescriptor(RivianBle.CCCD) ?: error("Missing CCCD on ${char.uuid}")
         descriptorWritten = CompletableDeferred()
-        gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        withTimeout(GATT_OP_TIMEOUT_MS) { descriptorWritten.await() }
+        val rc = gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        if (rc != BluetoothStatusCodes.SUCCESS) error("CCCD write on ${char.uuid} rejected (rc=$rc)")
+        if (!withTimeout(GATT_OP_TIMEOUT_MS) { descriptorWritten.await() }) {
+            error("CCCD write on ${char.uuid} failed")
+        }
     }
 
     private suspend fun writeChar(
@@ -187,10 +191,13 @@ class PairingManager(
         value: ByteArray,
     ) {
         charWritten = CompletableDeferred()
-        gatt.writeCharacteristic(
+        val rc = gatt.writeCharacteristic(
             char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         )
-        withTimeout(GATT_OP_TIMEOUT_MS) { charWritten.await() }
+        if (rc != BluetoothStatusCodes.SUCCESS) error("Write to ${char.uuid} rejected (rc=$rc)")
+        if (!withTimeout(GATT_OP_TIMEOUT_MS) { charWritten.await() }) {
+            error("Write to ${char.uuid} failed")
+        }
     }
 
     /**

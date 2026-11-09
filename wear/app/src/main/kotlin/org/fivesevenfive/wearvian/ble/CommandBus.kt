@@ -1,5 +1,6 @@
 package org.fivesevenfive.wearvian.ble
 
+import android.os.SystemClock
 import kotlinx.coroutines.channels.Channel
 import org.fivesevenfive.wearvian.util.DebugLog
 
@@ -19,7 +20,17 @@ import org.fivesevenfive.wearvian.util.DebugLog
  * Only the PRIMARY phone-key session drains the bus; sensor sessions ignore it.
  */
 object CommandBus {
-    data class Command(val code: Int, val label: String)
+    /** Max age of a queued command before [poll] discards it as stale instead of firing late. */
+    const val COMMAND_TTL_MS = 5_000L
+
+    /** Monotonic clock in ms; injectable so JVM unit tests can advance time without Robolectric. */
+    internal var clock: () -> Long = { SystemClock.elapsedRealtime() }
+
+    data class Command(
+        val code: Int,
+        val label: String,
+        val submittedAtMs: Long = clock(),
+    )
 
     // Unlimited + non-blocking: a tap should never block the UI, and the PRIMARY
     // session drains at heartbeat cadence (~300 ms), so the queue stays tiny.
@@ -33,10 +44,32 @@ object CommandBus {
     /** Enqueue a command for the live PRIMARY session to send on its next heartbeat tick. */
     fun submit(code: Int, label: String) {
         DebugLog.add("cmdbus: queued $label (0x%04x)".format(code))
-        lastSubmitMs = android.os.SystemClock.elapsedRealtime()
-        queue.trySend(Command(code, label))
+        val now = clock()
+        lastSubmitMs = now
+        queue.trySend(Command(code, label, now))
     }
 
-    /** Non-blocking dequeue for the PRIMARY session loop; null when nothing is pending. */
-    fun poll(): Command? = queue.tryReceive().getOrNull()
+    /**
+     * Non-blocking dequeue for the PRIMARY session loop; null when nothing fresh is pending.
+     * Commands older than [COMMAND_TTL_MS] are discarded so a tap during an outage/pause never fires late.
+     */
+    fun poll(): Command? {
+        val now = clock()
+        while (true) {
+            val cmd = queue.tryReceive().getOrNull() ?: return null
+            val ageMs = now - cmd.submittedAtMs
+            if (ageMs > COMMAND_TTL_MS) {
+                DebugLog.add("cmdbus: dropped stale ${cmd.label} (age=${ageMs}ms)")
+                continue
+            }
+            return cmd
+        }
+    }
+
+    /** Discard all queued commands (called when the PRIMARY session tears down). */
+    fun clear() {
+        var dropped = 0
+        while (queue.tryReceive().isSuccess) dropped++
+        if (dropped > 0) DebugLog.add("cmdbus: cleared $dropped pending")
+    }
 }

@@ -126,8 +126,8 @@ class VehicleSession(
             established = true
             PresenceStatus.set(label, PresenceStatus.Link.CONNECTED)
             DebugLog.ble("·", label, "connected")
-            g.discoverServices()
-            withTimeout(OP_MS) { servicesReady.await() }
+            if (!g.discoverServices()) error("discoverServices rejected")
+            if (!withTimeout(OP_MS) { servicesReady.await() }) error("service discovery failed")
             sessionAlive = true
             // Match the official app's connection interval. Its HCI btsnoop (captures/) shows it
             // runs links at a 45 ms baseline and relaxes to 90/135 ms — it NEVER uses HIGH (11–15 ms),
@@ -294,6 +294,7 @@ class VehicleSession(
             }
         } finally {
             sessionAlive = false
+            if (primary) CommandBus.clear()
             PresenceStatus.set(label, PresenceStatus.Link.DOWN)
             runCatching { g.disconnect() }
             runCatching { g.close() }
@@ -366,7 +367,7 @@ class VehicleSession(
         // (airtime starvation or remote silence). A rejected submit never calls back.
         val rc = g.writeCharacteristic(char, value, writeType)
         if (rc != BluetoothStatusCodes.SUCCESS) error("write ${tag(char.uuid)} rejected rc=${rcName(rc)}")
-        withTimeout(timeoutMs) { charWritten.await() }
+        if (!withTimeout(timeoutMs) { charWritten.await() }) error("write ${tag(char.uuid)} failed")
     }
 
     /** Decode the common BluetoothStatusCodes returned by GATT submit calls. */

@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
@@ -56,8 +57,8 @@ class ActiveCommandManager(
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
             withTimeout(CONNECT_MS) { connected.await() }
-            gatt.discoverServices()
-            withTimeout(OP_MS) { servicesReady.await() }
+            if (!gatt.discoverServices()) error("discoverServices rejected")
+            if (!withTimeout(OP_MS) { servicesReady.await() }) error("service discovery failed")
             DebugLog.ble("·", "gatt", "connected + discovered")
 
             val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
@@ -112,18 +113,25 @@ class ActiveCommandManager(
         return null
     }
 
-    private suspend fun enableNotify(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
+    private suspend fun enableNotify(gatt: BluetoothGatt, char: BluetoothGattCharacteristic): Boolean {
         gatt.setCharacteristicNotification(char, true)
-        val cccd = char.getDescriptor(RivianBle.CCCD) ?: return
+        val cccd = char.getDescriptor(RivianBle.CCCD) ?: return false
         descriptorWritten = CompletableDeferred()
-        gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }
+        val rc = gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        if (rc != BluetoothStatusCodes.SUCCESS) {
+            DebugLog.ble("·", "gatt", "notify CCCD ${char.uuid} submit rejected rc=$rc")
+            return false
+        }
+        val ok = runCatching { withTimeout(OP_MS) { descriptorWritten.await() } }.getOrNull()
+        if (ok != true) DebugLog.ble("·", "gatt", "notify CCCD ${char.uuid} acked=false")
+        return ok == true
     }
 
     private suspend fun writeChar(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, value: ByteArray) {
         charWritten = CompletableDeferred()
-        gatt.writeCharacteristic(char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-        withTimeout(OP_MS) { charWritten.await() }
+        val rc = gatt.writeCharacteristic(char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        if (rc != BluetoothStatusCodes.SUCCESS) error("write ${char.uuid} rejected rc=$rc")
+        if (!withTimeout(OP_MS) { charWritten.await() }) error("write ${char.uuid} failed")
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
