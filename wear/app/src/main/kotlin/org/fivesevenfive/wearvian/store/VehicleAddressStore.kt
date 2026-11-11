@@ -20,9 +20,19 @@ class VehicleAddressStore(context: Context) {
         if (cur.add(address)) prefs.edit().putStringSet(KEY, cur).apply()
     }
 
+    /**
+     * The PRIMARY phone-key module's address, recorded at pairing once the module proved it is the
+     * enrolled vehicle. Connecting by this (not by the bonded device NAME) can't pick a leftover
+     * bond from an earlier enrollment or another vehicle. Null for installs paired before this.
+     */
+    var phoneKeyAddress: String?
+        get() = prefs.getString(KEY_PK, null)
+        set(value) { prefs.edit().putString(KEY_PK, value).apply() }
+
     fun clear() = prefs.edit().clear().apply()
 
     private companion object {
         const val KEY = "addresses"
+        const val KEY_PK = "phone_key_address"
     }
 }

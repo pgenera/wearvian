@@ -83,8 +83,8 @@ class ActiveCommandManager(
         notifications.clear()
         // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
         if (keyguard?.isDeviceLocked == true) throw CommandException(CommandFailure.WATCH_LOCKED, "watch locked — command blocked")
-        val device = adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }
-            ?: throw CommandException(CommandFailure.NOT_BONDED, "vehicle not bonded")
+        val device = PhoneKey.find(context, adapter)
+            ?: throw CommandException(CommandFailure.NOT_BONDED, "phone key not paired (or Bluetooth off)")
         DebugLog.ble("·", "gatt", "connecting ${device.address}")
         val gatt = device.connectGatt(context, false, gattCallback)
         try {

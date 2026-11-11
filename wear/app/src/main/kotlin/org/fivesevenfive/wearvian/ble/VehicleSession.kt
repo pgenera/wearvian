@@ -12,7 +12,9 @@ import android.content.Context
 import org.fivesevenfive.wearvian.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
@@ -97,35 +99,50 @@ class VehicleSession(
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
         // PRIMARY can go dormant when the car's parked — a direct connect keeps missing its
-        // rare advertisements and times out (status: "Timed out waiting for 10000 ms"). After a
-        // connect failure, fall back to an autoConnect=true background reconnect for PK: the
-        // controller completes it from the accept list whenever PK next advertises, with no
-        // connect window and no direct-connect slot to contend. Reset on a successful connect so
-        // an awake PK (and the sensors, which advertise actively) still get the fast direct path.
-        var connectFailures = 0
+        // rare advertisements and times out. After a connect failure, fall back to an
+        // autoConnect=true background reconnect: the controller completes it from the accept list
+        // whenever the module next advertises, with no direct-connect slot to contend. Sensors do
+        // the same after a few failures; backoff grows until a session authenticates
+        // ([ReconnectPolicy]).
+        val policy = ReconnectPolicy(primary)
         while (scope.isActive) {
-            val established = runCatching { runOnce(scope, autoConnect = primary && connectFailures > 0) }
-                .onFailure { DebugLog.add("$label: session ended — ${it.message}") }
-                .getOrDefault(false)
-            connectFailures = if (established) 0 else connectFailures + 1
-            if (scope.isActive) delay(RECONNECT_BACKOFF_MS)
+            val outcome = try {
+                runOnce(scope, autoConnect = policy.useAutoConnect)
+            } catch (e: Exception) {
+                // A real cancellation propagates; a timeout (also a CancellationException) is a failure.
+                currentCoroutineContext().ensureActive()
+                DebugLog.add("$label: session ended — ${e.message}")
+                ReconnectPolicy.Outcome.NO_CONNECT
+            }
+            policy.record(outcome)
+            if (scope.isActive) delay(policy.nextDelayMs())
         }
     }
 
-    /** @return true iff the GATT connection was established (auth/heartbeat may still fail after). */
-    private suspend fun runOnce(scope: CoroutineScope, autoConnect: Boolean): Boolean {
+    /**
+     * One connect→session attempt. Errors after the connect are caught here, so the outcome still
+     * says how far it got (a handshake failure must not read as "couldn't connect").
+     */
+    private suspend fun runOnce(scope: CoroutineScope, autoConnect: Boolean): ReconnectPolicy.Outcome {
         // Never run our own handshake on PK alongside a one-shot command's (they'd share the ACL and
         // clobber each other's nonces) — let an in-flight one-shot finish and close first.
         if (primary) ActiveCommandManager.awaitOneShotIdle()
         reset()
         var established = false
+        var authenticated = false
         PresenceStatus.set(label, PresenceStatus.Link.CONNECTING)
         DebugLog.ble("·", label, "connecting ${device.address}${if (autoConnect) " (autoConnect)" else ""}")
-        val g = device.connectGatt(context, autoConnect, gattCallback)
+        // connectGatt returns null (or throws) while Bluetooth is turning off.
+        val g = runCatching { device.connectGatt(context, autoConnect, gattCallback) }.getOrNull() ?: run {
+            DebugLog.ble("·", label, "connectGatt unavailable (Bluetooth off?)")
+            PresenceStatus.set(label, PresenceStatus.Link.DOWN)
+            return ReconnectPolicy.Outcome.NO_CONNECT
+        }
         try {
             // autoConnect has no bounded connect window — it completes whenever the peer next
-            // advertises, so await without a timeout (still cancelled if the scope tears down).
-            if (autoConnect) connected.await() else withTimeout(CONNECT_MS) { connected.await() }
+            // advertises. Still bound the wait (long): a pending connect silently dies with the
+            // adapter (Bluetooth restart), and re-issuing it is cheap.
+            withTimeout(if (autoConnect) AUTOCONNECT_WAIT_MS else CONNECT_MS) { connected.await() }
             established = true
             PresenceStatus.set(label, PresenceStatus.Link.CONNECTED)
             DebugLog.ble("·", label, "connected")
@@ -182,6 +199,7 @@ class VehicleSession(
             this.pNonce = pNonce
             this.vNonce = vNonce
             PresenceStatus.set(label, PresenceStatus.Link.UP)
+            authenticated = true
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
             // Now subscribe 0x20 (the ranging channel) and kick it off with
@@ -287,6 +305,10 @@ class VehicleSession(
                 if (counter % RSSI_EVERY == 0) g.readRemoteRssi()
                 delay(HEARTBEAT_PERIOD_MS)
             }
+        } catch (e: Exception) {
+            currentCoroutineContext().ensureActive() // real cancellation propagates; timeouts don't
+            if (!established) throw e // never connected: runForever logs + counts it as NO_CONNECT
+            DebugLog.add("$label: session ended — ${e.message}")
         } finally {
             sessionAlive = false
             if (primary) CommandBus.clear()
@@ -294,7 +316,11 @@ class VehicleSession(
             runCatching { g.disconnect() }
             runCatching { g.close() }
         }
-        return established
+        return when {
+            authenticated -> ReconnectPolicy.Outcome.AUTHENTICATED
+            established -> ReconnectPolicy.Outcome.CONNECTED
+            else -> ReconnectPolicy.Outcome.NO_CONNECT
+        }
     }
 
     /** True when [pauseReason] is the anti-theft lock pause (no commands may be sent). Must match
@@ -483,10 +509,17 @@ class VehicleSession(
                 sessionAlive = false
                 // status 0x13=remote-terminated, 0x08=link timeout, 0x16=local close,
                 // 0x3e=failed-to-establish, 0x85=gatt error.
+                val gone = IllegalStateException("disconnected status=$status")
                 if (!connected.isCompleted) {
-                    connected.completeExceptionally(IllegalStateException("disconnected status=$status"))
-                } else if (wasAlive) {
-                    DebugLog.ble("·", label, "disconnected status=0x%02x".format(status))
+                    connected.completeExceptionally(gone)
+                } else {
+                    if (wasAlive) DebugLog.ble("·", label, "disconnected status=0x%02x".format(status))
+                    // Fail any GATT op in flight now instead of letting it sit out its timeout on a
+                    // dead handle (the handshake would otherwise stall up to 5 s per pending step).
+                    servicesReady.completeExceptionally(gone)
+                    descriptorWritten.completeExceptionally(gone)
+                    charWritten.completeExceptionally(gone)
+                    notifications.values.forEach { it.completeExceptionally(gone) }
                 }
             }
         }
@@ -540,7 +573,8 @@ class VehicleSession(
         private const val CONNECT_MS = 35_000L
         private const val OP_MS = 5_000L
         private const val PHONEID_ECHO_MS = 3_000L
-        private const val RECONNECT_BACKOFF_MS = 1_500L
+        /** Bound on a pending autoConnect before it is re-issued (it dies with an adapter restart). */
+        private const val AUTOCONNECT_WAIT_MS = 10 * 60_000L
         // Decompile (l60/j0.e): legacy ranging cadence is ~300 ms; l60/i.n() enforces a 300 ms floor.
         private const val HEARTBEAT_PERIOD_MS = 300L
         // A single with-response heartbeat write stalling must NOT tear down the session (that was

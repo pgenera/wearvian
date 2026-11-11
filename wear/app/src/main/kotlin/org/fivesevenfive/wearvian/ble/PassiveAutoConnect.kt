@@ -37,11 +37,11 @@ class PassiveAutoConnect(private val onConnected: () -> Unit) {
     fun arm(context: Context): Boolean {
         if (gatt != null) return true
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        val pk = adapter?.bondedDevices?.firstOrNull { it.name == RivianBle.DEVICE_NAME } ?: run {
-            DebugLog.add("passive-autoconnect: no bonded ${RivianBle.DEVICE_NAME} — not armed")
+        val pk = PhoneKey.find(context, adapter) ?: run {
+            DebugLog.add("passive-autoconnect: no phone key (not paired / BT off) — not armed")
             return false
         }
-        gatt = pk.connectGatt(context, /* autoConnect = */ true, callback)
+        gatt = runCatching { pk.connectGatt(context, /* autoConnect = */ true, callback) }.getOrNull()
         DebugLog.add("passive-autoconnect: armed on PK")
         return gatt != null
     }

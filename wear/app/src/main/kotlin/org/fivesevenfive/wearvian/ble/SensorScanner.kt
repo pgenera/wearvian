@@ -8,7 +8,8 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.util.logw
 
 /**
@@ -23,6 +24,9 @@ class SensorScanner(context: Context) {
 
     data class Hit(val name: String?, val address: String, val rssi: Int)
 
+    /** The system rejected the scan (onScanFailed) — NOT the same as "no sensors in range". */
+    class ScanFailedException(val errorCode: Int) : Exception("sensor scan failed err=$errorCode")
+
     private val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
@@ -36,7 +40,12 @@ class SensorScanner(context: Context) {
             return emptyList()
         }
         val hits = LinkedHashMap<String, Hit>()
+        val failed = CompletableDeferred<Int>()
         val cb = object : ScanCallback() {
+            override fun onScanFailed(errorCode: Int) {
+                failed.complete(errorCode)
+            }
+
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val prev = hits[result.device.address]
                 if (prev == null || result.rssi > prev.rssi) {
@@ -51,11 +60,13 @@ class SensorScanner(context: Context) {
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
         scanner.startScan(listOf(filter), settings, cb)
-        try {
-            delay(durationMs)
+        val failCode = try {
+            // startScan reports most failures asynchronously (rate limit, no filter slots).
+            withTimeoutOrNull(durationMs) { failed.await() }
         } finally {
             runCatching { scanner.stopScan(cb) }
         }
+        if (failCode != null) throw ScanFailedException(failCode)
         return hits.values.sortedByDescending { it.rssi }
     }
 }
