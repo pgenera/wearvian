@@ -149,6 +149,11 @@ class PairingManager(
 
             override fun onScanFailed(errorCode: Int) {
                 logw("scan: failed errorCode=$errorCode")
+                // Fail fast with the real cause instead of waiting out SCAN_TIMEOUT_MS and then
+                // blaming the car ("Couldn't find your vehicle").
+                found.completeExceptionally(
+                    IllegalStateException("Bluetooth scan failed (error $errorCode). Try again in a moment."),
+                )
             }
         }
         val filter = ScanFilter.Builder().setDeviceName(RivianBle.DEVICE_NAME).build()
@@ -213,6 +218,7 @@ class PairingManager(
         val gone = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
+                if (!intent.isFor(device)) return
                 if (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
                     == BluetoothDevice.BOND_NONE
                 ) {
@@ -244,11 +250,16 @@ class PairingManager(
         val bonded = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context, intent: Intent) {
+                if (!intent.isFor(device)) return // another device's bond broadcast
                 val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
-                logi("bond: EXTRA_BOND_STATE=$state")
-                when (state) {
-                    BluetoothDevice.BOND_BONDED -> bonded.complete(true)
-                    BluetoothDevice.BOND_NONE -> bonded.complete(false)
+                val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.ERROR)
+                logi("bond: EXTRA_BOND_STATE=$state prev=$prev")
+                when {
+                    state == BluetoothDevice.BOND_BONDED -> bonded.complete(true)
+                    // Only BONDING→NONE is a rejection of OUR createBond(); a late BONDED→NONE from
+                    // removeStaleBond() must not abort pairing (the timeout still bounds the wait).
+                    state == BluetoothDevice.BOND_NONE && prev == BluetoothDevice.BOND_BONDING ->
+                        bonded.complete(false)
                 }
             }
         }
@@ -262,6 +273,10 @@ class PairingManager(
             runCatching { context.unregisterReceiver(receiver) }
         }
     }
+
+    /** Whether a bond-state broadcast is about [device] (the action fires for every device). */
+    private fun Intent.isFor(device: BluetoothDevice): Boolean =
+        getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)?.address == device.address
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
