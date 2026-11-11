@@ -308,6 +308,8 @@ class KeyTileService : TileService() {
      * passive) just make sure the secret is ready.
      */
     override fun onTileEnterEvent(requestParams: EventBuilders.TileEnterEvent) {
+        // Recorded here, synchronously, so a leave that arrives before the work below runs still wins.
+        val visit = ActiveCommandManager.tileEntered()
         val ctx = applicationContext
         scope.launch {
             val enrollment = EnrollmentStore(ctx).load() ?: return@launch
@@ -316,7 +318,7 @@ class KeyTileService : TileService() {
             // Only with the key fully off. While passive, PK is watched by a background autoConnect
             // and opening a link would wake the key to active just because the tile was glanced at.
             if (!PresenceService.isRunning) {
-                ActiveCommandManager.prewarm(ctx, enrollment, keyManager)
+                ActiveCommandManager.prewarm(ctx, enrollment, keyManager, visit)
             } else {
                 SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
             }
@@ -325,7 +327,7 @@ class KeyTileService : TileService() {
 
     /** Tile left view without a tap: let go of a pre-opened link now instead of at its expiry. */
     override fun onTileLeaveEvent(requestParams: EventBuilders.TileLeaveEvent) {
-        ActiveCommandManager.releasePrewarm()
+        ActiveCommandManager.tileLeft()
     }
 
     private fun dispatch(code: Int, label: String) {

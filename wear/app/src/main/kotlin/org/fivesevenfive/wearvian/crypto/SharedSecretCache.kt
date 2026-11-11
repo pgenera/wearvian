@@ -35,14 +35,15 @@ class SecretCache(private val scope: CoroutineScope) {
     }
 
     private fun deferredFor(key: String, compute: () -> ByteArray): Deferred<ByteArray> = synchronized(lock) {
-        cached?.let { (k, v) -> if (k == key) return@synchronized CompletableDeferred(v) }
+        // Copied under the lock: clear() zeroes the cached array in place.
+        cached?.let { (k, v) -> if (k == key) return@synchronized CompletableDeferred(v.copyOf()) }
         inFlight?.let { (k, d) -> if (k == key && !d.isCompleted) return@synchronized d }
         val gen = generation
         val d = scope.async {
             val value = compute()
             synchronized(lock) {
                 if (generation == gen) {
-                    cached = key to value
+                    cached = key to value.copyOf() // its own copy, so clear() never zeroes a returned one
                     if (inFlight?.first == key) inFlight = null
                 }
             }

@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,7 @@ import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
+import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.loge
@@ -76,19 +78,28 @@ class ActiveCommandManager(
      * Fully time-bounded; a failure's [CommandException.failure] says why (other exceptions mean
      * [CommandFailure.SEND_FAILED]). Uses the tile's pre-opened link ([prewarm]) when one is up.
      */
-    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> =
-        oneShotLock.withLock {
-            val warmLink = takeWarmLocked()
-            var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt)
-            else attempt(enrollment, commandCode, label, null)
-            val first = result.exceptionOrNull()
-            if (first != null && failureOf(first).retryable && currentCoroutineContext().isActive) {
-                DebugLog.add("cmd $label retrying once")
-                delay(RETRY_DELAY_MS)
-                result = attempt(enrollment, commandCode, label, null)
+    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> {
+        // Registered before queueing on the lock: a pre-warm this tap is waiting on must finish
+        // (and hand over its link) even if the tile leaves view meanwhile.
+        prewarmGate.commandWaiting()
+        try {
+            return oneShotLock.withLock {
+                val warmLink = takeWarmLocked()
+                var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt)
+                else attempt(enrollment, commandCode, label, null)
+                val first = result.exceptionOrNull()
+                if (first != null && failureOf(first).retryable && currentCoroutineContext().isActive) {
+                    DebugLog.add("cmd $label retrying once")
+                    // A pre-opened link that turned out dead isn't a reason to back off: connect now.
+                    if (warmLink == null) delay(RETRY_DELAY_MS)
+                    result = attempt(enrollment, commandCode, label, null)
+                }
+                result
             }
-            result
+        } finally {
+            prewarmGate.commandDone()
         }
+    }
 
     /**
      * One try. [preopened] is a link [openLink] already connected and subscribed (tile pre-warm);
@@ -106,7 +117,11 @@ class ActiveCommandManager(
         // The StrongBox ECDH (0.5–2 s) used to run only after the connect; start it now (or find it
         // cached) so it overlaps the connect instead of adding to it.
         SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
-        val gatt = preopened?.also { DebugLog.ble("·", "gatt", "using pre-opened link") } ?: openLink()
+        val gatt = preopened?.also {
+            DebugLog.ble("·", "gatt", "using pre-opened link")
+            // A held link idles at the default interval (see prewarm); speed it up now it's in use.
+            it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        } ?: openLink(CONNECT_MS, highPriority = true, requireSubscriptions = false)
         try {
             authenticateAndSend(gatt, enrollment, commandCode, label)
         } finally {
@@ -120,9 +135,13 @@ class ActiveCommandManager(
     /**
      * Connect, discover and subscribe the handshake + command characteristics; on failure the
      * client is closed and the error rethrown. Everything before the authentication, so the tile can
-     * do it ahead of a tap.
+     * do it ahead of a tap. [highPriority] asks for the fastest interval (a tap's burst of round
+     * trips; a held pre-warm link stays at the default so an unused one costs less).
+     * [requireSubscriptions] fails the link if a CCCD write isn't acked — for a pre-warm, so a
+     * half-subscribed link isn't kept for a tap to time out on. A tap keeps the old tolerant
+     * behaviour.
      */
-    private suspend fun openLink(connectMs: Long = CONNECT_MS): BluetoothGatt {
+    private suspend fun openLink(connectMs: Long, highPriority: Boolean, requireSubscriptions: Boolean): BluetoothGatt {
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
         descriptorWritten = CompletableDeferred()
@@ -138,7 +157,7 @@ class ActiveCommandManager(
                 ?: throw CommandException(CommandFailure.NOT_REACHABLE, "connect timed out")
             // A one-shot is a short burst of sequential round trips: run it at the fastest interval.
             // (The car may still impose its own; the live session keeps BALANCED, see VehicleSession.)
-            val pri = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+            val pri = if (highPriority) gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) else null
             if (!gatt.discoverServices()) error("discoverServices rejected")
             if (!withTimeout(OP_MS) { servicesReady.await() }) error("service discovery failed")
             DebugLog.ble("·", "gatt", "connected + discovered connPriReq=$pri")
@@ -146,9 +165,10 @@ class ActiveCommandManager(
             // Only what the one-shot reads: 0x12 (vehicle-id echo), 0x15 (vNonce), 0x20 (command
             // response). Not 0x1c vehicle status — nothing here reads it, and it was a serial
             // CCCD round trip on every tap.
-            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID))
-            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE))
-            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND))
+            val subscribed = enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)) and
+                enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)) and
+                enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND))
+            if (requireSubscriptions && !subscribed) error("notification subscribe failed")
             return gatt
         } catch (t: Throwable) {
             closeLink(gatt)
@@ -281,74 +301,114 @@ class ActiveCommandManager(
         /** Held for the whole of each one-shot (both attempts) and of each pre-warm connect. */
         private val oneShotLock = Mutex()
 
-        private class WarmLink(val manager: ActiveCommandManager, val gatt: BluetoothGatt) {
+        /** Tile visibility + waiting taps, updated synchronously from the tile callbacks. */
+        private val prewarmGate = PrewarmGate()
+
+        private class WarmLink(
+            val manager: ActiveCommandManager,
+            val gatt: BluetoothGatt,
+            val visit: Int,
+            var heldSinceMs: Long,
+        ) {
             var expiry: Job? = null
         }
 
         /** The pre-opened link waiting for a tap; guarded by [oneShotLock]. */
         private var warm: WarmLink? = null
-        @Volatile private var prewarmJob: Job? = null
+        private val jobLock = Any()
+        private var prewarmJob: Job? = null // guarded by jobLock
+        private var prewarmJobVisit = 0     // guarded by jobLock
         private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+        private fun now() = SystemClock.elapsedRealtime()
+
+        /** Tile came into view. Call synchronously from the callback; pass the result to [prewarm]. */
+        fun tileEntered(): Int = prewarmGate.entered()
+
         /**
-         * Tile came into view with the key off: start the ECDH and open (connect, discover,
-         * subscribe) a link to PK now, so a tap within [PREWARM_HOLD_MS] only has to authenticate and
-         * write the command. The caller checks the routing (key off, watch unlocked).
+         * Tile left view. Synchronously makes the visit's pre-warm unwanted and cancels it (unless a
+         * tap is waiting on it), then drops an unused held link.
          */
-        fun prewarm(context: Context, enrollment: Enrollment, keyManager: KeyManager) {
-            SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
-            if (prewarmJob?.isActive == true) return
-            prewarmJob = warmScope.launch {
+        fun tileLeft() {
+            if (prewarmGate.left()) synchronized(jobLock) { prewarmJob?.cancel() }
+            warmScope.launch {
                 oneShotLock.withLock {
-                    val current = warm
-                    if (current != null && !current.manager.linkLost) {
-                        armExpiryLocked(current) // still up: hold it for another window
-                        return@withLock
-                    }
-                    if (current != null) closeWarmLocked("link lost")
-                    DebugLog.add("cmd: pre-warming link for tile")
-                    val manager = ActiveCommandManager(context.applicationContext, keyManager)
-                    val gatt = try {
-                        manager.openLink(PREWARM_CONNECT_MS)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        DebugLog.add("cmd: pre-warm failed — ${e.message}")
-                        return@withLock
-                    }
-                    warm = WarmLink(manager, gatt).also { armExpiryLocked(it) }
-                    DebugLog.add("cmd: link pre-warmed")
+                    val link = warm ?: return@withLock
+                    if (!prewarmGate.wanted(link.visit, PresenceService.isRunning)) closeWarmLocked("tile left")
                 }
             }
         }
 
-        /** Tile left view: drop an unused pre-opened link now rather than at its expiry. */
-        fun releasePrewarm() {
-            warmScope.launch {
-                prewarmJob?.cancel()
-                oneShotLock.withLock { closeWarmLocked("tile left") }
+        /**
+         * Tile [visit] is in view with the key off: start the ECDH and open (connect, discover,
+         * subscribe) a link to PK now, so a tap within [PREWARM_HOLD_MS] only has to authenticate and
+         * write the command. Whether it's still wanted (tile still in view, key still off) is
+         * re-checked under the lock before connecting and before the link is kept.
+         */
+        fun prewarm(context: Context, enrollment: Enrollment, keyManager: KeyManager, visit: Int) {
+            SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
+            val app = context.applicationContext
+            synchronized(jobLock) {
+                if (prewarmJob?.isActive == true && prewarmJobVisit == visit) return
+                prewarmJob?.cancel() // an earlier visit's
+                prewarmJobVisit = visit
+                prewarmJob = warmScope.launch { runPrewarm(app, keyManager, visit) }
             }
+        }
+
+        private suspend fun runPrewarm(app: Context, keyManager: KeyManager, visit: Int) = oneShotLock.withLock {
+            if (!prewarmGate.wanted(visit, PresenceService.isRunning)) return@withLock
+            val current = warm
+            if (current != null) {
+                if (!current.manager.linkLost && PrewarmGate.fresh(current.heldSinceMs, now(), PREWARM_HOLD_MS)) {
+                    current.heldSinceMs = now() // still up: hold it for another window
+                    armExpiryLocked(current)
+                    return@withLock
+                }
+                closeWarmLocked("stale")
+            }
+            DebugLog.add("cmd: pre-warming link for tile")
+            val manager = ActiveCommandManager(app, keyManager)
+            val gatt = try {
+                manager.openLink(PREWARM_CONNECT_MS, highPriority = false, requireSubscriptions = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DebugLog.add("cmd: pre-warm failed — ${e.message}")
+                return@withLock
+            }
+            if (!prewarmGate.wanted(visit, PresenceService.isRunning)) {
+                manager.closeLink(gatt)
+                DebugLog.add("cmd: pre-warmed link not needed any more — closed")
+                return@withLock
+            }
+            warm = WarmLink(manager, gatt, visit, now()).also { armExpiryLocked(it) }
+            DebugLog.add("cmd: link pre-warmed")
         }
 
         private fun armExpiryLocked(link: WarmLink) {
             link.expiry?.cancel()
+            // Best effort only: delay() stalls while the CPU sleeps, so takeWarmLocked also checks
+            // the hold window by the monotonic clock before using a link.
             link.expiry = warmScope.launch {
                 delay(PREWARM_HOLD_MS)
                 oneShotLock.withLock { if (warm === link) closeWarmLocked("unused") }
             }
         }
 
-        /** Hand the pre-opened link to a command (null if none, or it dropped). Lock held. */
+        /** Hand the pre-opened link to a command (null if none, dropped, or past its window). Lock held. */
         private fun takeWarmLocked(): WarmLink? {
             val link = warm ?: return null
             warm = null
             link.expiry?.cancel()
-            if (link.manager.linkLost) {
-                link.manager.closeLink(link.gatt)
-                DebugLog.add("cmd: pre-warmed link had dropped — connecting fresh")
-                return null
+            val why = when {
+                link.manager.linkLost -> "had dropped"
+                !PrewarmGate.fresh(link.heldSinceMs, now(), PREWARM_HOLD_MS) -> "was past its window"
+                else -> return link
             }
-            return link
+            link.manager.closeLink(link.gatt)
+            DebugLog.add("cmd: pre-warmed link $why — connecting fresh")
+            return null
         }
 
         private fun closeWarmLocked(why: String) {
@@ -361,12 +421,13 @@ class ActiveCommandManager(
 
         /**
          * Suspend until no one-shot command holds a GATT client on PK. A pre-warm in progress or an
-         * unused pre-opened link is dropped: the presence session is taking over the link.
+         * unused pre-opened link is dropped: the presence service is taking over the link. Called
+         * before the PRIMARY session connects and before passive arms its PK autoConnect.
          */
         suspend fun awaitOneShotIdle() {
-            prewarmJob?.cancel()
+            synchronized(jobLock) { prewarmJob?.cancel() }
             if (oneShotLock.isLocked) DebugLog.add("cmd: waiting for one-shot to finish")
-            oneShotLock.withLock { closeWarmLocked("presence session starting") }
+            oneShotLock.withLock { closeWarmLocked("presence service starting") }
         }
 
         /** Classify a one-shot failure for retry policy and user feedback. */

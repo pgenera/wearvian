@@ -58,6 +58,9 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
                 // now on; existing keys keep working (ensureKey generates only when absent).
                 // Runtime protection for an already-running session is Layer 1 (heartbeats
                 // gated on isDeviceLocked in VehicleSession / ActiveCommandManager).
+                // NOTE: since SharedSecretCache, the ECDH result is kept in memory for the
+                // process lifetime once computed, so this layer only stops the FIRST derivation
+                // while locked; after that, commands and sessions rely on Layer 1's lock checks.
                 .setUnlockedDeviceRequired(true)
                 .apply { if (strongBox) setIsStrongBoxBacked(true) }
                 .build()

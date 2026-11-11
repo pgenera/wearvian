@@ -44,6 +44,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
+import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
 import org.fivesevenfive.wearvian.ble.PhoneKey
@@ -904,6 +905,10 @@ class PresenceService : Service() {
         // for the scan to lose every node and arm autoConnect then ([markDeparted]). Awaiting the
         // teardown means the old PK GATT is closed and we never briefly hold two clients to it.
         stopBle()
+        // A tile pre-warm may hold a link to PK (the service can start straight into passive, with no
+        // PRIMARY session to release it): drop it before arming the autoConnect, which would
+        // otherwise complete at once over that link and wake us straight back to active.
+        ActiveCommandManager.awaitOneShotIdle()
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
         proximityScanFailures = 0
