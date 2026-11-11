@@ -8,13 +8,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.ble.CommandDispatcher
 import org.fivesevenfive.wearvian.ble.CommandOutcome
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
+import org.fivesevenfive.wearvian.comms.EnrollmentContract
 import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
@@ -71,6 +75,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsStore(app)
     private val keyManager = KeyManager()
     private val companion = CompanionEnrollmentClient(app)
+    /** The running enrollment request (or stored-result pickup); null/inactive when idle. */
+    private var enrollJob: Job? = null
 
     private val _state = mutableStateOf(SetupUiState())
     val state: State<SetupUiState> get() = _state
@@ -97,10 +103,17 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refresh() {
+        // An enrollment request is still waiting on the phone: keep "Check your phone" up rather
+        // than flipping back to "Set up" (which would let a second request start).
+        if (enrollJob?.isActive == true) {
+            logi("refresh: enrollment in progress — leaving phase=${_state.value.phase}")
+            return
+        }
         val e = store.load()
         // Log key presence on every launch so persistence across app updates is
         // verifiable from logcat: enrolled+hasKey should stay true after an update.
         logi("refresh: enrolled=${e != null} hasKey=${keyManager.hasKey()} bonded=${e?.bonded} vin=${e?.vin}")
+        if (e == null) pickUpStoredResult()
         _state.value = when {
             e == null -> SetupUiState(Phase.NEEDS_SETUP)
             // Reflect the real foreground-service state so the toggle doesn't desync
@@ -132,9 +145,13 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
      * performs the Rivian cloud login + EnrollPhone and returns the VAS IDs.
      */
     fun startEnrollment() {
+        if (enrollJob?.isActive == true) {
+            logi("startEnrollment: already in progress — ignoring")
+            return
+        }
         logi("startEnrollment: begin")
-        viewModelScope.launch {
-            runCatching {
+        enrollJob = viewModelScope.launch {
+            try {
                 _state.value = SetupUiState(
                     Phase.AWAITING_COMPANION,
                     detail = "Open wearvian companion on your phone and sign in to Rivian…",
@@ -143,30 +160,58 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 logi("startEnrollment: public key ready (len=${publicKeyHex.length}); contacting companion")
                 val result = companion.requestEnrollment(publicKeyHex, deviceName = "Pixel Watch 4")
                 if (!result.isOk) error(result.error ?: "Enrollment failed")
-                val vehicle = result.vehicles.firstOrNull()
-                    ?: error("No vehicles on this Rivian account")
-                logi("startEnrollment: enrolled vin=${vehicle.vin} vasPhoneId=${vehicle.vasPhoneId} identityId=${vehicle.identityId} asWatch=${result.asWatch}")
-
-                store.save(
-                    Enrollment(
-                        userId = result.userId,
-                        vehicleId = vehicle.vehicleId,
-                        vin = vehicle.vin,
-                        vasVehicleId = vehicle.vasVehicleId,
-                        vehiclePublicKey = vehicle.vehiclePublicKey,
-                        vasPhoneId = vehicle.vasPhoneId,
-                        identityId = vehicle.identityId,
-                        asWatch = result.asWatch,
-                        bonded = false,
-                    ),
-                )
-                _state.value = SetupUiState(Phase.ENROLLED, detail = vehicle.vin)
-                logi("startEnrollment: stored enrollment; phase=ENROLLED")
-            }.onFailure {
-                loge("startEnrollment failed", it)
-                _state.value = SetupUiState(Phase.ERROR, detail = it.message ?: "Enrollment failed")
+                saveEnrollment(result)
+            } catch (t: Throwable) {
+                // Leaving the screen cancels us; the phone's stored result is picked up next time.
+                if (t is CancellationException && t !is TimeoutCancellationException) throw t
+                loge("startEnrollment failed", t)
+                val detail = if (t is TimeoutCancellationException) {
+                    "The phone didn't answer in time. If you finish signing in on the phone, " +
+                        "open wearvian again to pick up the result."
+                } else {
+                    t.message ?: "Enrollment failed"
+                }
+                _state.value = SetupUiState(Phase.ERROR, detail = detail)
             }
         }
+    }
+
+    /**
+     * Not enrolled: apply a result the companion stored for one of our earlier requests while we
+     * weren't listening (timed out, left the screen, app killed). Silent when there is none.
+     */
+    private fun pickUpStoredResult() {
+        if (enrollJob?.isActive == true) return
+        enrollJob = viewModelScope.launch {
+            val result = companion.findStoredResult() ?: return@launch
+            if (store.load() != null) return@launch
+            logi("pickUpStoredResult: applying stored result")
+            runCatching { saveEnrollment(result) }
+                .onFailure { loge("pickUpStoredResult failed", it) }
+        }
+    }
+
+    /** Persist an ok [result] (first vehicle), then let the phone drop its stored copy. */
+    private suspend fun saveEnrollment(result: EnrollmentContract.Result) {
+        val vehicle = result.vehicles.firstOrNull()
+            ?: error("No vehicles on this Rivian account")
+        logi("saveEnrollment: vehicles=${result.vehicles.size} asWatch=${result.asWatch}")
+        store.save(
+            Enrollment(
+                userId = result.userId,
+                vehicleId = vehicle.vehicleId,
+                vin = vehicle.vin,
+                vasVehicleId = vehicle.vasVehicleId,
+                vehiclePublicKey = vehicle.vehiclePublicKey,
+                vasPhoneId = vehicle.vasPhoneId,
+                identityId = vehicle.identityId,
+                asWatch = result.asWatch,
+                bonded = false,
+            ),
+        )
+        _state.value = SetupUiState(Phase.ENROLLED, detail = vehicle.vin)
+        logi("saveEnrollment: stored enrollment; phase=ENROLLED")
+        companion.acknowledge(result.requestId)
     }
 
     /** Local BLE pairing + bonding. Requires BLE permissions to be granted first. */
@@ -306,6 +351,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         logi("reset: clearing enrollment cache + stopping presence (KEEPING Keystore key)")
         settings.keyArmed = false
         PresenceService.stop(getApplication())
+        enrollJob?.cancel()
+        companion.forgetOutstanding()
         store.clear()
         clearVehicleState()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
@@ -339,6 +386,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         logw("wipeIdentity: deleting Keystore key + enrollment — full re-key + re-enroll required")
         settings.keyArmed = false
         PresenceService.stop(getApplication())
+        enrollJob?.cancel()
+        companion.forgetOutstanding() // a late result would name the deleted key
         store.clear()
         clearVehicleState()
         keyManager.deleteKey()
