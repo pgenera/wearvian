@@ -43,15 +43,16 @@ UTF-8 JSON:
 (uncompressed hex, not PEM). `deviceType` is what the cloud records for the key; the companion may
 pass it through (`"watch"`) or override to `"phone"` (see the enroll-as-watch work).
 
-### `/wearvian/enroll/result` — phone → watch
+### Result — phone → watch
 
-UTF-8 JSON:
+The success payload is UTF-8 JSON:
 
 ```json
 {
   "v": 1,
   "requestId": "<echoed from request>",
   "status": "ok",
+  "asWatch": false,
   "vehicles": [
     {
       "vehicleId": "...",
@@ -62,28 +63,39 @@ UTF-8 JSON:
       "identityId": "..."
     }
   ],
-  "userId": "...",
-  "sessionTokens": {
-    "csrfToken": "...",
-    "appSessionToken": "...",
-    "userSessionToken": "..."
-  }
+  "userId": "..."
 }
 ```
 
-On failure:
+Rivian session tokens are no longer included (the watch never used them, and the payload is now
+stored in the Data Layer). Older watches ignore the missing field.
+
+On failure (message only):
 
 ```json
 { "v": 1, "requestId": "<echoed>", "status": "error", "error": "<human-readable>" }
 ```
 
-For multi-vehicle accounts the phone returns one entry per vehicle in `vehicles`.
+The phone enrolls one vehicle per request; if the account has several that can take the key, the
+user picks one on the phone. If the key is already enrolled on that vehicle as the requested kind
+(phone or watch), the phone reuses the existing `vasPhoneId`/`identityId` without calling
+`EnrollPhone`.
 
-## Transport notes
+The result is delivered two ways:
 
-- Primary transport is `MessageClient` for liveness/acknowledgement.
-- If a payload exceeds the ~100 KB `MessageClient` limit (session tokens can be large), fall back
-  to `DataClient` (`PutDataRequest`) at the same path; the watch listens on both.
+- **DataItem at `/wearvian/enroll/result/<requestId>`** (durable), with the JSON bytes under the
+  DataMap key `payload`. The Data Layer stores it and syncs it whenever the watch is reachable, so
+  a finished enrollment survives the watch timing out, leaving the screen, or being killed. The
+  watch persists its outstanding request ids (24 h) and, when not enrolled, looks for a stored
+  result for one of them on every resume.
+- **Message on `/wearvian/enroll/result`** (best-effort, for watches before durable results, and
+  for errors).
+
+### `/wearvian/enroll/ack` — watch → phone
+
+`{ "v": 1, "requestId": "<id>" }`, sent after the watch saved the enrollment. The watch also
+deletes the result DataItem(s) itself; on the ack the phone deletes its copy and shows the
+enrollment as confirmed. Until then the phone shows "waiting for your watch to confirm".
 
 ## Flow
 
@@ -91,6 +103,6 @@ For multi-vehicle accounts the phone returns one entry per vehicle in `vehicles`
    `wearvian_companion_enrollment`.
 2. Phone performs Rivian cloud login / MFA / `getUserInfo` / `EnrollPhone` (submitting the watch's
    public key).
-3. Phone replies on `/wearvian/enroll/result`.
-4. Watch persists the enrollment and operates **fully offline indefinitely** for passive
+3. Phone stores the result DataItem and sends the result message.
+4. Watch persists the enrollment, deletes the DataItem and acks. It then operates **fully offline indefinitely** for passive
    unlock/drive; the phone is only needed again for the next re-auth / re-enroll.
