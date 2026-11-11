@@ -29,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -237,7 +238,13 @@ class PresenceService : Service() {
         val wait = (SCAN_RETRY_MIN_MS shl (proximityScanFailures - 1).coerceAtMost(4)).coerceAtMost(SCAN_RETRY_MAX_MS)
         proximityRetryJob = scope.launch {
             delay(wait)
-            transition.withLock { if (passive && !locked && !btOff) armProximityScan() }
+            transition.withLock {
+                // The wait is over: stop counting as the pending retry, or a synchronous failure of
+                // this attempt (armProximityScan → onProximityScanFailed) would see this very job
+                // as "a retry is already pending" and schedule nothing, ending the retry chain.
+                if (proximityRetryJob === currentCoroutineContext()[Job]) proximityRetryJob = null
+                if (passive && !locked && !btOff) armProximityScan()
+            }
         }
     }
 

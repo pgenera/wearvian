@@ -154,6 +154,12 @@ class EnrollmentStore(context: Context) {
                 logw("EnrollmentStore: Keystore not usable right now; leaving the store untouched")
                 throw failure
             }
+            // The Keystore works NOW, but the failed attempts above may have hit an outage that has
+            // only just ended. Open once more before concluding the file itself is bad.
+            runCatching { open(app, masterKey) }.getOrNull()?.let {
+                logw("EnrollmentStore: open succeeded once the Keystore was confirmed healthy; store kept")
+                return it
+            }
             logw("EnrollmentStore: store unreadable with a working Keystore (${failure.javaClass.simpleName}); setting it aside and resetting — re-enroll needed, key kept")
             preserveAside(app)
             app.deleteSharedPreferences(PREFS_NAME)
