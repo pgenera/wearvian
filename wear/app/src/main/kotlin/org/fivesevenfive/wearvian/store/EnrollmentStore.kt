@@ -6,8 +6,13 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import org.fivesevenfive.wearvian.util.logi
 import org.fivesevenfive.wearvian.util.logw
+import java.io.File
 import java.io.IOException
 import java.security.GeneralSecurityException
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /** Everything (besides the Keystore private key) needed to be a phone key. */
 data class Enrollment(
@@ -36,7 +41,8 @@ data class Enrollment(
  */
 class EnrollmentStore(context: Context) {
 
-    private val prefs: SharedPreferences = prefs(context.applicationContext)
+    private val app: Context = context.applicationContext
+    private val prefs: SharedPreferences = prefs(app)
 
     fun isEnrolled(): Boolean = prefs.contains(KEY_VAS_PHONE_ID)
 
@@ -58,11 +64,13 @@ class EnrollmentStore(context: Context) {
     fun load(): Enrollment? {
         if (!isEnrolled()) return null
         // Values are decrypted in-process with the already-loaded keyset, so a failure here is real
-        // corruption, not a Keystore hiccup: drop the unreadable cache (key kept) rather than crash.
+        // corruption, not a Keystore hiccup: set the unreadable file aside and drop the cache (key
+        // kept) rather than crash.
         return try {
             read()
         } catch (e: SecurityException) {
-            logw("EnrollmentStore: stored enrollment unreadable (${e.javaClass.simpleName}); clearing — re-enroll needed, key kept")
+            logw("EnrollmentStore: stored enrollment unreadable (${e.javaClass.simpleName}); setting it aside — re-enroll needed, key kept")
+            preserveAside(app)
             prefs.edit().clear().commit()
             null
         }
@@ -112,31 +120,80 @@ class EnrollmentStore(context: Context) {
         }
 
         /**
-         * Open the encrypted prefs. A first failure is retried once as-is (a transient Keystore
-         * hiccup must not cost the enrollment). If it fails again with a crypto/IO error, the
-         * stored keyset or data is treated as corrupt (a known security-crypto failure mode): the
-         * file is deleted and recreated empty, so the app reads "not enrolled" instead of crashing on
-         * every launch. That only loses the enrollment cache — the Keystore phone key is untouched,
-         * so re-enrolling reuses the same key and never forces a re-key on the vehicle.
+         * Open the encrypted prefs, resetting them only when they are genuinely unreadable.
+         *
+         * A failed open is retried with a short backoff first: a Keystore hiccup must not cost the
+         * enrollment. The error type alone can't tell a hiccup from corruption, because Tink's
+         * AndroidKeysetManager swallows Keystore failures and falls back to parsing the encrypted
+         * keyset as cleartext, so a Keystore outage surfaces as the same parse/decrypt error real
+         * corruption gives. So before resetting we check the master key directly ([keystoreHealthy]);
+         * if the Keystore can't do a round trip right now, we throw and leave the file alone (the
+         * next use retries, since nothing is cached on failure).
+         *
+         * Only when the Keystore works and the store still won't open is it treated as corrupt (a
+         * known security-crypto failure mode): the file is copied aside ([preserveAside]) and then
+         * recreated empty, so the app reads "not enrolled" instead of crashing on every launch. That
+         * loses only the enrollment cache — the Keystore phone key is untouched, so re-enrolling reuses
+         * the same key and never forces a re-key on the vehicle.
          */
         private fun openWithRecovery(app: Context): SharedPreferences {
             // Master key first, with no recovery: if the Keystore itself fails, deleting our file
             // can't help and would only lose data, so let that surface (and be retried next use).
             val masterKey = runCatching { masterKey(app) }.getOrElse { masterKey(app) }
-            val first = runCatching { open(app, masterKey) }
-            first.getOrNull()?.let { return it }
-            logw("EnrollmentStore: open failed (${first.exceptionOrNull()?.javaClass?.simpleName}); retrying")
-            val second = runCatching { open(app, masterKey) }
-            second.getOrNull()?.let { return it }
-            val err = second.exceptionOrNull()!!
-            if (!isCorruption(err)) throw err
-            logw("EnrollmentStore: store unreadable (${err.javaClass.simpleName}); resetting it — re-enroll needed, key kept")
+            var err: Throwable? = null
+            for (attempt in 0 until OPEN_ATTEMPTS) {
+                if (attempt > 0) Thread.sleep(OPEN_RETRY_BASE_MS * attempt)
+                val result = runCatching { open(app, masterKey) }
+                result.getOrNull()?.let { return it }
+                err = result.exceptionOrNull()
+                logw("EnrollmentStore: open failed (${err?.javaClass?.simpleName}), attempt ${attempt + 1}/$OPEN_ATTEMPTS")
+            }
+            val failure = err!!
+            if (!isCorruptionCandidate(failure)) throw failure
+            if (!keystoreHealthy()) {
+                logw("EnrollmentStore: Keystore not usable right now; leaving the store untouched")
+                throw failure
+            }
+            logw("EnrollmentStore: store unreadable with a working Keystore (${failure.javaClass.simpleName}); setting it aside and resetting — re-enroll needed, key kept")
+            preserveAside(app)
             app.deleteSharedPreferences(PREFS_NAME)
             return open(app, masterKey)
         }
 
-        private fun isCorruption(t: Throwable): Boolean =
+        private fun isCorruptionCandidate(t: Throwable): Boolean =
             generateSequence(t) { it.cause }.any { it is GeneralSecurityException || it is IOException }
+
+        /**
+         * True if the security-crypto master key exists and can do an AES-GCM round trip right now.
+         * That is the key Tink uses to wrap the prefs keyset, so if it works, a failed open is the
+         * file's fault, not the Keystore's.
+         */
+        private fun keystoreHealthy(): Boolean = runCatching {
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val key = ks.getKey(MasterKey.DEFAULT_MASTER_KEY_ALIAS, null) as? SecretKey
+                ?: return@runCatching false
+            val enc = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
+            val ct = enc.doFinal(PROBE)
+            val dec = Cipher.getInstance("AES/GCM/NoPadding")
+                .apply { init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, enc.iv)) }
+            dec.doFinal(ct).contentEquals(PROBE)
+        }.getOrDefault(false)
+
+        /**
+         * Copy the store's file to no-backup storage before it is reset, overwriting any earlier copy,
+         * so a reset never destroys the only copy. Copied rather than renamed: Android caches the
+         * prefs in memory, and only [Context.deleteSharedPreferences] evicts that cache.
+         */
+        private fun preserveAside(app: Context) {
+            runCatching {
+                val src = File(app.dataDir, "shared_prefs/$PREFS_NAME.xml")
+                if (src.exists()) src.copyTo(File(app.noBackupFilesDir, "$PREFS_NAME.unreadable.xml"), overwrite = true)
+            }.onFailure { logw("EnrollmentStore: could not set the unreadable store aside (${it.javaClass.simpleName})") }
+        }
+
+        private const val OPEN_ATTEMPTS = 3
+        private const val OPEN_RETRY_BASE_MS = 200L
+        private val PROBE = byteArrayOf(0x77, 0x76)
 
         private fun masterKey(app: Context): MasterKey = MasterKey.Builder(app)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)

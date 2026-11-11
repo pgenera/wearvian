@@ -3,6 +3,9 @@
     <string name="app_name">wearvian</string>
     <string name="presence_channel_name">Phone key presence</string>
     <string name="presence_notification_title">wearvian</string>
+    <string name="alert_channel_name">Phone key alerts</string>
+    <string name="key_stopped_title">Phone key stopped</string>
+    <string name="key_stopped_text">Android stopped the key in the background. Tap to turn it back on.</string>
     <string name="presence_notification_text">Acting as your Rivian phone key</string>
     <string name="complication_soc_label">Rivian battery</string>
     <string name="complication_range_label">Rivian range</string>

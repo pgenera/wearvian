@@ -33,9 +33,19 @@ object ParkedIdlePolicy {
  * stall while the watch suspends in passive mode. A FIRST_MATCH after the set has been empty for at
  * least [debounceMs] is a genuine return even if the debounce timer never got to fire.
  *
+ * Backstop for a dropped MATCH_LOST: if any node was lost and nothing has been sighted since for at
+ * least [strandMs], the next FIRST_MATCH is a return even though some node is still (believed) seen.
+ * Without it, one MATCH_LOST the radio never delivers leaves that node in the set forever, the set
+ * never empties, the car never counts as gone, and its return is ignored, stranding the key in
+ * "Parked nearby" with passive unlock dead until the app is opened. Like the debounce, it is judged
+ * lazily from timestamps at the next sighting, so it costs no timer or wake lock. The price is that a
+ * genuinely edge-of-range node that drops out for longer than [strandMs] and comes back reads as a
+ * return (one wake to active, which the parked-idle drop undoes), the same as before the all-nodes
+ * rule but [strandMs] later.
+ *
  * Not thread-safe: confined to the service's single-thread scope.
  */
-class ProximityTracker(private val debounceMs: Long) {
+class ProximityTracker(private val debounceMs: Long, private val strandMs: Long) {
 
     enum class Found {
         /** The car came back after a confirmed (or elapsed) departure → wake to active. */
@@ -46,12 +56,15 @@ class ProximityTracker(private val debounceMs: Long) {
 
     private val seen = HashSet<String>()
     private var emptySinceMs: Long? = null
+    /** First loss (while other nodes were still seen) with no sighting since; see [strandMs]. */
+    private var partialLossSinceMs: Long? = null
 
     val size: Int get() = seen.size
 
     fun reset() {
         seen.clear()
         emptySinceMs = null
+        partialLossSinceMs = null
     }
 
     /**
@@ -61,8 +74,12 @@ class ProximityTracker(private val debounceMs: Long) {
         val wasEmpty = seen.isEmpty()
         seen.add(address)
         val emptyFor = emptySinceMs?.let { nowMs - it }
+        val strandedFor = partialLossSinceMs?.let { nowMs - it }
         emptySinceMs = null
-        val gone = departureConfirmed || (wasEmpty && emptyFor != null && emptyFor >= debounceMs)
+        partialLossSinceMs = null // any sighting is fresh evidence; a later loss restarts the clock
+        val gone = departureConfirmed ||
+            (wasEmpty && emptyFor != null && emptyFor >= debounceMs) ||
+            (strandedFor != null && strandedFor >= strandMs)
         return if (gone) Found.RETURN else Found.PRESENT
     }
 
@@ -72,7 +89,11 @@ class ProximityTracker(private val debounceMs: Long) {
      */
     fun lost(address: String, nowMs: Long): Boolean {
         if (!seen.remove(address)) return false
-        if (seen.isNotEmpty()) return false
+        if (seen.isNotEmpty()) {
+            if (partialLossSinceMs == null) partialLossSinceMs = nowMs
+            return false
+        }
+        partialLossSinceMs = null // the normal all-lost debounce takes over
         emptySinceMs = nowMs
         return true
     }
@@ -84,6 +105,7 @@ class ProximityTracker(private val debounceMs: Long) {
      */
     fun assumeAllLost(nowMs: Long) {
         seen.clear()
+        partialLossSinceMs = null
         emptySinceMs = nowMs
     }
 

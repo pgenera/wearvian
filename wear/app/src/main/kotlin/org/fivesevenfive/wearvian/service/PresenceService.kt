@@ -119,7 +119,7 @@ class PresenceService : Service() {
     private val transition = Mutex()
 
     /** Which of the car's nodes the passive proximity scan currently sees (departure = all lost). */
-    private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS)
+    private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS, STRANDED_LOSS_MS)
 
     /** True while the Bluetooth adapter is off: BLE is torn down and rebuilt on STATE_ON. */
     @Volatile private var btOff = false
@@ -402,8 +402,9 @@ class PresenceService : Service() {
         }
         if (!startAsForeground()) {
             // Background FGS-start restriction (a sticky restart while the app is in the background on
-            // Android 12+) or a permission race. Bail out instead of crashing into a restart loop.
-            if (lockJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
+            // Android 12+) or a permission race. Bail out instead of crashing into a restart loop, and
+            // tell the user: nothing restarts the key until the app is opened.
+            if (lockJob?.isActive != true) { notifyKeyStopped(); stopSelf(); return START_NOT_STICKY }
             return START_STICKY
         }
         val enrollment = EnrollmentStore(this).load()
@@ -1036,6 +1037,7 @@ class PresenceService : Service() {
     /** @return false if the system refused the foreground start (logged; the caller stops). */
     private fun startAsForeground(): Boolean = try {
         startAsForegroundOrThrow()
+        runCatching { getSystemService(NotificationManager::class.java).cancel(ALERT_NOTIFICATION_ID) } // back on → retract "stopped"
         true
     } catch (e: IllegalStateException) { // incl. ForegroundServiceStartNotAllowedException (API 31+)
         logw("PresenceService: startForeground refused (${e.javaClass.simpleName})")
@@ -1045,6 +1047,39 @@ class PresenceService : Service() {
         logw("PresenceService: startForeground denied (SecurityException)")
         DebugLog.add("presence: foreground start denied — Bluetooth permission missing")
         false
+    }
+
+    /**
+     * Post an ordinary (non-foreground) notification that the key stopped because Android refused
+     * the foreground restart. Tapping it opens the app, which restarts the key from keyArmed
+     * (SetupViewModel.refresh); a later successful foreground start retracts it.
+     */
+    private fun notifyKeyStopped() {
+        runCatching {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel(ALERT_CHANNEL_ID, getString(R.string.alert_channel_name), NotificationManager.IMPORTANCE_DEFAULT),
+            )
+            val open = PendingIntent.getActivity(
+                this, 3,
+                Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                },
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            nm.notify(
+                ALERT_NOTIFICATION_ID,
+                NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+                    .setContentTitle(getString(R.string.key_stopped_title))
+                    .setContentText(getString(R.string.key_stopped_text))
+                    .setSmallIcon(R.drawable.ic_launcher_foreground)
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_ERROR)
+                    .build(),
+            )
+            DebugLog.add("presence: posted key-stopped notification")
+        }.onFailure { logw("PresenceService: key-stopped notification failed (${it.javaClass.simpleName})") }
     }
 
     private fun startAsForegroundOrThrow() {
@@ -1161,6 +1196,8 @@ class PresenceService : Service() {
     companion object {
         private const val CHANNEL_ID = "wearvian_presence"
         private const val NOTIFICATION_ID = 1
+        private const val ALERT_CHANNEL_ID = "wearvian_alerts"
+        private const val ALERT_NOTIFICATION_ID = 2
         /** Presence-loop pass cadence (phone-key lookup retry; sensor rescans run on [RescanSchedule]). */
         private const val LOOP_TICK_MS = 5_000L
         private const val STAGGER_MS = 1_500L
@@ -1178,6 +1215,9 @@ class PresenceService : Service() {
         private const val PARKED_IDLE_TIMEOUT_MS = 15 * 60_000L
         /** Debounce a MATCH_LOST before counting the car as gone, so a brief dropout isn't a "left". */
         private const val DEPART_DEBOUNCE_MS = 30_000L
+        /** A node lost this long with no sighting since: the next sighting is a return even if other
+         *  nodes were never reported lost (backstop for a dropped MATCH_LOST; see [ProximityTracker]). */
+        private const val STRANDED_LOSS_MS = 3 * 60_000L
         /** Extra time a timed wake lock outlives the window it covers, so the window can finish. */
         private const val TIMED_WAKE_SLACK_MS = 5_000L
         /** Backoff bounds for retrying a failed ECDH in [presenceLoop]. */

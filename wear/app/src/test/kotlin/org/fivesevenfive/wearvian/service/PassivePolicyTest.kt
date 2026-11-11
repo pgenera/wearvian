@@ -58,7 +58,8 @@ class ParkedIdlePolicyTest {
 class ProximityTrackerTest {
 
     private val debounce = 30_000L
-    private val t = ProximityTracker(debounce)
+    private val strand = 180_000L
+    private val t = ProximityTracker(debounce, strand)
 
     @Test
     fun losingOneOfSeveralNodesIsNotADeparture() {
@@ -133,5 +134,67 @@ class ProximityTrackerTest {
         assertTrue(t.lost("A", 0))
         t.reset()
         assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000_000, departureConfirmed = false))
+    }
+
+    @Test
+    fun droppedLostEventStillLetsALateReturnWake() {
+        // B's MATCH_LOST never arrived, so the set never empties; A's return after the strand
+        // window must still wake instead of stranding the key in "Parked nearby".
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 1_000))
+        assertEquals(ProximityTracker.Found.RETURN, t.found("A", 1_000 + strand, departureConfirmed = false))
+    }
+
+    @Test
+    fun droppedLostEventReturnViaTheStuckNode() {
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 1_000))
+        assertEquals(ProximityTracker.Found.RETURN, t.found("B", 1_000 + strand, departureConfirmed = false))
+    }
+
+    @Test
+    fun partialLossBackWithinStrandWindowIsParkedNearby() {
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 1_000))
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000 + strand - 1, departureConfirmed = false))
+        // That sighting cleared the clock: a much later sighting is not a return on its own.
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("C", 10_000_000, departureConfirmed = false))
+    }
+
+    @Test
+    fun strandClockStartsAtTheFirstPartialLoss() {
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        t.found("C", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 1_000))
+        assertFalse(t.lost("B", 100_000)) // a second loss doesn't push the clock back
+        assertEquals(ProximityTracker.Found.RETURN, t.found("A", 1_000 + strand, departureConfirmed = false))
+    }
+
+    @Test
+    fun emptyingTheSetHandsOverToTheDebounce() {
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 1_000))
+        assertTrue(t.lost("B", 2_000))
+        // Back within the debounce of the LAST loss → still parked, even though A went first.
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 2_000 + debounce - 1, departureConfirmed = false))
+    }
+
+    @Test
+    fun resetAndAssumeAllLostClearTheStrandClock() {
+        t.found("A", 0, departureConfirmed = false)
+        t.found("B", 0, departureConfirmed = false)
+        assertFalse(t.lost("A", 0))
+        t.reset()
+        t.found("B", 1, departureConfirmed = false)
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000_000, departureConfirmed = false))
+        t.found("C", 1_000_000, departureConfirmed = false)
+        assertFalse(t.lost("C", 1_000_001))
+        t.assumeAllLost(1_000_002)
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000_002 + debounce - 1, departureConfirmed = false))
     }
 }
