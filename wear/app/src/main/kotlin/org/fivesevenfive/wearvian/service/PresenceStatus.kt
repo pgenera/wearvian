@@ -29,6 +29,10 @@ object PresenceStatus {
     val connected: StateFlow<Boolean> get() = _connected
 
     fun set(label: String, state: Link) {
+        // A DOWN for a link we don't know is a cancelled session's `finally` landing after [reset]
+        // (onDestroy cancels the scope without joining) — it carries no information, and recording
+        // it would repopulate a stopped status. Every live session reports CONNECTING first.
+        if (state == Link.DOWN && !links.containsKey(label)) return
         links[label] = state
         recompute()
         DebugLog.add("status: $label=$state → \"${_summary.value}\"")

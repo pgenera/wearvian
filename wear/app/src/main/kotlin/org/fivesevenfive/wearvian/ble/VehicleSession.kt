@@ -114,6 +114,9 @@ class VehicleSession(
 
     /** @return true iff the GATT connection was established (auth/heartbeat may still fail after). */
     private suspend fun runOnce(scope: CoroutineScope, autoConnect: Boolean): Boolean {
+        // Never run our own handshake on PK alongside a one-shot command's (they'd share the ACL and
+        // clobber each other's nonces) — let an in-flight one-shot finish and close first.
+        if (primary) ActiveCommandManager.awaitOneShotIdle()
         reset()
         var established = false
         PresenceStatus.set(label, PresenceStatus.Link.CONNECTING)
@@ -243,6 +246,12 @@ class VehicleSession(
                         val pri = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
                         DebugLog.add("$label: pausing presence heartbeats ($reason) — conn→LOW_POWER ($pri)")
                     }
+                    // Driving-doze / watch standby still owns an authenticated link, so a tapped
+                    // command goes out now rather than waiting (and going stale) for heartbeats to
+                    // resume. Never while the watch is locked (anti-theft) — those just expire.
+                    if (primary && msgChar != null && !heartbeatsLocked(reason)) {
+                        drainCommandBus(g, msgChar, pNonce, vNonce)
+                    }
                     delay(HEARTBEAT_PERIOD_MS)
                     continue
                 }
@@ -256,21 +265,7 @@ class VehicleSession(
                 // session with the running counter — the only way the vehicle accepts the
                 // presence-gated closures (charge-port/windows/liftgate). A fresh one-shot's
                 // counter=0 would look stale mid-session. See CommandBus / docs.
-                if (primary && msgChar != null) {
-                    while (true) {
-                        val cmd = CommandBus.poll() ?: break
-                        val frame = ActiveCommandFrames.activeCommandFrame(
-                            sharedSecret, pNonce, vNonce, commandCounter, cmd.code,
-                        )
-                        runCatching { writeChar(g, msgChar, frame) }
-                            .onSuccess {
-                                DebugLog.ble("→", "$label/0x20",
-                                    "CMD ${cmd.label} (0x%04x) cmdctr=$commandCounter".format(cmd.code), frame.size)
-                            }
-                            .onFailure { e -> DebugLog.add("$label: CMD ${cmd.label} write failed — ${e.message}") }
-                        commandCounter++
-                    }
-                }
+                if (primary && msgChar != null) drainCommandBus(g, msgChar, pNonce, vNonce)
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
                 // Non-fatal: a stalled beat (marginal RSSI, airtime contention) is tolerated so the
@@ -300,6 +295,33 @@ class VehicleSession(
             runCatching { g.close() }
         }
         return established
+    }
+
+    /** True when [pauseReason] is the anti-theft lock pause (no commands may be sent). Must match
+     *  the reason string set in the heartbeat loop (computed from the keyguard on this same tick). */
+    private fun heartbeatsLocked(pauseReason: String): Boolean = pauseReason == "watch locked"
+
+    /**
+     * PRIMARY: send every fresh queued [CommandBus] command on this authenticated session with the
+     * running command counter, reporting each write's outcome back to the bus for UI feedback.
+     */
+    private suspend fun drainCommandBus(
+        g: BluetoothGatt, msgChar: BluetoothGattCharacteristic, pNonce: ByteArray, vNonce: ByteArray,
+    ) {
+        while (true) {
+            val cmd = CommandBus.poll() ?: break
+            val frame = ActiveCommandFrames.activeCommandFrame(
+                sharedSecret, pNonce, vNonce, commandCounter, cmd.code,
+            )
+            runCatching { writeChar(g, msgChar, frame) }
+                .onSuccess {
+                    DebugLog.ble("→", "$label/0x20",
+                        "CMD ${cmd.label} (0x%04x) cmdctr=$commandCounter".format(cmd.code), frame.size)
+                }
+                .onFailure { e -> DebugLog.add("$label: CMD ${cmd.label} write failed — ${e.message}") }
+                .also { CommandBus.markSent(cmd, it.isSuccess) }
+            commandCounter++
+        }
     }
 
     private fun reset() {

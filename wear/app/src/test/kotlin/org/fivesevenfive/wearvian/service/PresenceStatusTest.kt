@@ -52,6 +52,7 @@ class PresenceStatusTest {
     @Test
     fun aDownLinkAlongsideAnUpLinkStaysConnected() {
         PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.set("S1", Link.CONNECTING)
         PresenceStatus.set("S1", Link.DOWN)
         assertEquals("1 link · Vehicle connected", PresenceStatus.summary.value)
         assertTrue(PresenceStatus.connected.value)
@@ -61,7 +62,26 @@ class PresenceStatusTest {
     fun snapshotIsSortedByLabel() {
         PresenceStatus.set("S2", Link.CONNECTING)
         PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.set("S1", Link.CONNECTING)
         PresenceStatus.set("S1", Link.DOWN)
         assertEquals("PK=UP S1=DOWN S2=CONNECTING", PresenceStatus.snapshot())
+    }
+
+    @Test
+    fun lateDownAfterResetDoesNotRepopulate() {
+        PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.reset()
+        // A cancelled session's finally block lands after the service already reset the status.
+        PresenceStatus.set("PK", Link.DOWN)
+        assertEquals("Stopped", PresenceStatus.summary.value)
+        assertEquals("", PresenceStatus.snapshot())
+    }
+
+    @Test
+    fun newSessionAfterResetIsTracked() {
+        PresenceStatus.reset()
+        PresenceStatus.set("PK", Link.CONNECTING)
+        PresenceStatus.set("PK", Link.DOWN)
+        assertEquals("PK=DOWN", PresenceStatus.snapshot())
     }
 }

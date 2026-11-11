@@ -145,11 +145,12 @@ class MainActivity : ComponentActivity() {
             val vm: SetupViewModel = viewModel()
             val state by vm.state
             // The tile's key control launches us with EXTRA_ACTIVATE_KEY to also start
-            // the mobile key. Activate once we're bonded (setPresence is idempotent).
+            // the mobile key. Activate once we're bonded (setPresence is idempotent). A running but
+            // passive key counts as not active: starting it again wakes it out of passive.
             val activate by activateKeyRequest
             LaunchedEffect(activate, state.phase) {
                 if (activate && state.phase == Phase.BONDED) {
-                    if (!state.presenceRunning) vm.setPresence(true)
+                    if (!state.presenceRunning || state.presencePassive) vm.setPresence(true)
                     activateKeyRequest.value = false
                 }
             }

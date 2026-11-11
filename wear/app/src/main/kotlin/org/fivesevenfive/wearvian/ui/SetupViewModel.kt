@@ -2,6 +2,7 @@ package org.fivesevenfive.wearvian.ui
 
 import android.app.Application
 import android.app.KeyguardManager
+import android.os.SystemClock
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
@@ -10,8 +11,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import org.fivesevenfive.wearvian.ble.ActiveCommandManager
-import org.fivesevenfive.wearvian.ble.CommandBus
+import org.fivesevenfive.wearvian.ble.CommandDispatcher
+import org.fivesevenfive.wearvian.ble.CommandOutcome
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.crypto.KeyManager
@@ -55,8 +56,8 @@ data class SetupUiState(
     val forceWatch: Boolean = false,
 )
 
-/** How long a command tap throbs when routed to the live session (fire-and-forget). */
-private const val COMMAND_INFLIGHT_MS = 1_200L
+/** Minimum time a command tap throbs, so a fast live-session send still visibly registers. */
+private const val COMMAND_MIN_INFLIGHT_MS = 600L
 
 /** Drives the full enroll -> pair -> presence flow and exposes UI state. */
 class SetupViewModel(app: Application) : AndroidViewModel(app) {
@@ -199,11 +200,11 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Send an authenticated active-entry command (e.g. lock/unlock) over BLE. The
-     * command code is held in [SetupUiState.inFlight] for the duration so the UI can
-     * throb + disable that button until the send completes or times out. Duplicate
-     * taps while in flight are ignored. [ActiveCommandManager.sendCommand] is fully
-     * time-bounded and never throws, so the code always clears.
+     * Send an authenticated active-entry command (e.g. lock/unlock) over BLE. The command code is
+     * held in [SetupUiState.inFlight] until [CommandDispatcher] reports the outcome (live-session
+     * frame written / dropped, or the one-shot finished), so the button throbs for the real send.
+     * Duplicate taps while in flight are ignored. A failure buzzes + toasts ([CommandFeedback]).
+     * Every path is time-bounded, so the code always clears.
      */
     fun sendCommand(commandCode: Int, label: String) {
         val enrollment = store.load() ?: run { logw("sendCommand: not enrolled"); return }
@@ -214,24 +215,14 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(inFlight = _state.value.inFlight + commandCode)
         viewModelScope.launch {
             try {
-                if (PresenceService.isRunning && !PresenceService.passive.value) {
-                    // Live session up: ride it so presence-gated closures (charge-port,
-                    // windows, liftgate) are accepted, and use its running counter. The
-                    // PRIMARY VehicleSession sends on its next heartbeat tick (~300 ms).
-                    CommandBus.submit(commandCode, label)
-                    delay(COMMAND_INFLIGHT_MS) // brief throb; the send is fire-and-forget on the session
+                val startedMs = SystemClock.elapsedRealtime()
+                val outcome = CommandDispatcher.send(getApplication(), enrollment, keyManager, commandCode, label)
+                if (outcome is CommandOutcome.Failed) {
+                    CommandFeedback.failed(getApplication(), label, outcome.failure)
                 } else {
-                    // Key off, or passive (running but no live session): one-shot
-                    // connect→handshake→command. Fine for lock/unlock (the security module answers
-                    // half-asleep). While parked nearby, an explicit UNLOCK means "I'm using the car"
-                    // → also reactivate the key so the next interaction has a live session ready. Other
-                    // commands (lock as you leave, closures) stay in power-save — one-shot only.
-                    if (PresenceService.parkedNearby.value && commandCode == ActiveCommandFrames.Cmd.UNLOCK_ALL) {
-                        PresenceService.start(getApplication())
-                    }
-                    withContext(Dispatchers.IO) {
-                        ActiveCommandManager(getApplication(), keyManager).sendCommand(enrollment, commandCode, label)
-                    }
+                    // A live-session send lands in ~300 ms; hold the throb briefly so the tap reads.
+                    val elapsed = SystemClock.elapsedRealtime() - startedMs
+                    if (elapsed < COMMAND_MIN_INFLIGHT_MS) delay(COMMAND_MIN_INFLIGHT_MS - elapsed)
                 }
             } finally {
                 _state.value = _state.value.copy(inFlight = _state.value.inFlight - commandCode)
@@ -242,6 +233,8 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
     fun setPresence(on: Boolean) {
         logi("setPresence: $on")
         settings.keyArmed = on // arm/disarm intent — survives auto power-save going passive
+        // start() on a passive service wakes it to active (PresenceService.onStartCommand); the
+        // passive flow collector then clears presencePassive.
         if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
         _state.value = _state.value.copy(presenceRunning = on, keyArmed = on)
     }
