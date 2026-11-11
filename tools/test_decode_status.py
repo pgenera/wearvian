@@ -63,6 +63,12 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual("unplugged", d["charge_state"])
         self.assertEqual(0, d["charge_time_raw"])
 
+    def test_cabin_temp_signed(self):
+        # status[7] is a signed byte: 0xfb = -5 C, not 251 C. Mirrors cabinTempIsSignedBelowFreezing.
+        for b7, want in (("fb", -5), ("80", -128), ("00", 0), ("7f", 127)):
+            s = bytes.fromhex("100f0c0f003011" + b7 + "dc00005078000000")
+            self.assertEqual(want, ds.decode_status(s)["cabin_c"])
+
     def test_charge_time_amperage_sweep(self):
         # Fixed-SoC (50%) 2026-06-09 sweep: raw [9..10] falls as current rises, and raw*current
         # is ~constant (~29k) -- proving the field is time-to-complete (∝ 1/power), not power.

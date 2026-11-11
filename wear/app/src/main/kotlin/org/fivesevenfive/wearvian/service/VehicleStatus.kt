@@ -114,7 +114,13 @@ object VehicleStatus {
         val gear: Gear = Gear.UNKNOWN,
         /** State of charge, integer percent; null when the frame is too short to carry it. */
         val socPercent: Int? = null,
-        /** Cabin temperature in °C; null when not present in the frame. */
+        /**
+         * Cabin temperature in °C; null when not present in the frame. status[7] is read as a
+         * SIGNED byte: the raw value is plain °C (0x1e = 30°C, no offset), so sub-zero readings
+         * can only be two's-complement — an unsigned read would show -5°C as 251°C. Real cabins
+         * never exceed 127°C, so the signed read loses nothing. (The official app's schema parser
+         * masks it `& 255`, i.e. unsigned; no sub-zero capture exists yet to confirm the sign.)
+         */
         val cabinTempC: Int? = null,
         /**
          * Estimated remaining range, km. A 9-bit field ([8] + bit0 of [9]) that overlaps the charge
@@ -171,7 +177,7 @@ object VehicleStatus {
             climateOn = frame.size >= 4 + 5 && ((s(4) and 0x3c) shr 2) in 1..4,
             gear = if (hasTelemetry) gearOf(s(6)) else Gear.UNKNOWN,
             socPercent = if (hasTelemetry) s(5) and 0x7f else null,
-            cabinTempC = if (hasTelemetry) s(7) else null,
+            cabinTempC = if (hasTelemetry) frame[4 + 7].toInt() else null, // signed — see [State.cabinTempC]
             rangeKm = when {
                 !hasTelemetry -> null
                 etaActive -> (s(8) or (s(9) shl 8)) and 0x1ff // 9-bit: [9]'s upper bits are the ETA
