@@ -214,4 +214,9 @@ object VehicleStatus {
         val cur = _state.value
         if (cur.valid && cur.live) _state.value = cur.copy(live = false)
     }
+
+    /** Forget the vehicle entirely (enrollment reset): back to "no state yet", not just stale. */
+    fun reset() {
+        _state.value = State()
+    }
 }

@@ -34,6 +34,11 @@ class TelemetryStore(context: Context) {
             .apply()
     }
 
+    /** Forget the last-known telemetry (enrollment reset): complications go back to "no data". */
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+
     private companion object {
         const val KEY_SOC = "soc_percent"
         const val KEY_RANGE = "range_km"

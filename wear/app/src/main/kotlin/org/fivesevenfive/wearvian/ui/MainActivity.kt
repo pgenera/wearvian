@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -21,13 +22,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.ambient.AmbientLifecycleObserver
 import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
 import androidx.wear.compose.material.SwipeToDismissBox
 import org.fivesevenfive.wearvian.BuildConfig
 import org.fivesevenfive.wearvian.util.AppForeground
+import org.fivesevenfive.wearvian.util.BlePermissions
 import org.fivesevenfive.wearvian.util.logi
 
 class MainActivity : ComponentActivity() {
@@ -42,7 +43,27 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             logi("permissions result: $grants")
+            // Pairing needs SCAN + CONNECT, so a Pair tap waits for this answer instead of racing it.
+            if (pairAfterPermissions) {
+                pairAfterPermissions = false
+                if (BlePermissions.granted(this, grants)) vm.startPairing() else vm.pairingPermissionDenied()
+            }
         }
+
+    /** Activity-scoped; also used by the Compose tree in setContent. */
+    private val vm: SetupViewModel by viewModels()
+
+    /** Set by a Pair tap that had to ask for Bluetooth permission first; consumed by the result. */
+    private var pairAfterPermissions = false
+
+    private fun pairWhenPermitted() {
+        if (BlePermissions.granted(this)) {
+            vm.startPairing()
+        } else {
+            pairAfterPermissions = true
+            permissionLauncher.launch(requiredPermissions)
+        }
+    }
 
     /** Set when launched from the tile's key control; consumed once we reach BONDED. */
     private val activateKeyRequest = mutableStateOf(false)
@@ -142,7 +163,6 @@ class MainActivity : ComponentActivity() {
         intent?.removeExtra(EXTRA_ACTIVATE_KEY) // consume — don't re-activate on recreate
 
         setContent {
-            val vm: SetupViewModel = viewModel()
             val state by vm.state
             // The tile's key control launches us with EXTRA_ACTIVATE_KEY to also start
             // the mobile key. Activate once we're bonded (setPresence is idempotent).
@@ -206,10 +226,7 @@ class MainActivity : ComponentActivity() {
                             state = state,
                             onRefresh = vm::refresh,
                             onSetup = vm::startEnrollment,
-                            onPair = {
-                                permissionLauncher.launch(requiredPermissions)
-                                vm.startPairing()
-                            },
+                            onPair = ::pairWhenPermitted,
                             onTogglePresence = vm::setPresence,
                             onCommand = vm::sendCommand,
                             onStartPassive = vm::startPassive,

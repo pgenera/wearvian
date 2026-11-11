@@ -14,14 +14,19 @@ import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PairingManager
 import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
+import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
+import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.store.SettingsStore
+import org.fivesevenfive.wearvian.store.TelemetryStore
+import org.fivesevenfive.wearvian.store.VehicleAddressStore
+import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.logi
@@ -198,6 +203,12 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The Pair tap's Bluetooth permission request was declined: say why pairing didn't start. */
+    fun pairingPermissionDenied() {
+        logw("startPairing: Bluetooth permission not granted")
+        _state.value = SetupUiState(Phase.ERROR, detail = "Allow Nearby devices (Bluetooth) to pair with your vehicle.")
+    }
+
     /**
      * Send an authenticated active-entry command (e.g. lock/unlock) over BLE. The
      * command code is held in [SetupUiState.inFlight] for the duration so the UI can
@@ -303,7 +314,26 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         settings.keyArmed = false
         PresenceService.stop(getApplication())
         store.clear()
+        clearVehicleState()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
+    }
+
+    /**
+     * Forget everything learned about the old vehicle alongside the enrollment: its BLE addresses
+     * (else the proximity wake keeps filtering on them), last telemetry (else the complications keep
+     * showing its SoC/range), the persisted passive-idle sub-state, and the in-memory status. Runs
+     * after [PresenceService.stop], whose onDestroy is posted to this (main) thread and so runs later;
+     * its VehicleStatus.clear() is a no-op on the blank state.
+     */
+    private fun clearVehicleState() {
+        val app = getApplication<Application>()
+        VehicleAddressStore(app).clear()
+        TelemetryStore(app).clear()
+        settings.passiveIdle = false
+        settings.passiveSeenDeparture = false
+        VehicleStatus.reset()
+        ComplicationRefresher.refresh(app)
+        TileRefresher.refresh(app)
     }
 
     /**
@@ -317,6 +347,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         settings.keyArmed = false
         PresenceService.stop(getApplication())
         store.clear()
+        clearVehicleState()
         keyManager.deleteKey()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
     }
