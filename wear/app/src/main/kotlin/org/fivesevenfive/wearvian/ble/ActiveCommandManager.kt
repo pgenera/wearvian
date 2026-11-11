@@ -11,7 +11,13 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
@@ -29,6 +35,10 @@ import java.util.concurrent.ConcurrentHashMap
  *   connect -> discover -> notify -> phoneId echo -> pNonce/vNonce auth ->
  *   write AES-128-GCM command frame to [RivianBle.CHAR_ACTIVE_COMMAND].
  * Every step is mirrored to [DebugLog] for the on-watch debug console.
+ *
+ * One-shots are serialized process-wide (and the PRIMARY [VehicleSession] waits for them via
+ * [awaitOneShotIdle]) so two GATT clients never run the nonce handshake on PK at once. A failed
+ * attempt is retried once unless the failure is one a retry can't fix (see [CommandFailure]).
  */
 @SuppressLint("MissingPermission")
 class ActiveCommandManager(
@@ -47,16 +57,39 @@ class ActiveCommandManager(
 
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
-    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> = runCatching {
+    /**
+     * Connect, authenticate and send [commandCode] once (retrying once on a retryable failure).
+     * Fully time-bounded; a failure's [CommandException.failure] says why (other exceptions mean
+     * [CommandFailure.SEND_FAILED]).
+     */
+    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> =
+        oneShotLock.withLock {
+            var result = attempt(enrollment, commandCode, label)
+            val first = result.exceptionOrNull()
+            if (first != null && failureOf(first).retryable && currentCoroutineContext().isActive) {
+                DebugLog.add("cmd $label retrying once")
+                delay(RETRY_DELAY_MS)
+                result = attempt(enrollment, commandCode, label)
+            }
+            result
+        }
+
+    private suspend fun attempt(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
+        connected = CompletableDeferred()
+        servicesReady = CompletableDeferred()
+        descriptorWritten = CompletableDeferred()
+        charWritten = CompletableDeferred()
+        notifications.clear()
         // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
-        if (keyguard?.isDeviceLocked == true) error("watch locked — command blocked")
+        if (keyguard?.isDeviceLocked == true) throw CommandException(CommandFailure.WATCH_LOCKED, "watch locked — command blocked")
         val device = adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }
-            ?: error("vehicle '${RivianBle.DEVICE_NAME}' not bonded")
+            ?: throw CommandException(CommandFailure.NOT_BONDED, "vehicle not bonded")
         DebugLog.ble("·", "gatt", "connecting ${device.address}")
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
-            withTimeout(CONNECT_MS) { connected.await() }
+            withTimeoutOrNull(CONNECT_MS) { connected.await() }
+                ?: throw CommandException(CommandFailure.NOT_REACHABLE, "connect timed out")
             if (!gatt.discoverServices()) error("discoverServices rejected")
             if (!withTimeout(OP_MS) { servicesReady.await() }) error("service discovery failed")
             DebugLog.ble("·", "gatt", "connected + discovered")
@@ -158,8 +191,35 @@ class ActiveCommandManager(
         }
     }
 
-    private companion object {
-        const val CONNECT_MS = 10_000L
-        const val OP_MS = 5_000L
+    companion object {
+        /** Matches [VehicleSession]'s direct connect: a dormant module can take well over 10 s. */
+        private const val CONNECT_MS = 35_000L
+        private const val OP_MS = 5_000L
+        private const val RETRY_DELAY_MS = 500L
+
+        /** Held for the whole of each one-shot (both attempts) — see the class doc. */
+        private val oneShotLock = Mutex()
+
+        /** Suspend until no one-shot command holds a GATT client on PK. */
+        suspend fun awaitOneShotIdle() {
+            if (oneShotLock.isLocked) DebugLog.add("cmd: waiting for one-shot to finish")
+            oneShotLock.withLock { }
+        }
+
+        /** Classify a one-shot failure for retry policy and user feedback. */
+        fun failureOf(t: Throwable): CommandFailure = (t as? CommandException)?.failure ?: CommandFailure.SEND_FAILED
     }
 }
+
+/** Why a command did not reach the vehicle — drives retry policy and the short failure text. */
+enum class CommandFailure(val userText: String, val retryable: Boolean) {
+    WATCH_LOCKED("watch locked", false),
+    NOT_BONDED("vehicle not paired", false),
+    /** One-shot connect timed out (the full window already elapsed — retrying would double it). */
+    NOT_REACHABLE("vehicle not reachable", false),
+    /** Live-session path: no session picked the command up in time, or it was dropped on teardown. */
+    NOT_CONNECTED("vehicle not connected", false),
+    SEND_FAILED("couldn't send", true),
+}
+
+class CommandException(val failure: CommandFailure, message: String) : Exception(message)

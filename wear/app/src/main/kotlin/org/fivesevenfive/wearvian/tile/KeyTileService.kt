@@ -33,15 +33,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.R
-import org.fivesevenfive.wearvian.ble.ActiveCommandManager
-import org.fivesevenfive.wearvian.ble.CommandBus
-import org.fivesevenfive.wearvian.service.PresenceService
+import org.fivesevenfive.wearvian.ble.CommandDispatcher
+import org.fivesevenfive.wearvian.ble.CommandOutcome
 import org.fivesevenfive.wearvian.service.VehicleModel
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.store.SettingsStore
+import org.fivesevenfive.wearvian.ui.CommandFeedback
 import org.fivesevenfive.wearvian.ui.MainActivity
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
@@ -69,7 +69,7 @@ import kotlin.random.Random
  * in-process [VehicleStatus] (same process as the presence service / app), so the tile reflects
  * whatever the app would show.
  *
- * Command dispatch reuses [ActiveCommandManager] (the same path the app uses) on a
+ * Command dispatch goes through [CommandDispatcher] (the same path the app uses) on a
  * process-lifetime scope so it survives this service instance being recycled between
  * tile requests. See docs/passive-entry-protocol.md.
  */
@@ -302,17 +302,13 @@ class KeyTileService : TileService() {
         }
         logi("tile: dispatch $label")
         DebugLog.add("tile: $label tapped")
-        // If a LIVE session is up, ride it (running counter + presence-gated commands) instead of
-        // opening a second GATT connection. But NOT while passive: the PRIMARY session is torn down
-        // then, so the bus has no drainer and the command would sit queued until the car returns and
-        // fire stale — so fall through to a one-shot connect (matches SetupViewModel.sendCommand).
-        if (PresenceService.isRunning && !PresenceService.passive.value) {
-            CommandBus.submit(code, label)
-            return
-        }
+        // Same routing as the app (CommandDispatcher): blocked while the watch is locked, the live
+        // session's bus while active (never a second GATT client then), a one-shot otherwise. A
+        // command that doesn't reach the car buzzes + toasts instead of failing silently.
         val ctx = applicationContext
         scope.launch {
-            ActiveCommandManager(ctx, KeyManager()).sendCommand(enrollment, code, label)
+            val outcome = CommandDispatcher.send(ctx, enrollment, KeyManager(), code, label)
+            if (outcome is CommandOutcome.Failed) CommandFeedback.failed(ctx, label, outcome.failure)
         }
     }
 

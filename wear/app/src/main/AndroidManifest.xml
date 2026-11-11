@@ -19,6 +19,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Keep the CPU running so the presence heartbeat keeps streaming with the screen off. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Double-buzz when a tapped command did not reach the vehicle (CommandFeedback). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:name=".WearvianApp"
