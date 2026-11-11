@@ -27,6 +27,7 @@ import androidx.wear.compose.foundation.SwipeToDismissValue
 import androidx.wear.compose.foundation.rememberSwipeToDismissBoxState
 import androidx.wear.compose.material.SwipeToDismissBox
 import org.fivesevenfive.wearvian.BuildConfig
+import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.util.AppForeground
 import org.fivesevenfive.wearvian.util.logi
 
@@ -123,6 +124,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         AppForeground.inForeground = false
+        TileRefresher.flushPending(this) // a status change while foreground was skipped
     }
 
     override fun onNewIntent(intent: Intent) {

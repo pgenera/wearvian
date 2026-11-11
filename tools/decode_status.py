@@ -56,7 +56,7 @@ anchor on the 16-byte status and treat any leading bytes as the counter.
   status[5]           state of charge, integer %
   status[6] lo-nibble charge-state enum  (1 unplugged, 2 starting, 3 charging,
                                           5 plugged-idle, 7 fault)
-  status[7]           cabin temperature, deg C
+  status[7]           cabin temperature, deg C (signed byte: sub-zero is two's complement)
   status[8..9]        estimated range, km -- a 9-bit field (s[8] + bit0 of s[9]) that OVERLAPS the
                       charge ETA in s[9]. Full s[8..9] LE16 when not charging; masked to 9 bits
                       (& 0x1ff) while charging, since s[9]'s upper bits are then the ETA low byte
@@ -164,7 +164,7 @@ def decode_status(s):
         "gear": GEARS.get((s[6] >> 4) & 0x0F, "?"),  # [6] hi-nibble: 1=P 2=R 3=N 4=D
         "soc_pct": s[5] & 0x7F,  # bit 0x80 = anti-theft alarm, not part of the %
         "charge_state": CHARGE_STATES.get(cs, "?0x%x" % cs),
-        "cabin_c": s[7],
+        "cabin_c": s[7] - 256 if s[7] >= 0x80 else s[7],  # signed byte (sub-zero °C)
         "range_km": ((s[8] | (s[9] << 8)) & 0x1FF) if eta_active else (s[8] | (s[9] << 8)),  # 9-bit while charging
         "charge_time_raw": raw,  # ETA-to-limit (∝ 1/power), not power; 0 unless charging
         "eta_min": raw / 4,  # 15 s/count = raw/4 min (pinned vs app "10h13m")

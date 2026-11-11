@@ -129,6 +129,20 @@ class VehicleStatusTest {
     }
 
     @Test
+    fun cabinTempIsSignedBelowFreezing() {
+        // Sunday frame with status[7] swapped: 0xfb = -5°C (two's complement), 0x00 = 0°C,
+        // 0x7f = 127°C (top of the signed range). Unsigned would read 0xfb as 251°C.
+        fun cabin(b7: String): Int? {
+            VehicleStatus.update(hex("01000000" + "100f0c0f003011${b7}dc00005078000000"))
+            return VehicleStatus.state.value.cabinTempC
+        }
+        assertEquals(-5, cabin("fb"))
+        assertEquals(-128, cabin("80"))
+        assertEquals(0, cabin("00"))
+        assertEquals(127, cabin("7f"))
+    }
+
+    @Test
     fun rangeUsesHighByteWhenNotCharging() {
         // mileage.log 2026-06-10: SoC 62%, unplugged, app showed 173 mi. [8..9]=18 01 ⇒ 0x0118 =
         // 280 km = 174 mi. The old [8]-only parse read 0x18 = 24 km ≈ 15 mi (the reported bug).
