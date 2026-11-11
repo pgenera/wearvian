@@ -1,7 +1,6 @@
 package org.fivesevenfive.wearvian.ble
 
 import android.annotation.SuppressLint
-import android.app.KeyguardManager
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -92,7 +91,8 @@ class VehicleSession(
      * check and dropped the link (status 0x13) on every command.
      */
     private var commandCounter = 0
-    private val keyguard = context.getSystemService(KeyguardManager::class.java)
+    /** HKDF session key derived once per session, not per heartbeat; frames are byte-identical. */
+    private val sessionKeys by lazy { ActiveCommandFrames.SessionKeys(sharedSecret) }
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
@@ -230,7 +230,7 @@ class VehicleSession(
                 //  - driving-doze: the car is in gear, so we don't need to hold presence; releasing
                 //    the wake lock saves battery while we keep watching 0x1c for the return to Park.
                 val reason = when {
-                    keyguard?.isDeviceLocked == true -> "watch locked"
+                    WatchLock.isLocked(context) -> "watch locked" // shared read, ≤1 s stale
                     heartbeatsPaused -> "driving"
                     else -> null
                 }
@@ -272,7 +272,7 @@ class VehicleSession(
                     }
                 }
                 val rssiByte = latestRssi.toByte()
-                val hb = ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, counter, rssiByte)
+                val hb = ActiveCommandFrames.heartbeatFrame(sessionKeys, pNonce, vNonce, counter, rssiByte)
                 // Non-fatal: a stalled beat (marginal RSSI, airtime contention) is tolerated so the
                 // session doesn't flap on a single miss; force a reconnect only if beats stay stuck.
                 val hbOk = runCatching { writeChar(g, readChar, hb, hbWriteType, HB_WRITE_TIMEOUT_MS) }.isSuccess
@@ -390,8 +390,8 @@ class VehicleSession(
     /**
      * EXPERIMENT (branch wearvian-vehicle-status-0x1c): a 0x1c CHAR_VEHICLE_STATUS notification,
      * from the PRIMARY-only post-auth subscription we re-added. Log on change so closure
-     * transitions stand out; old captures suggested 0x1c carries structured (likely plaintext)
-     * status, but run the decrypt prober too in case it's encrypted.
+     * transitions stand out. 0x1c is known plaintext (decoded by VehicleStatus), so it is no
+     * longer run through the decrypt prober (32 failing AES-GCM attempts per changed frame).
      */
     private fun onVehicleStatus(value: ByteArray) {
         VehicleStatus.update(value) // publish parsed lock/closure state to the UI (in-memory)
@@ -401,7 +401,7 @@ class VehicleSession(
         val hex = value.toHexString()
         if (hex == lastStatus1cHex) return
         lastStatus1cHex = hex
-        DebugLog.ble("←", "$label/0x1c", "VEHICLE_STATUS $hex${probe(value)}", value.size)
+        DebugLog.ble("←", "$label/0x1c", "VEHICLE_STATUS $hex", value.size)
     }
 
     /**

@@ -1,7 +1,9 @@
 package org.fivesevenfive.wearvian.util
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import org.fivesevenfive.wearvian.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -10,19 +12,39 @@ import java.util.Locale
  * Small in-memory ring buffer of BLE/debug events, surfaced on the swipe-left debug
  * screen so on-vehicle BLE exchanges (and their semantic meaning) are visible without
  * a logcat tether. Also mirrors to logcat. Thread-safe; bounded to [MAX] lines.
+ *
+ * Cheap on the hot path: [add] only appends to the deque and bumps a version counter;
+ * the list copy is made lazily, when a [flow] collector (the debug screen) actually reads
+ * it. Builds without the debug console ([BuildConfig.DEBUG_CONSOLE] false) skip the
+ * buffer entirely and only mirror to logcat.
  */
 object DebugLog {
     private const val MAX = 200
     private val lines = ArrayDeque<String>()
-    private val _flow = MutableStateFlow<List<String>>(emptyList())
-    val flow: StateFlow<List<String>> = _flow
+    /** Bumped on every change; [flow] maps it to a snapshot only when collected. */
+    private val version = MutableStateFlow(0L)
     private val ts = SimpleDateFormat("HH:mm:ss", Locale.US)
 
+    /** Whether lines are kept for the debug console. Not a const so tests can flip it. */
+    @Volatile internal var bufferEnabled: Boolean = BuildConfig.DEBUG_CONSOLE
+
+    /**
+     * The buffer's lines, re-emitted on change. Conflated (backed by a StateFlow), so a slow
+     * collector snapshots only the latest state. Collect with an initial [snapshot].
+     */
+    val flow: Flow<List<String>> = version.map { snapshot() }
+
     @Synchronized
+    fun snapshot(): List<String> = lines.toList()
+
     fun add(line: String) {
-        lines.addLast("${ts.format(Date())}  $line")
-        while (lines.size > MAX) lines.removeFirst()
-        _flow.value = lines.toList()
+        if (bufferEnabled) {
+            synchronized(this) {
+                lines.addLast("${ts.format(Date())}  $line")
+                while (lines.size > MAX) lines.removeFirst()
+                version.value++
+            }
+        }
         logi("dbg: $line")
     }
 
@@ -37,6 +59,6 @@ object DebugLog {
     @Synchronized
     fun clear() {
         lines.clear()
-        _flow.value = emptyList()
+        version.value++
     }
 }

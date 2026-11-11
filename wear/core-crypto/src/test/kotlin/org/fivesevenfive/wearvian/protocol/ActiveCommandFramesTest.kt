@@ -71,6 +71,45 @@ class ActiveCommandFramesTest {
         assertEquals(0x80.toByte(), hb[4])
     }
 
+    /**
+     * Wire-byte pin for the heartbeat. Expected values were computed independently (Python
+     * hmac/hashlib: HKDF-SHA256 with zero salt and empty info, then HMAC over
+     * pNonce‖vNonce‖counter‖flag), so this catches any change to the derivation or layout.
+     */
+    private val heartbeatVectors = listOf(
+        Triple(0, 0x80.toByte(), "00000000803917c557b08e38ec504c2e2ab624a940e202ad22ac6504aae8aa613f17c354e4"),
+        Triple(7, 0xc5.toByte(), "07000000c50039a9009604c3baefa8a616e51cfa15948ffe8685a4355e9642870e36effc3a"),
+        Triple(123456, 0x10.toByte(), "40e20100100ce600e47773fa944f48a22eaf67dd6c0ebd4dcad4f6fb8275a980e70c2ff89d"),
+    )
+
+    @Test
+    fun heartbeatFrameMatchesKnownAnswer() {
+        for ((ctr, flag, hex) in heartbeatVectors) {
+            assertEquals(hex, RivianCrypto.toHex(ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, ctr, flag)))
+        }
+    }
+
+    @Test
+    fun cachedSessionKeysHeartbeatIsByteIdenticalToPerBeatDerivation() {
+        val keys = ActiveCommandFrames.SessionKeys(sharedSecret)
+        for ((ctr, flag, hex) in heartbeatVectors) {
+            assertEquals(hex, RivianCrypto.toHex(ActiveCommandFrames.heartbeatFrame(keys, pNonce, vNonce, ctr, flag)))
+        }
+        // One SessionKeys reused across many beats (as a live session does) never drifts.
+        for (ctr in 0 until 200) {
+            val flag = (ctr * 13).toByte()
+            assertContentEquals(
+                ActiveCommandFrames.heartbeatFrame(sharedSecret, pNonce, vNonce, ctr, flag),
+                ActiveCommandFrames.heartbeatFrame(keys, pNonce, vNonce, ctr, flag),
+            )
+        }
+    }
+
+    @Test
+    fun aesKeyMatchesKnownAnswer() {
+        assertEquals("c04243f7695b9313744e9497dc1a7c3f", RivianCrypto.toHex(ActiveCommandFrames.aesKey(sharedSecret)))
+    }
+
     @Test
     fun decryptInboundRecoversStatusPayload() {
         // Build an inbound STATUS-style frame the way the vehicle would (same key/AAD

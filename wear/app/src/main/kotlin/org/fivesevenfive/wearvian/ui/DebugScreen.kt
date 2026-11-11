@@ -43,7 +43,7 @@ import org.fivesevenfive.wearvian.util.DebugLog
  */
 @Composable
 fun DebugScreen() {
-    val lines by DebugLog.flow.collectAsStateWithLifecycle()
+    val lines by DebugLog.flow.collectAsStateWithLifecycle(initialValue = remember { DebugLog.snapshot() })
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
