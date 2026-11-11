@@ -55,8 +55,10 @@ import org.fivesevenfive.wearvian.store.TelemetryStore
 import org.fivesevenfive.wearvian.store.logPersistentState
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.ui.MainActivity
+import org.fivesevenfive.wearvian.util.BlePermissions
 import org.fivesevenfive.wearvian.util.DebugLog
 import org.fivesevenfive.wearvian.util.logi
+import org.fivesevenfive.wearvian.util.logw
 
 /**
  * Foreground service that maintains the drive-presence sessions. It runs one
@@ -198,7 +200,29 @@ class PresenceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val goPassiveNow = intent?.action == ACTION_GO_PASSIVE
         logi("PresenceService: onStartCommand action=${intent?.action}")
-        startAsForeground()
+        // intent == null is the system re-creating this START_STICKY service after killing the process.
+        // Gate going foreground first: without Bluetooth permission (revoked, auto-reset) startForeground
+        // throws on Android 14+, and a sticky restart of a key the user turned off shouldn't come back.
+        // Not proceeding returns START_NOT_STICKY so the system doesn't retry; the key re-arms from
+        // keyArmed the next time the app opens (SetupViewModel.refresh).
+        val gate = ServiceStartGate.check(
+            isSystemRestart = intent == null,
+            keyArmed = settings.keyArmed,
+            hasBlePermissions = BlePermissions.granted(this),
+        )
+        if (gate != ServiceStartGate.Result.PROCEED) {
+            DebugLog.add("presence: not starting (${gate.name}); stopping")
+            if (lockJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
+            // Already running (permission revoked mid-run already kills the process, so this is a
+            // rare race): leave the running instance alone.
+            return START_STICKY
+        }
+        if (!startAsForeground()) {
+            // Background FGS-start restriction (a sticky restart while the app is in the background on
+            // Android 12+) or a permission race. Bail out instead of crashing into a restart loop.
+            if (lockJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
+            return START_STICKY
+        }
         val enrollment = EnrollmentStore(this).load()
         if (enrollment == null) {
             DebugLog.add("presence: not enrolled; stopping")
@@ -732,7 +756,21 @@ class PresenceService : Service() {
         else -> "PK2"
     }
 
-    private fun startAsForeground() {
+    /** @return false if the system refused the foreground start (logged; the caller stops). */
+    private fun startAsForeground(): Boolean = try {
+        startAsForegroundOrThrow()
+        true
+    } catch (e: IllegalStateException) { // incl. ForegroundServiceStartNotAllowedException (API 31+)
+        logw("PresenceService: startForeground refused (${e.javaClass.simpleName})")
+        DebugLog.add("presence: foreground start refused (${e.javaClass.simpleName})")
+        false
+    } catch (e: SecurityException) { // Android 14+: connectedDevice FGS without a Bluetooth permission
+        logw("PresenceService: startForeground denied (SecurityException)")
+        DebugLog.add("presence: foreground start denied — Bluetooth permission missing")
+        false
+    }
+
+    private fun startAsForegroundOrThrow() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             // IMPORTANCE_MIN: with the OngoingActivity attached (see buildNotification), the status
             // shows as a key icon on the watch face rather than a persistent notification card.
@@ -892,22 +930,38 @@ class PresenceService : Service() {
          *  persisted passive-idle state is trusted and resumed (see onStartCommand / SettingsStore). */
         const val ACTION_UPGRADE_RESTORE = "org.fivesevenfive.wearvian.UPGRADE_RESTORE"
 
-        fun start(context: Context) {
-            context.startForegroundService(Intent(context, PresenceService::class.java))
-        }
+        fun start(context: Context): Boolean =
+            startPresence(context, Intent(context, PresenceService::class.java))
 
         /** Re-arm after an app upgrade, resuming the prior mode (active, or persisted passive idle). */
-        fun startAfterUpgrade(context: Context) {
-            context.startForegroundService(
-                Intent(context, PresenceService::class.java).setAction(ACTION_UPGRADE_RESTORE),
-            )
-        }
+        fun startAfterUpgrade(context: Context): Boolean =
+            startPresence(context, Intent(context, PresenceService::class.java).setAction(ACTION_UPGRADE_RESTORE))
 
         /** Drop a running service to passive immediately (manual button). */
-        fun goPassiveNow(context: Context) {
-            context.startForegroundService(
-                Intent(context, PresenceService::class.java).setAction(ACTION_GO_PASSIVE),
-            )
+        fun goPassiveNow(context: Context): Boolean =
+            startPresence(context, Intent(context, PresenceService::class.java).setAction(ACTION_GO_PASSIVE))
+
+        /**
+         * startForegroundService, but only with the Bluetooth permissions held. Once a service is
+         * started this way it MUST call startForeground, and on Android 14+ that throws without a
+         * Bluetooth permission; stopping instead is also a crash ("did not then call
+         * startForeground"). So the only safe place to refuse is here, before starting. Also absorbs
+         * the background FGS-start restriction (e.g. a tile tap while our app is in the background).
+         * @return true if the start was handed to the system.
+         */
+        private fun startPresence(context: Context, intent: Intent): Boolean {
+            if (!BlePermissions.granted(context)) {
+                DebugLog.add("presence: not starting — Bluetooth permission missing (open the app to grant)")
+                return false
+            }
+            return try {
+                context.startForegroundService(intent)
+                true
+            } catch (e: IllegalStateException) { // ForegroundServiceStartNotAllowedException
+                logw("PresenceService: start refused (${e.javaClass.simpleName})")
+                DebugLog.add("presence: start refused by the system (${e.javaClass.simpleName})")
+                false
+            }
         }
 
         fun stop(context: Context) {
