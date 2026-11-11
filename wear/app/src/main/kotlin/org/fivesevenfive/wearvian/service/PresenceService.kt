@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.CommandBus
@@ -79,6 +81,8 @@ class PresenceService : Service() {
     // `passiveLink.arm`, which could strand an autoConnect armed while active). BLE work here is
     // callback-driven and suspends on every await/delay, so one thread doesn't bottleneck it. All
     // transition entry points therefore run on `scope` (onStartCommand launches onto it below).
+    // The one gap this leaves — a transition suspended in stopBle's cancelAndJoin — is closed by
+    // the [transition] mutex.
     @OptIn(ExperimentalCoroutinesApi::class)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     private val keyManager = KeyManager()
@@ -99,6 +103,17 @@ class PresenceService : Service() {
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
+     * Serializes the mode transitions (enter/exit passive, lock/unlock, departure confirmation).
+     * The single-thread [scope] makes each synchronous step atomic, but [stopBle] suspends in
+     * cancelAndJoin — without this lock another transition could run in that gap (e.g. a FIRST_MATCH
+     * exitPassive in the middle of enterPassive's teardown) and leave the modes inconsistent.
+     */
+    private val transition = Mutex()
+
+    /** Which of the car's nodes the passive proximity scan currently sees (departure = all lost). */
+    private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS)
+
+    /**
      * True while idling passively: the service + foreground notification STAY up, the wake lock
      * is released and the BLE sessions are torn down, and a single hardware-offloaded scan watches
      * for the vehicle. Because we never leave the foreground, [proximityCallback] can rebuild BLE
@@ -107,8 +122,12 @@ class PresenceService : Service() {
      */
     @Volatile private var passive = false
 
-    /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). */
-    @Volatile private var locked = false
+    /** True while the watch is locked (off wrist): all BLE is torn down (anti-theft). Backed by a
+     *  flow so the monitors can suspend until the watch is unlocked ([awaitActiveMode]). */
+    private val lockedState = MutableStateFlow(false)
+    private var locked: Boolean
+        get() = lockedState.value
+        set(value) { lockedState.value = value }
 
     /** Snapshot of [passive] taken at lock, so unlock restores the same mode instead of forcing active. */
     @Volatile private var wasPassive = false
@@ -153,44 +172,87 @@ class PresenceService : Service() {
     @Volatile private var seenDeparture = false
 
     /**
-     * In-process proximity watch (passive mode). FIRST_MATCH = the car is in range; MATCH_LOST = its
-     * advertisement is no longer seen. We only wake on FIRST_MATCH once we've seen the car leave
-     * ([seenDeparture]); a MATCH_LOST arms that, after [DEPART_DEBOUNCE_MS] so a brief dropout while
-     * parked nearby doesn't count as leaving.
+     * In-process proximity watch (passive mode). FIRST_MATCH = a car node is in range; MATCH_LOST =
+     * that node's advertisement is no longer seen. Results are per node, so [proximity] tracks the
+     * set currently seen and only ALL of them going quiet counts toward a departure. We only wake on
+     * FIRST_MATCH once the car has left ([seenDeparture], or the set has been empty for
+     * [DEPART_DEBOUNCE_MS] by the wall-ish elapsedRealtime clock) so a brief dropout while parked
+     * nearby doesn't count as leaving. Handling hops onto [scope] (single-thread lane).
      */
     private val proximityCallback = object : android.bluetooth.le.ScanCallback() {
         override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
-            when (callbackType) {
-                android.bluetooth.le.ScanSettings.CALLBACK_TYPE_MATCH_LOST -> {
-                    if (departJob?.isActive == true) return // already counting down a departure
-                    DebugLog.add("presence: proximity lost ${result.device?.address} → arming return watch")
-                    departJob = scope.launch {
-                        delay(DEPART_DEBOUNCE_MS)
-                        seenDeparture = true
-                        settings.passiveSeenDeparture = true // keep the persisted sub-state current
-                        _parkedNearby.value = false // no longer parked beside it — now waiting for return
-                        updateNotification(PASSIVE_TEXT) // relabel from "Parked nearby" → "Waiting for vehicle"
-                        // Car has actually left → now arm the autoConnect so its RETURN reconnects PK
-                        // directly. We don't arm it while parked nearby, or it would immediately
-                        // reconnect and bounce us straight out of passive.
-                        passiveLink.arm(this@PresenceService)
-                        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes (scan + PK autoConnect)")
-                    }
-                }
-                else -> { // CALLBACK_TYPE_FIRST_MATCH
-                    departJob?.cancel() // car is (back) in range — cancel any pending "it left"
-                    if (seenDeparture) {
-                        DebugLog.add("presence: proximity return ${result.device?.address} rssi=${result.rssi} → wake")
-                        scope.launch { exitPassive() }
-                    } else {
-                        DebugLog.add("presence: proximity hit ${result.device?.address} (parked nearby) → ignore")
-                    }
-                }
-            }
+            val address = result.device?.address ?: "?"
+            val rssi = result.rssi
+            val now = SystemClock.elapsedRealtime() // stamped here: counts time the CPU was asleep
+            val lost = callbackType == android.bluetooth.le.ScanSettings.CALLBACK_TYPE_MATCH_LOST
+            scope.launch { if (lost) onProximityLost(address, now) else onProximityFound(address, rssi, now) }
         }
         override fun onScanFailed(errorCode: Int) {
             DebugLog.add("presence: proximity scan failed err=$errorCode")
         }
+    }
+
+    private fun onProximityLost(address: String, now: Long) {
+        if (!passive) return
+        if (!proximity.lost(address, now)) {
+            DebugLog.add("presence: proximity lost $address (${proximity.size} node(s) still seen) → still in range")
+            return
+        }
+        if (seenDeparture || departJob?.isActive == true) return
+        DebugLog.add("presence: proximity lost $address (no nodes seen) → arming return watch")
+        departJob = scope.launch {
+            // Coroutine delays don't advance while the CPU is suspended, and passive mode has no
+            // wake lock — so hold a short self-expiring one for the debounce, or the autoConnect
+            // below might not be armed until long after the car has gone.
+            withTimedWakeLock("wearvian:depart", DEPART_DEBOUNCE_MS + TIMED_WAKE_SLACK_MS) { delay(DEPART_DEBOUNCE_MS) }
+            transition.withLock { markDeparted() }
+        }
+    }
+
+    private suspend fun onProximityFound(address: String, rssi: Int, now: Long) {
+        if (!passive) return
+        departJob?.cancel() // a node is (back) in range — cancel any pending "it left"
+        when (proximity.found(address, now, seenDeparture)) {
+            ProximityTracker.Found.RETURN -> {
+                DebugLog.add("presence: proximity return $address rssi=$rssi → wake")
+                exitPassive()
+            }
+            ProximityTracker.Found.PRESENT ->
+                DebugLog.add("presence: proximity hit $address (${proximity.size} node(s) seen, parked nearby) → ignore")
+        }
+    }
+
+    /** The car has been out of range for the debounce: a return now wakes (scan + PK autoConnect). */
+    private fun markDeparted() {
+        if (!passive || seenDeparture || locked) return
+        seenDeparture = true
+        settings.passiveSeenDeparture = true // keep the persisted sub-state current
+        _parkedNearby.value = false // no longer parked beside it — now waiting for return
+        updateNotification(PASSIVE_TEXT) // relabel from "Parked nearby" → "Waiting for vehicle"
+        // Car has actually left → now arm the autoConnect so its RETURN reconnects PK directly. We
+        // don't arm it while parked nearby, or it would immediately reconnect and bounce us out.
+        passiveLink.arm(this@PresenceService)
+        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes (scan + PK autoConnect)")
+    }
+
+    /**
+     * Run [block] under a self-expiring partial wake lock — for the short, bounded windows (departure
+     * debounce, idle probe) whose timers must keep counting while no main wake lock is held.
+     */
+    private suspend fun <T> withTimedWakeLock(tag: String, timeoutMs: Long, block: suspend () -> T): T {
+        val wl = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, tag)
+            .apply { setReferenceCounted(false); acquire(timeoutMs) }
+        try {
+            return block()
+        } finally {
+            runCatching { if (wl.isHeld) wl.release() }
+        }
+    }
+
+    /** Suspend until the service is neither passive nor locked (i.e. active presence is up). */
+    private suspend fun awaitActiveMode() {
+        combine(_passive, lockedState) { p, l -> !p && !l }.first { it }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -275,8 +337,10 @@ class PresenceService : Service() {
 
     /** Tear down all BLE — cancels the loop and, via structured concurrency, every session. */
     private suspend fun stopBle() {
-        loopJob?.cancelAndJoin()
+        // Detach first: cancelAndJoin suspends, and a loop started meanwhile must not be nulled out.
+        val job = loopJob
         loopJob = null
+        job?.cancelAndJoin()
     }
 
     private fun acquireWakeLock() {
@@ -308,6 +372,15 @@ class PresenceService : Service() {
             acquireWakeLock()
             startBle()
         }
+        updateNotification(activeNotificationText())
+    }
+
+    /** The active-mode notification text: a sub-state's fixed text (watch standby / driving-doze),
+     *  else the live link summary. */
+    private fun activeNotificationText(): String = when {
+        watchMode && VehicleSession.heartbeatsPaused -> WATCH_DOZE_TEXT
+        driving -> DRIVING_TEXT
+        else -> PresenceStatus.summary.value
     }
 
     /**
@@ -320,12 +393,13 @@ class PresenceService : Service() {
     private suspend fun monitorLock() {
         while (true) {
             val nowLocked = keyguard?.isDeviceLocked == true
-            if (nowLocked != locked) {
+            if (nowLocked != locked) transition.withLock {
+                if (nowLocked == locked) return@withLock // another transition already caught up
                 locked = nowLocked
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); passive = false; _passive.value = false; _parkedNearby.value = false }
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
@@ -335,11 +409,10 @@ class PresenceService : Service() {
                     // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
                     // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
                     DebugLog.add("presence: watch unlocked — restoring passive idle")
-                    enterPassive() // sets its own passive notification text (parked-nearby vs waiting)
+                    enterPassiveLocked() // sets its own passive notification text (parked-nearby vs waiting)
                 } else {
                     DebugLog.add("presence: watch unlocked — restoring active presence")
-                    startActivePresence()
-                    updateNotification(PresenceStatus.summary.value)
+                    startActivePresence() // sets the active notification text
                 }
             }
             delay(LOCK_POLL_MS)
@@ -349,26 +422,23 @@ class PresenceService : Service() {
     /**
      * After [IDLE_TIMEOUT_MS] with no link UP (car out of range / asleep), drop to passive: keep
      * the service + notification up but release the wake lock, tear down BLE, and let a single
-     * offloaded scan watch for the vehicle. We then block until [exitPassive] revives the link on
-     * approach, and resume watching for the next idle stretch.
+     * offloaded scan watch for the vehicle. While passive or locked we wait for active mode to
+     * return — NOT for a link to come up: a wake that never connects (a brief FIRST_MATCH, a start
+     * while away) must still be able to fall back to passive, or the wake lock is held forever.
      */
     private suspend fun monitorIdle() {
         while (true) {
+            awaitActiveMode()
             // Wait until no link is UP. Reading the flow (not a single collectLatest pass)
             // also recovers from a stale `connected==true` carried over a process restart.
             PresenceStatus.connected.first { !it }
-            if (passive) {
-                // Already idling (e.g. manual passive) — wait until the proximity watch revives us.
-                PresenceStatus.connected.first { it }
-                continue
-            }
+            if (passive || locked) continue // the links dropped because we left active mode
             // Disconnected — go passive as soon as the car's nodes are confirmed out of range (a quick
             // offloaded scan), instead of always holding active for IDLE_TIMEOUT_MS. A reconnect, or the
             // scan still seeing the nodes advertising, means it's a blip → stay active.
             val disconnectedAt = SystemClock.elapsedRealtime()
             if (!departed(disconnectedAt)) continue // reconnected, or car still in range → keep active
-            if (!goPassive()) continue
-            PresenceStatus.connected.first { it } // passive: block until the proximity watch wakes us
+            goPassive()
         }
     }
 
@@ -399,8 +469,12 @@ class PresenceService : Service() {
         }
         try {
             // Give the offloaded scan a short window to spot the car (or for a reconnect to happen).
-            withTimeoutOrNull(IDLE_PROBE_MS) {
-                while (!seen.get() && !PresenceStatus.connected.value && !passive && !locked) delay(500)
+            // Under a timed wake lock: a dozing watch-mode key holds none, and a coroutine timer
+            // stalls while the CPU sleeps, which would stretch this probe indefinitely.
+            withTimedWakeLock("wearvian:idle-probe", IDLE_PROBE_MS + TIMED_WAKE_SLACK_MS) {
+                withTimeoutOrNull(IDLE_PROBE_MS) {
+                    while (!seen.get() && !PresenceStatus.connected.value && !passive && !locked) delay(500)
+                }
             }
             return when {
                 passive || locked -> false
@@ -426,7 +500,9 @@ class PresenceService : Service() {
      * idle never catches. Unlike [monitorIdle] this is ALWAYS-ON (no power-save gate): it costs no
      * capability (commands fall back to a one-shot connect; the car wakes us on the depart→return
      * cycle), it only stops the continuous heartbeat. Any meaningful change resets the timer, so the
-     * door you open as you walk up keeps the key active.
+     * door you open as you walk up keeps the key active. Being in gear (or in driving-doze) is
+     * activity too ([ParkedIdlePolicy.eligible]): idling out mid-drive would tear down the 0x1c
+     * stream that catches the return to Park and leave the key "Parked nearby" after the trip.
      */
     private suspend fun monitorStableIdle() {
         // Watch mode stays in doze while connected (no heartbeats/wake lock anyway) and MUST keep the
@@ -437,8 +513,9 @@ class PresenceService : Service() {
             delay(STABLE_CHECK_MS)
             if (passive || locked) continue
             val s = VehicleStatus.state.value
-            if (!s.valid || !s.live) continue // no confirmed state to judge stability from
-            val snap = stableSnapshot(s)
+            // No confirmed state to judge from, or driving → not idle; restart the window.
+            if (!ParkedIdlePolicy.eligible(s, driving)) continue
+            val snap = ParkedIdlePolicy.snapshot(s)
             // Plugged in is a strong "home/long stay" signal → drop sooner; otherwise be conservative
             // so a normal errand stop doesn't idle the key out from under the user.
             val timeout = if (s.chargeState in PLUGGED_STATES) PARKED_PLUG_TIMEOUT_MS else PARKED_IDLE_TIMEOUT_MS
@@ -449,20 +526,16 @@ class PresenceService : Service() {
                     delay(STABLE_CHECK_MS)
                     if (passive || locked) break
                     val s2 = VehicleStatus.state.value
-                    if (!s2.valid || !s2.live || stableSnapshot(s2) != snap) break
+                    if (!ParkedIdlePolicy.eligible(s2, driving) || ParkedIdlePolicy.snapshot(s2) != snap) break
                 }
             }
-            if (changed == null && !passive && !locked) {
+            if (changed == null && !passive && !locked && ParkedIdlePolicy.eligible(VehicleStatus.state.value, driving)) {
                 DebugLog.add("presence: state stable ${timeout / 60_000}m → passive (parked-idle)")
                 enterPassive()
-                PresenceStatus.connected.first { it } // block until reactivated (return / manual / unlock)
+                awaitActiveMode() // block until reactivated (return / manual / unlock)
             }
         }
     }
-
-    /** Fields that signal user activity; SoC / range / cabin-temp drift passively and are excluded. */
-    private fun stableSnapshot(s: VehicleStatus.State) =
-        listOf(s.locked, s.anyDoorOpen, s.anyWindowOpen, s.frunkOpen, s.liftgateOpen, s.chargeState, s.asleep)
 
     /**
      * Driving-doze: when the gear leaves Park the car is started and being driven, so we don't need
@@ -532,6 +605,11 @@ class PresenceService : Service() {
      * reports it went back to sleep, and never runs while actually driving (gear ≠ Park — already
      * validated heartbeat-free via driving-doze). UNVALIDATED on-vehicle: whether the link survives
      * heartbeat-less while parked-present long enough to catch the door-open is the thing to test.
+     *
+     * Event-driven: each new 0x1c state is evaluated as it arrives (a status frame wakes the CPU even
+     * in doze, when no wake lock is held and a timer tick would stall), with the tick only as the
+     * re-evaluation cadence for burst expiry and manual commands. Only LIVE state counts — the stale
+     * last-known state kept across passive/lock must neither trigger nor suppress a burst.
      */
     private suspend fun monitorWatchPresence() {
         if (!watchMode) return
@@ -540,19 +618,22 @@ class PresenceService : Service() {
         // elapsedRealtime() of the last door-open / vehicle-woke trigger; combined with
         // CommandBus.lastSubmitMs (manual command). Local — only used in this loop.
         var lastWatchTriggerMs = 0L
+        var lastState = VehicleStatus.state.value
         while (true) {
-            delay(WATCH_TICK_MS)
-            if (locked || passive) { prevDoorOpen = false; prevAsleep = false; continue }
+            withTimeoutOrNull(WATCH_TICK_MS) { VehicleStatus.state.first { it != lastState } }
             val st = VehicleStatus.state.value
-            if (st.valid) {
+            lastState = st
+            if (locked || passive) { prevDoorOpen = false; prevAsleep = false; continue }
+            val fresh = st.valid && st.live
+            if (fresh) {
                 if (st.anyDoorOpen && !prevDoorOpen) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = door opened") }
                 if (!st.asleep && prevAsleep) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = vehicle woke") }
                 prevDoorOpen = st.anyDoorOpen
                 prevAsleep = st.asleep
             }
             val now = SystemClock.elapsedRealtime()
-            val carAsleep = st.valid && st.asleep
-            val inGear = st.valid && st.gear != VehicleStatus.Gear.PARK && st.gear != VehicleStatus.Gear.UNKNOWN
+            val carAsleep = fresh && st.asleep
+            val inGear = fresh && ParkedIdlePolicy.inGear(st.gear)
             // A MANUAL command must burst so the heartbeat loop can drain it — even if the car is asleep
             // or in gear (else a tapped lock/unlock is queued and never sent: the heartbeat loop won't
             // drain while paused). Passive triggers (door / wake) only burst while parked & awake — the
@@ -615,7 +696,7 @@ class PresenceService : Service() {
     }
 
     /** Auto idle→passive (always on, except while locked). @return true iff passive. */
-    private fun goPassive(): Boolean {
+    private suspend fun goPassive(): Boolean {
         if (passive) return true
         // While locked, BLE is already torn down by monitorLock — don't go passive; just keep
         // the (cheap) foreground service alive until the watch is unlocked.
@@ -629,32 +710,39 @@ class PresenceService : Service() {
      * arm the in-process proximity watch. The foreground notification stays up (so we can rebuild
      * on approach without a background FGS-start). Used by auto-idle AND the manual button.
      */
-    private fun enterPassive(restoreSeenDeparture: Boolean? = null): Boolean {
+    private suspend fun enterPassive(restoreSeenDeparture: Boolean? = null): Boolean =
+        transition.withLock { enterPassiveLocked(restoreSeenDeparture) }
+
+    /** [enterPassive] body; caller holds [transition]. */
+    private suspend fun enterPassiveLocked(restoreSeenDeparture: Boolean? = null): Boolean {
         if (passive) return true
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
         passive = true
         _passive.value = true
         departJob?.cancel()
+        proximity.reset() // the new scan re-reports every node in range
         // If no link is up the car is already gone → watch for its return immediately. If one is up
         // (parked-idle, or the manual button while at the car) wait for a MATCH_LOST first, so the
         // ever-present car doesn't snap us straight back to active via FIRST_MATCH. On an upgrade
         // restore, use the PERSISTED sub-state instead — a fresh process has no link, which recompute
         // would read as "departed" and arm an autoConnect that bounces us active next to the car.
+        // (Read before stopBle, which drops the links.)
         seenDeparture = restoreSeenDeparture ?: !PresenceStatus.connected.value
         _parkedNearby.value = !seenDeparture // in range → parked nearby; gone → waiting for return
         // Persist so a near-instant restart (app upgrade) can resume passive with the same sub-state.
         settings.passiveIdle = true
         settings.passiveSeenDeparture = seenDeparture
-        // Tear the active sessions down, THEN arm the autoConnect wake on PK — but ONLY if the car is
-        // already gone (seenDeparture). While parked nearby it's still advertising, so an autoConnect
-        // would reconnect immediately and bounce us out of passive; in that case we wait for the scan's
-        // MATCH_LOST to confirm departure and arm autoConnect then. (After stopBle so the old PK GATT
-        // is closed and we don't briefly hold two clients to the same device.)
-        scope.launch { stopBle(); if (seenDeparture) passiveLink.arm(this@PresenceService) }
-        VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         driving = false; VehicleSession.heartbeatsPaused = false // leaving active — clear driving-doze
+        // Tear the active sessions down FIRST (awaited), then arm the scan and — only if the car is
+        // already gone — the autoConnect wake on PK. While parked nearby it's still advertising, so an
+        // autoConnect would reconnect immediately and bounce us out of passive; in that case we wait
+        // for the scan to lose every node and arm autoConnect then ([markDeparted]). Awaiting the
+        // teardown means the old PK GATT is closed and we never briefly hold two clients to it.
+        stopBle()
+        VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
         val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
+        if (seenDeparture) passiveLink.arm(this)
         DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching, autoConnect=${seenDeparture}")
         updateNotification(if (seenDeparture) PASSIVE_TEXT else PARKED_TEXT)
         TileRefresher.refresh(this) // active→passive: tile state changed
@@ -662,12 +750,16 @@ class PresenceService : Service() {
     }
 
     /** Proximity woke us (or unlock): leave passive — re-acquire the wake lock and rebuild BLE. */
-    private fun exitPassive() {
+    private suspend fun exitPassive() = transition.withLock { exitPassiveLocked() }
+
+    /** [exitPassive] body; caller holds [transition]. */
+    private fun exitPassiveLocked() {
         if (!passive) return
         passive = false
         _passive.value = false
         _parkedNearby.value = false
         departJob?.cancel()
+        proximity.reset()
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm() // hand PK off to the full session
         if (locked) {
@@ -675,8 +767,7 @@ class PresenceService : Service() {
             updateNotification(LOCKED_TEXT)
             return
         }
-        startActivePresence()
-        updateNotification(PresenceStatus.summary.value)
+        startActivePresence() // sets the active notification text
         DebugLog.add("presence: proximity wake → active")
         TileRefresher.refresh(this) // passive→active: tile state changed
     }
@@ -686,8 +777,7 @@ class PresenceService : Service() {
     private suspend fun presenceLoop(enrollment: Enrollment) = coroutineScope {
         val bleScope = this
         DebugLog.add("presence: loop start for ${enrollment.vin}")
-        val sharedSecret = runCatching { keyManager.sharedSecret(enrollment.vehiclePublicKey) }
-            .getOrElse { DebugLog.add("presence: ECDH failed — ${it.message}"); return@coroutineScope }
+        val sharedSecret = awaitSharedSecret(enrollment)
         val started = HashSet<String>()
         val addresses = VehicleAddressStore(this@PresenceService)
 
@@ -723,6 +813,23 @@ class PresenceService : Service() {
                 }
             }.onFailure { DebugLog.add("presence: sensor scan failed — ${it.message}") }
             delay(RESCAN_MS)
+        }
+    }
+
+    /**
+     * ECDH with the vehicle key, retried with backoff instead of giving up: a transient Keystore
+     * failure (e.g. racing the unlock that just started us — the key is unlockedDeviceRequired) must
+     * not end the loop with nothing retrying. While this waits no link comes up, so [monitorIdle]
+     * still falls back to passive if it never succeeds. Cancelled with the loop.
+     */
+    private suspend fun awaitSharedSecret(enrollment: Enrollment): ByteArray {
+        var backoff = ECDH_RETRY_MIN_MS
+        while (true) {
+            val result = runCatching { keyManager.sharedSecret(enrollment.vehiclePublicKey) }
+            result.onSuccess { return it }
+            DebugLog.add("presence: ECDH failed (${result.exceptionOrNull()?.javaClass?.simpleName}) — retry in ${backoff / 1000}s")
+            delay(backoff)
+            backoff = (backoff * 2).coerceAtMost(ECDH_RETRY_MAX_MS)
         }
     }
 
@@ -851,6 +958,11 @@ class PresenceService : Service() {
         private const val PARKED_IDLE_TIMEOUT_MS = 15 * 60_000L
         /** Debounce a MATCH_LOST before counting the car as gone, so a brief dropout isn't a "left". */
         private const val DEPART_DEBOUNCE_MS = 30_000L
+        /** Extra time a timed wake lock outlives the window it covers, so the window can finish. */
+        private const val TIMED_WAKE_SLACK_MS = 5_000L
+        /** Backoff bounds for retrying a failed ECDH in [presenceLoop]. */
+        private const val ECDH_RETRY_MIN_MS = 2_000L
+        private const val ECDH_RETRY_MAX_MS = 60_000L
         /** Charge states that mean the cord is connected (idle drops faster when plugged in). */
         private val PLUGGED_STATES = setOf(
             VehicleStatus.ChargeState.CHARGING,
