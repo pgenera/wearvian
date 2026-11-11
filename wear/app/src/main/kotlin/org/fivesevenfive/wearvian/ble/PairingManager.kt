@@ -23,6 +23,7 @@ import kotlinx.coroutines.withTimeout
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.store.Enrollment
+import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.util.logi
 import org.fivesevenfive.wearvian.util.logw
 import org.fivesevenfive.wearvian.util.toHexString
@@ -111,6 +112,9 @@ class PairingManager(
             require(PairingFrames.vehicleIdMatches(vehicleId, enrollment.vasVehicleId)) {
                 "Vehicle id mismatch — wrong vehicle or wrong enrollment"
             }
+            // This module is the enrolled vehicle's phone key: remember its address so presence and
+            // commands connect to it by address, not by the (ambiguous) bonded device name.
+            VehicleAddressStore(context).phoneKeyAddress = device.address
 
             // Step 2: prove possession of the enrolled key via HMAC over a fresh nonce.
             val nonce = ByteArray(PairingFrames.PHONE_NONCE_LEN).also { SecureRandom().nextBytes(it) }

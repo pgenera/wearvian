@@ -118,6 +118,16 @@ class ProximityTrackerTest {
     }
 
     @Test
+    fun assumeAllLostAfterABluetoothRestart() {
+        t.found("A", 0, departureConfirmed = false)
+        t.assumeAllLost(5_000)
+        // Seen again quickly → still parked; never seen → departure due after the debounce.
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 5_000 + debounce - 1, departureConfirmed = false))
+        t.assumeAllLost(100_000)
+        assertTrue(t.departureDue(100_000 + debounce))
+    }
+
+    @Test
     fun resetClearsTheEmptyTimestamp() {
         t.found("A", 0, departureConfirmed = false)
         assertTrue(t.lost("A", 0))

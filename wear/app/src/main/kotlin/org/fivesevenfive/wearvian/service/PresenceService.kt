@@ -7,9 +7,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.PowerManager
@@ -42,6 +45,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
+import org.fivesevenfive.wearvian.ble.PhoneKey
+import org.fivesevenfive.wearvian.ble.RescanSchedule
+import org.fivesevenfive.wearvian.ble.SessionLabels
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.ble.RivianBle
@@ -112,6 +118,27 @@ class PresenceService : Service() {
 
     /** Which of the car's nodes the passive proximity scan currently sees (departure = all lost). */
     private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS)
+
+    /** True while the Bluetooth adapter is off: BLE is torn down and rebuilt on STATE_ON. */
+    @Volatile private var btOff = false
+
+    /** True while active presence can't find the phone-key module (not paired). */
+    @Volatile private var phoneKeyMissing = false
+
+    /** Consecutive proximity-scan failures in this passive stretch, and the pending retry. */
+    private var proximityScanFailures = 0
+    private var proximityRetryJob: Job? = null
+
+    /**
+     * Airplane mode / a Bluetooth toggle kills every scan, pending autoConnect and GATT link without
+     * telling the callers. Tear down on OFF and rebuild the current mode on ON ([onBluetoothState]).
+     */
+    private val btStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            scope.launch { onBluetoothState(state) }
+        }
+    }
 
     /**
      * True while idling passively: the service + foreground notification STAY up, the wake lock
@@ -188,7 +215,86 @@ class PresenceService : Service() {
             scope.launch { if (lost) onProximityLost(address, now) else onProximityFound(address, rssi, now) }
         }
         override fun onScanFailed(errorCode: Int) {
-            DebugLog.add("presence: proximity scan failed err=$errorCode")
+            scope.launch { onProximityScanFailed(errorCode) }
+        }
+    }
+
+    /**
+     * The passive proximity scan was rejected (rate limit, no filter slots…) — without handling this
+     * the key would sit passive with no scan running. Keep the autoConnect wake armed if the car has
+     * left, retry the scan with backoff, and surface a persistent failure in the notification.
+     */
+    private fun onProximityScanFailed(errorCode: Int) {
+        if (!passive || btOff) return // BT off: the STATE_ON handler re-arms everything
+        if (errorCode == android.bluetooth.le.ScanCallback.SCAN_FAILED_ALREADY_STARTED) return // it IS running
+        proximityScanFailures++
+        DebugLog.add("presence: proximity scan failed err=$errorCode (x$proximityScanFailures) — retrying")
+        if (seenDeparture) passiveLink.arm(this) // the other wake path works without the scan
+        if (proximityScanFailures == SCAN_FAIL_NOTIFY_AFTER) updateNotification(passiveText())
+        if (proximityRetryJob?.isActive == true) return
+        val wait = (SCAN_RETRY_MIN_MS shl (proximityScanFailures - 1).coerceAtMost(4)).coerceAtMost(SCAN_RETRY_MAX_MS)
+        proximityRetryJob = scope.launch {
+            delay(wait)
+            transition.withLock { if (passive && !locked && !btOff) armProximityScan() }
+        }
+    }
+
+    /** (Re)start the passive proximity scan. A synchronous start failure counts as a scan failure. */
+    private fun armProximityScan(): Boolean {
+        val enrollment = EnrollmentStore(this).load() ?: return false
+        ProximityWake.stopScan(this, proximityCallback)
+        proximity.reset() // the new scan re-reports every node in range
+        val ok = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
+        if (!ok) onProximityScanFailed(SCAN_START_FAILED)
+        return ok
+    }
+
+    /** Passive notification text for the current sub-state. */
+    private fun passiveText(): String = if (seenDeparture) PASSIVE_TEXT else PARKED_TEXT
+
+    /** Bluetooth adapter turned off/on: tear down, then rebuild whichever mode we are in. */
+    private suspend fun onBluetoothState(state: Int) = transition.withLock {
+        when (state) {
+            BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                if (btOff) return@withLock
+                btOff = true
+                DebugLog.add("presence: Bluetooth off — tearing down BLE until it returns")
+                proximityRetryJob?.cancel()
+                if (passive) {
+                    ProximityWake.stopScan(this, proximityCallback)
+                    passiveLink.disarm()
+                    departJob?.cancel()
+                    proximity.reset()
+                } else if (!locked) {
+                    driving = false; VehicleSession.heartbeatsPaused = watchMode // doze default for a watch key
+                    stopBle()
+                    VehicleStatus.clear()
+                    releaseWakeLock()
+                }
+                updateNotification(BT_OFF_TEXT)
+            }
+            BluetoothAdapter.STATE_ON -> {
+                if (!btOff) return@withLock
+                btOff = false
+                DebugLog.add("presence: Bluetooth on — rebuilding (${if (locked) "locked" else if (passive) "passive" else "active"})")
+                when {
+                    locked -> updateNotification(LOCKED_TEXT) // unlock rebuilds
+                    passive -> {
+                        proximityScanFailures = 0
+                        armProximityScan()
+                        if (seenDeparture) {
+                            passiveLink.arm(this)
+                        } else {
+                            // The car may have left while we couldn't see it: count from now, and
+                            // let the fresh scan's FIRST_MATCH cancel the countdown if it's still here.
+                            proximity.assumeAllLost(SystemClock.elapsedRealtime())
+                            startDepartureCountdown()
+                        }
+                        updateNotification(passiveText())
+                    }
+                    else -> { stopBle(); startActivePresence() }
+                }
+            }
         }
     }
 
@@ -200,6 +306,12 @@ class PresenceService : Service() {
         }
         if (seenDeparture || departJob?.isActive == true) return
         DebugLog.add("presence: proximity lost $address (no nodes seen) → arming return watch")
+        startDepartureCountdown()
+    }
+
+    /** After [DEPART_DEBOUNCE_MS] with no node seen, confirm the departure ([markDeparted]). */
+    private fun startDepartureCountdown() {
+        if (departJob?.isActive == true) return
         departJob = scope.launch {
             // Coroutine delays don't advance while the CPU is suspended, and passive mode has no
             // wake lock — so hold a short self-expiring one for the debounce, or the autoConnect
@@ -211,6 +323,7 @@ class PresenceService : Service() {
 
     private suspend fun onProximityFound(address: String, rssi: Int, now: Long) {
         if (!passive) return
+        proximityScanFailures = 0 // the scan is evidently working
         departJob?.cancel() // a node is (back) in range — cancel any pending "it left"
         when (proximity.found(address, now, seenDeparture)) {
             ProximityTracker.Found.RETURN -> {
@@ -256,6 +369,14 @@ class PresenceService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        btOff = adapter?.isEnabled != true
+        // A protected system broadcast: delivered to a NOT_EXPORTED receiver.
+        runCatching { registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), RECEIVER_NOT_EXPORTED) }
+            .onFailure { DebugLog.add("presence: BT state receiver not registered — ${it.javaClass.simpleName}") }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val goPassiveNow = intent?.action == ACTION_GO_PASSIVE
@@ -365,6 +486,12 @@ class PresenceService : Service() {
      */
     private fun startActivePresence() {
         settings.passiveIdle = false // going active — a later upgrade restart should NOT resume passive
+        if (btOff) {
+            // No radio: holding the wake lock would buy nothing. STATE_ON calls us again.
+            DebugLog.add("presence: active, but Bluetooth is off — waiting for it")
+            updateNotification(BT_OFF_TEXT)
+            return
+        }
         if (watchMode) {
             VehicleSession.heartbeatsPaused = true // doze by default; bursts un-pause it
             startBle()
@@ -399,7 +526,7 @@ class PresenceService : Service() {
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
+                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
                     releaseWakeLock()
@@ -455,7 +582,12 @@ class PresenceService : Service() {
         val vasId = EnrollmentStore(this).load()?.vasVehicleId
             ?: return withTimeoutOrNull(IDLE_TIMEOUT_MS) { PresenceStatus.connected.first { it } } == null
         val seen = java.util.concurrent.atomic.AtomicBoolean(false)
+        val scanFailed = java.util.concurrent.atomic.AtomicBoolean(false)
         val cb = object : android.bluetooth.le.ScanCallback() {
+            override fun onScanFailed(errorCode: Int) {
+                // A rejected probe sees nothing — that must read as "unknown", not "car gone".
+                if (scanFailed.compareAndSet(false, true)) DebugLog.add("idle: probe scan failed err=$errorCode — using the backstop")
+            }
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
                 if (callbackType == android.bluetooth.le.ScanSettings.CALLBACK_TYPE_FIRST_MATCH &&
                     seen.compareAndSet(false, true)) {
@@ -473,16 +605,16 @@ class PresenceService : Service() {
             // stalls while the CPU sleeps, which would stretch this probe indefinitely.
             withTimedWakeLock("wearvian:idle-probe", IDLE_PROBE_MS + TIMED_WAKE_SLACK_MS) {
                 withTimeoutOrNull(IDLE_PROBE_MS) {
-                    while (!seen.get() && !PresenceStatus.connected.value && !passive && !locked) delay(500)
+                    while (!seen.get() && !scanFailed.get() && !PresenceStatus.connected.value && !passive && !locked) delay(500)
                 }
             }
             return when {
                 passive || locked -> false
                 PresenceStatus.connected.value -> false // reconnected on its own — blip
-                !seen.get() -> { DebugLog.add("idle: car nodes out of range ${IDLE_PROBE_MS / 1000}s → passive"); true }
+                !seen.get() && !scanFailed.get() -> { DebugLog.add("idle: car nodes out of range ${IDLE_PROBE_MS / 1000}s → passive"); true }
                 else -> {
-                    // Car's still advertising nearby — a blip. Wait for the reconnect, capped by the
-                    // IDLE_TIMEOUT_MS backstop from when the links first dropped.
+                    // Car's still advertising nearby (a blip) or the probe couldn't scan. Wait for the
+                    // reconnect, capped by the IDLE_TIMEOUT_MS backstop from when the links first dropped.
                     val remaining = IDLE_TIMEOUT_MS - (SystemClock.elapsedRealtime() - disconnectedAt)
                     remaining <= 0 || withTimeoutOrNull(remaining) { PresenceStatus.connected.first { it } } == null
                 }
@@ -623,7 +755,7 @@ class PresenceService : Service() {
             withTimeoutOrNull(WATCH_TICK_MS) { VehicleStatus.state.first { it != lastState } }
             val st = VehicleStatus.state.value
             lastState = st
-            if (locked || passive) { prevDoorOpen = false; prevAsleep = false; continue }
+            if (locked || passive || btOff) { prevDoorOpen = false; prevAsleep = false; continue }
             val fresh = st.valid && st.live
             if (fresh) {
                 if (st.anyDoorOpen && !prevDoorOpen) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = door opened") }
@@ -741,10 +873,12 @@ class PresenceService : Service() {
         stopBle()
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
-        val watching = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
-        if (seenDeparture) passiveLink.arm(this)
+        proximityScanFailures = 0
+        proximityRetryJob?.cancel()
+        val watching = !btOff && armProximityScan() // BT off: STATE_ON arms the scan + autoConnect
+        if (seenDeparture && !btOff) passiveLink.arm(this)
         DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching, autoConnect=${seenDeparture}")
-        updateNotification(if (seenDeparture) PASSIVE_TEXT else PARKED_TEXT)
+        updateNotification(passiveText())
         TileRefresher.refresh(this) // active→passive: tile state changed
         return true
     }
@@ -759,6 +893,7 @@ class PresenceService : Service() {
         _passive.value = false
         _parkedNearby.value = false
         departJob?.cancel()
+        proximityRetryJob?.cancel()
         proximity.reset()
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm() // hand PK off to the full session
@@ -779,41 +914,82 @@ class PresenceService : Service() {
         DebugLog.add("presence: loop start for ${enrollment.vin}")
         val sharedSecret = awaitSharedSecret(enrollment)
         val started = HashSet<String>()
+        val labels = HashSet<String>() // PresenceStatus keys: must be unique per session
         val addresses = VehicleAddressStore(this@PresenceService)
-
-        // PRIMARY phone-key (the bonded device).
-        adapter.bondedDevices.firstOrNull { it.name == RivianBle.DEVICE_NAME }?.let { primary ->
-            started.add(primary.address)
-            addresses.add(primary.address) // remember for the proximity-wake filters
-            bleScope.launch { VehicleSession(this@PresenceService, primary, enrollment, sharedSecret, "PK", primary = true).runForever(bleScope) }
-        } ?: DebugLog.add("presence: no bonded ${RivianBle.DEVICE_NAME}")
-
-        // Location sensors: scan by the vehicle's VAS id and open a session per new device.
         val svc = RivianBle.vehicleServiceUuid(enrollment.vasVehicleId)
-        if (svc == null) {
-            DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}'; no sensor sessions")
-            return@coroutineScope
-        }
+        if (svc == null) DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}'; no sensor sessions")
+        var pkStarted = false
+        var pkMissingLogged = false
+        var rescanMs = RescanSchedule.MIN_MS
+        var lastScanAt = 0L
+        var wasPaused = false
+
         while (bleScope.isActive) {
-            runCatching {
-                val hits = SensorScanner(this@PresenceService).discover(svc)
-                // Connect strongest-RSSI (closest) sensors first — they matter most for
-                // inside-cabin localization and are the most reliable to bring up.
-                hits.sortedByDescending { it.rssi }.forEach { hit ->
-                    if (started.add(hit.address)) {
-                        addresses.add(hit.address) // remember for the proximity-wake filters
-                        val label = sensorLabel(hit.name)
-                        DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
-                        val dev = adapter.getRemoteDevice(hit.address)
-                        bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
-                        // Stagger connects — Android BLE can't reliably do several
-                        // concurrent connect/discover attempts at once.
-                        delay(STAGGER_MS)
-                    }
+            // PRIMARY phone-key: looked up on every pass, not once — bondedDevices is empty while
+            // Bluetooth is off or restarting, and a missed lookup would leave no PRIMARY (no 0x1c,
+            // no command drain) for the whole loop.
+            if (!pkStarted) {
+                val pk = PhoneKey.find(this@PresenceService, adapter)
+                if (pk != null) {
+                    pkStarted = true
+                    started.add(pk.address)
+                    labels.add("PK")
+                    addresses.add(pk.address) // remember for the proximity-wake filters
+                    setPhoneKeyMissing(false)
+                    bleScope.launch { VehicleSession(this@PresenceService, pk, enrollment, sharedSecret, "PK", primary = true).runForever(bleScope) }
+                } else if (adapter?.isEnabled == true) {
+                    if (!pkMissingLogged) { pkMissingLogged = true; DebugLog.add("presence: phone key not paired — retrying") }
+                    setPhoneKeyMissing(true)
                 }
-            }.onFailure { DebugLog.add("presence: sensor scan failed — ${it.message}") }
-            delay(RESCAN_MS)
+            }
+
+            // Location sensors: scan by the vehicle's VAS id and open a session per new device. Not
+            // while heartbeats are paused (driving-doze / watch standby — sensors only carry
+            // heartbeats), and backing off once a scan turns up nothing new.
+            val paused = VehicleSession.heartbeatsPaused
+            val now = SystemClock.elapsedRealtime()
+            val resumed = wasPaused && !paused
+            wasPaused = paused
+            if (svc != null && !paused && (resumed || lastScanAt == 0L || now - lastScanAt >= rescanMs)) {
+                lastScanAt = now
+                val foundNew = runCatching {
+                    var launched = 0
+                    val hits = SensorScanner(this@PresenceService).discover(svc)
+                    val pkAddress = PhoneKey.storedAddress(this@PresenceService)
+                    // Connect strongest-RSSI (closest) sensors first — they matter most for
+                    // inside-cabin localization and are the most reliable to bring up.
+                    hits.sortedByDescending { it.rssi }.forEach { hit ->
+                        // The phone key runs as the PRIMARY session above, never as a sensor.
+                        if (hit.address.equals(pkAddress, ignoreCase = true) || hit.name == RivianBle.DEVICE_NAME) return@forEach
+                        if (started.add(hit.address)) {
+                            launched++
+                            addresses.add(hit.address) // remember for the proximity-wake filters
+                            val label = SessionLabels.unique(hit.name, hit.address, labels)
+                            DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
+                            val dev = adapter.getRemoteDevice(hit.address)
+                            bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
+                            // Stagger connects — Android BLE can't reliably do several
+                            // concurrent connect/discover attempts at once.
+                            delay(STAGGER_MS)
+                        }
+                    }
+                    launched > 0
+                }.getOrElse {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    DebugLog.add("presence: sensor scan failed — ${it.message}")
+                    null
+                }
+                rescanMs = RescanSchedule.next(rescanMs, foundNew)
+            }
+            delay(LOOP_TICK_MS)
         }
+    }
+
+    /** Phone-key lookup result, surfaced in the notification ("not paired") while active. */
+    private fun setPhoneKeyMissing(missing: Boolean) {
+        if (phoneKeyMissing == missing) return
+        phoneKeyMissing = missing
+        if (!passive && !locked) updateNotification(activeNotificationText())
     }
 
     /**
@@ -831,12 +1007,6 @@ class PresenceService : Service() {
             delay(backoff)
             backoff = (backoff * 2).coerceAtMost(ECDH_RETRY_MAX_MS)
         }
-    }
-
-    private fun sensorLabel(name: String?): String = when {
-        name == null -> "S?"
-        name.startsWith("Rivian Sensor ") -> "S" + name.removePrefix("Rivian Sensor ").trim()
-        else -> "PK2"
     }
 
     private fun startAsForeground() {
@@ -907,8 +1077,18 @@ class PresenceService : Service() {
     /** Re-post the ongoing notification with the latest connection state. */
     private fun updateNotification(state: String) {
         if (stopping) return // teardown in progress — never re-post after we've removed the notification
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(state))
-        logi("notification: $state  [${PresenceStatus.snapshot()}]")
+        val text = notificationOverride() ?: state
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        logi("notification: $text  [${PresenceStatus.snapshot()}]")
+    }
+
+    /** A fault that outranks whatever status text the caller passed (null = none). */
+    private fun notificationOverride(): String? = when {
+        locked -> null
+        btOff -> BT_OFF_TEXT
+        passive && proximityScanFailures >= SCAN_FAIL_NOTIFY_AFTER -> SCAN_FAILED_TEXT
+        !passive && phoneKeyMissing -> PK_MISSING_TEXT
+        else -> null
     }
 
     override fun onDestroy() {
@@ -921,6 +1101,7 @@ class PresenceService : Service() {
         _running.value = false
         _passive.value = false
         _parkedNearby.value = false
+        runCatching { unregisterReceiver(btStateReceiver) }
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm()
@@ -942,7 +1123,8 @@ class PresenceService : Service() {
     companion object {
         private const val CHANNEL_ID = "wearvian_presence"
         private const val NOTIFICATION_ID = 1
-        private const val RESCAN_MS = 15_000L
+        /** Presence-loop pass cadence (phone-key lookup retry; sensor rescans run on [RescanSchedule]). */
+        private const val LOOP_TICK_MS = 5_000L
         private const val STAGGER_MS = 1_500L
         /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). This
          *  is now only the BACKSTOP; [departed] usually drops to passive far sooner via [IDLE_PROBE_MS]. */
@@ -978,6 +1160,15 @@ class PresenceService : Service() {
         private const val PARKED_TEXT = "Parked nearby"
         private const val DRIVING_TEXT = "In gear · presence paused"
         private const val WATCH_DOZE_TEXT = "Standby · open a door to drive"
+        private const val BT_OFF_TEXT = "Bluetooth off"
+        private const val PK_MISSING_TEXT = "Phone key not paired"
+        private const val SCAN_FAILED_TEXT = "Proximity scan unavailable · retrying"
+        /** Proximity-scan retry backoff, and the failure count at which the notification says so. */
+        private const val SCAN_RETRY_MIN_MS = 30_000L // > the 30 s scan-start rate-limit window
+        private const val SCAN_RETRY_MAX_MS = 5 * 60_000L
+        private const val SCAN_FAIL_NOTIFY_AFTER = 3
+        /** Pseudo error code: startScan was rejected synchronously (no scanner / threw / no filters). */
+        private const val SCAN_START_FAILED = -1
         // Watch-mode burst presence: monitor re-eval cadence, and how long a burst holds after the
         // last trigger (door / wake / manual). 3 min covers a slow get-in with margin; tunable.
         private const val WATCH_TICK_MS = 1_000L

@@ -77,6 +77,16 @@ class ProximityTracker(private val debounceMs: Long) {
         return true
     }
 
+    /**
+     * Visibility is unknown (the scan was down, e.g. across a Bluetooth restart): treat every node
+     * as lost as of [nowMs], so the fresh scan's first sighting within the debounce reads as
+     * "still here" and silence for the debounce reads as a departure.
+     */
+    fun assumeAllLost(nowMs: Long) {
+        seen.clear()
+        emptySinceMs = nowMs
+    }
+
     /** True iff every node has been gone for at least [debounceMs] as of [nowMs]. */
     fun departureDue(nowMs: Long): Boolean {
         val since = emptySinceMs ?: return false
