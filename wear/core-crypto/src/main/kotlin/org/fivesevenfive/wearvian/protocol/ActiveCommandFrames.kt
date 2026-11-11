@@ -93,9 +93,22 @@ object ActiveCommandFrames {
 
     private fun sessionKey(sharedSecret: ByteArray) = RivianCrypto.deriveSecretKey(sharedSecret)
 
+    /**
+     * The keys a live session signs/encrypts with, derived ONCE from the ECDH [sharedSecret]
+     * instead of per frame (the heartbeat path runs ~3.3x/s per link across up to five links,
+     * and the HKDF alone is three HMAC instantiations). Both are pure functions of the shared
+     * secret, so frames built from a [SessionKeys] are byte-identical to the per-frame
+     * derivation (pinned in ActiveCommandFramesTest). Holds key material: never log it.
+     */
+    class SessionKeys(sharedSecret: ByteArray) {
+        /** `sessionSecret = HKDF-SHA256(sharedSecret)` — the HMAC key for every MAC. */
+        internal val sessionSecret: ByteArray = sessionKey(sharedSecret)
+        /** AES-128 message key; see [aesKey]. */
+        internal val aes: ByteArray = RivianCrypto.hmacSha256(sessionSecret, CONSTANT_B).copyOf(16)
+    }
+
     /** AES-128 message key = first 16 bytes of HMAC-SHA256(sessionSecret, CONSTANT_B). */
-    fun aesKey(sharedSecret: ByteArray): ByteArray =
-        RivianCrypto.hmacSha256(sessionKey(sharedSecret), CONSTANT_B).copyOf(16)
+    fun aesKey(sharedSecret: ByteArray): ByteArray = SessionKeys(sharedSecret).aes.copyOf()
 
     /** AAD = pNonce XOR vNonce (truncated to the shorter length). */
     fun aad(pNonce: ByteArray, vNonce: ByteArray): ByteArray {
@@ -195,9 +208,14 @@ object ActiveCommandFrames {
     /** PASSIVE_ENTRY heartbeat frame written (unencrypted) to char 0x1b (37 bytes). */
     fun heartbeatFrame(
         sharedSecret: ByteArray, pNonce: ByteArray, vNonce: ByteArray, counter: Int, flag: Byte,
+    ): ByteArray = heartbeatFrame(SessionKeys(sharedSecret), pNonce, vNonce, counter, flag)
+
+    /** [heartbeatFrame] with pre-derived [keys] — the per-beat path a live session uses. */
+    fun heartbeatFrame(
+        keys: SessionKeys, pNonce: ByteArray, vNonce: ByteArray, counter: Int, flag: Byte,
     ): ByteArray {
         val flagArr = byteArrayOf(flag)
-        val mac = RivianCrypto.hmacSha256(sessionKey(sharedSecret), pNonce + vNonce + le32(counter) + flagArr)
+        val mac = RivianCrypto.hmacSha256(keys.sessionSecret, pNonce + vNonce + le32(counter) + flagArr)
         return le32(counter) + flagArr + mac
     }
 
