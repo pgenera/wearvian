@@ -56,6 +56,7 @@ import org.fivesevenfive.wearvian.ble.SensorScanner
 import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
@@ -1033,7 +1034,7 @@ class PresenceService : Service() {
     private suspend fun awaitSharedSecret(enrollment: Enrollment): ByteArray {
         var backoff = ECDH_RETRY_MIN_MS
         while (true) {
-            val result = runCatching { keyManager.sharedSecret(enrollment.vehiclePublicKey) }
+            val result = runCatching { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
             result.onSuccess { return it }
             DebugLog.add("presence: ECDH failed (${result.exceptionOrNull()?.javaClass?.simpleName}) — retry in ${backoff / 1000}s")
             delay(backoff)

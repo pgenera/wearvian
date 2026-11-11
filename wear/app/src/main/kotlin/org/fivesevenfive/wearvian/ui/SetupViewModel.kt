@@ -21,6 +21,7 @@ import org.fivesevenfive.wearvian.comms.CompanionEnrollmentClient
 import org.fivesevenfive.wearvian.comms.EnrollmentContract
 import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
@@ -354,6 +355,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         enrollJob?.cancel()
         companion.forgetOutstanding()
         store.clear()
+        SharedSecretCache.clear()
         clearVehicleState()
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
     }
@@ -391,6 +393,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         store.clear()
         clearVehicleState()
         keyManager.deleteKey()
+        SharedSecretCache.clear() // after the delete, so a racing computation can't keep the old key's secret
         _state.value = SetupUiState(Phase.NEEDS_SETUP)
     }
 }

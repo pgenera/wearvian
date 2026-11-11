@@ -10,15 +10,22 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.store.Enrollment
@@ -39,6 +46,10 @@ import java.util.concurrent.ConcurrentHashMap
  * One-shots are serialized process-wide (and the PRIMARY [VehicleSession] waits for them via
  * [awaitOneShotIdle]) so two GATT clients never run the nonce handshake on PK at once. A failed
  * attempt is retried once unless the failure is one a retry can't fix (see [CommandFailure]).
+ *
+ * Latency (cold tap measured at ~5.9 s in June logs): the ECDH comes from [SharedSecretCache] and
+ * overlaps the connect instead of following it, the tile can [prewarm] the link before the tap, and
+ * only the characteristics the one-shot reads are subscribed.
  */
 @SuppressLint("MissingPermission")
 class ActiveCommandManager(
@@ -55,87 +66,135 @@ class ActiveCommandManager(
     // Written by the command coroutine, read/completed by the GATT callback thread → concurrent.
     private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
 
+    /** Set once this client's link drops after connecting (a pre-opened link is then useless). */
+    @Volatile private var linkLost = false
+
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
     /**
      * Connect, authenticate and send [commandCode] once (retrying once on a retryable failure).
      * Fully time-bounded; a failure's [CommandException.failure] says why (other exceptions mean
-     * [CommandFailure.SEND_FAILED]).
+     * [CommandFailure.SEND_FAILED]). Uses the tile's pre-opened link ([prewarm]) when one is up.
      */
     suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> =
         oneShotLock.withLock {
-            var result = attempt(enrollment, commandCode, label)
+            val warmLink = takeWarmLocked()
+            var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt)
+            else attempt(enrollment, commandCode, label, null)
             val first = result.exceptionOrNull()
             if (first != null && failureOf(first).retryable && currentCoroutineContext().isActive) {
                 DebugLog.add("cmd $label retrying once")
                 delay(RETRY_DELAY_MS)
-                result = attempt(enrollment, commandCode, label)
+                result = attempt(enrollment, commandCode, label, null)
             }
             result
         }
 
-    private suspend fun attempt(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> = runCatching {
+    /**
+     * One try. [preopened] is a link [openLink] already connected and subscribed (tile pre-warm);
+     * otherwise this connects itself. Either way the link is closed when the try ends.
+     */
+    private suspend fun attempt(
+        enrollment: Enrollment, commandCode: Int, label: String, preopened: BluetoothGatt?,
+    ): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
+        // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
+        if (keyguard?.isDeviceLocked == true) {
+            preopened?.let { closeLink(it) }
+            throw CommandException(CommandFailure.WATCH_LOCKED, "watch locked — command blocked")
+        }
+        // The StrongBox ECDH (0.5–2 s) used to run only after the connect; start it now (or find it
+        // cached) so it overlaps the connect instead of adding to it.
+        SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
+        val gatt = preopened?.also { DebugLog.ble("·", "gatt", "using pre-opened link") } ?: openLink()
+        try {
+            authenticateAndSend(gatt, enrollment, commandCode, label)
+        } finally {
+            closeLink(gatt)
+        }
+    }.onFailure {
+        DebugLog.add("cmd $label ✗ ${it.message}")
+        loge("sendCommand failed", it)
+    }
+
+    /**
+     * Connect, discover and subscribe the handshake + command characteristics; on failure the
+     * client is closed and the error rethrown. Everything before the authentication, so the tile can
+     * do it ahead of a tap.
+     */
+    private suspend fun openLink(connectMs: Long = CONNECT_MS): BluetoothGatt {
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
         descriptorWritten = CompletableDeferred()
         charWritten = CompletableDeferred()
         notifications.clear()
-        // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
-        if (keyguard?.isDeviceLocked == true) throw CommandException(CommandFailure.WATCH_LOCKED, "watch locked — command blocked")
+        linkLost = false
         val device = PhoneKey.find(context, adapter)
             ?: throw CommandException(CommandFailure.NOT_BONDED, "phone key not paired (or Bluetooth off)")
         DebugLog.ble("·", "gatt", "connecting ${device.address}")
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
-            withTimeoutOrNull(CONNECT_MS) { connected.await() }
+            withTimeoutOrNull(connectMs) { connected.await() }
                 ?: throw CommandException(CommandFailure.NOT_REACHABLE, "connect timed out")
+            // A one-shot is a short burst of sequential round trips: run it at the fastest interval.
+            // (The car may still impose its own; the live session keeps BALANCED, see VehicleSession.)
+            val pri = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
             if (!gatt.discoverServices()) error("discoverServices rejected")
             if (!withTimeout(OP_MS) { servicesReady.await() }) error("service discovery failed")
-            DebugLog.ble("·", "gatt", "connected + discovered")
+            DebugLog.ble("·", "gatt", "connected + discovered connPriReq=$pri")
 
-            val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
-            val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
-            val cmdChar = requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND)
-            findChar(gatt, RivianBle.CHAR_VEHICLE_STATUS)?.let { enableNotify(gatt, it) }
-            enableNotify(gatt, phoneIdChar)
-            enableNotify(gatt, nonceChar)
-            enableNotify(gatt, cmdChar)
-
-            val shared = keyManager.sharedSecret(enrollment.vehiclePublicKey)
-
-            // 1) phone id -> vehicle echoes its id
-            notifications[phoneIdChar.uuid] = CompletableDeferred()
-            writeChar(gatt, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
-            DebugLog.ble("→", "0x12", "phoneId", 16)
-            val vid = withTimeout(OP_MS) { notifications.getValue(phoneIdChar.uuid).await() }
-            require(PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId)) { "vehicle id mismatch" }
-            DebugLog.ble("←", "0x12", "vehicleId ok", vid.size)
-
-            // 2) auth: send pNonce, receive vNonce
-            val pNonce = ByteArray(16).also { SecureRandom().nextBytes(it) }
-            notifications[nonceChar.uuid] = CompletableDeferred()
-            writeChar(gatt, nonceChar, ActiveCommandFrames.authNonce(shared, pNonce))
-            DebugLog.ble("→", "0x15", "authNonce pNonce+HMAC", 48)
-            val vResp = withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() }
-            val vNonce = vResp.copyOf(16)
-            DebugLog.ble("←", "0x15", "vNonce ${vNonce.toHexString().take(8)}…", vResp.size)
-
-            // 3) encrypted command frame
-            val frame = ActiveCommandFrames.activeCommandFrame(shared, pNonce, vNonce, counter = 0, commandCode = commandCode)
-            notifications[cmdChar.uuid] = CompletableDeferred()
-            writeChar(gatt, cmdChar, frame)
-            DebugLog.ble("→", "0x20", "CMD $label (enc)", frame.size)
-            val resp = runCatching { withTimeout(OP_MS) { notifications.getValue(cmdChar.uuid).await() } }.getOrNull()
-            DebugLog.add(resp?.let { "← 0x20 resp ${it.toHexString().take(12)}… ${it.size}B" } ?: "cmd $label written (no resp)")
-            DebugLog.add("cmd $label ✓ done")
-        } finally {
-            gatt.disconnect()
-            gatt.close()
+            // Only what the one-shot reads: 0x12 (vehicle-id echo), 0x15 (vNonce), 0x20 (command
+            // response). Not 0x1c vehicle status — nothing here reads it, and it was a serial
+            // CCCD round trip on every tap.
+            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID))
+            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE))
+            enableNotify(gatt, requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND))
+            return gatt
+        } catch (t: Throwable) {
+            closeLink(gatt)
+            throw t
         }
-    }.onFailure {
-        DebugLog.add("cmd $label ✗ ${it.message}")
-        loge("sendCommand failed", it)
+    }
+
+    private suspend fun authenticateAndSend(gatt: BluetoothGatt, enrollment: Enrollment, commandCode: Int, label: String) {
+        val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
+        val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
+        val cmdChar = requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND)
+
+        // Started before the connect (or cached), so normally ready by now. Awaited before the first
+        // handshake write so the car sees the same write timing as before.
+        val shared = withTimeout(ECDH_MS) { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
+
+        // 1) phone id -> vehicle echoes its id
+        notifications[phoneIdChar.uuid] = CompletableDeferred()
+        writeChar(gatt, phoneIdChar, PairingFrames.phoneIdBytes(enrollment.vasPhoneId))
+        DebugLog.ble("→", "0x12", "phoneId", 16)
+        val vid = withTimeout(OP_MS) { notifications.getValue(phoneIdChar.uuid).await() }
+        require(PairingFrames.vehicleIdMatches(vid, enrollment.vasVehicleId)) { "vehicle id mismatch" }
+        DebugLog.ble("←", "0x12", "vehicleId ok", vid.size)
+
+        // 2) auth: send pNonce, receive vNonce
+        val pNonce = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        notifications[nonceChar.uuid] = CompletableDeferred()
+        writeChar(gatt, nonceChar, ActiveCommandFrames.authNonce(shared, pNonce))
+        DebugLog.ble("→", "0x15", "authNonce pNonce+HMAC", 48)
+        val vResp = withTimeout(OP_MS) { notifications.getValue(nonceChar.uuid).await() }
+        val vNonce = vResp.copyOf(16)
+        DebugLog.ble("←", "0x15", "vNonce ${vNonce.toHexString().take(8)}…", vResp.size)
+
+        // 3) encrypted command frame
+        val frame = ActiveCommandFrames.activeCommandFrame(shared, pNonce, vNonce, counter = 0, commandCode = commandCode)
+        notifications[cmdChar.uuid] = CompletableDeferred()
+        writeChar(gatt, cmdChar, frame)
+        DebugLog.ble("→", "0x20", "CMD $label (enc)", frame.size)
+        val resp = runCatching { withTimeout(OP_MS) { notifications.getValue(cmdChar.uuid).await() } }.getOrNull()
+        DebugLog.add(resp?.let { "← 0x20 resp ${it.toHexString().take(12)}… ${it.size}B" } ?: "cmd $label written (no resp)")
+        DebugLog.add("cmd $label ✓ done")
+    }
+
+    private fun closeLink(gatt: BluetoothGatt) {
+        runCatching { gatt.disconnect() }
+        runCatching { gatt.close() }
     }
 
     private fun requireChar(gatt: BluetoothGatt, uuid: UUID): BluetoothGattCharacteristic =
@@ -170,8 +229,19 @@ class ActiveCommandManager(
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED && !connected.isCompleted) connected.complete(true)
-            else if (newState == BluetoothProfile.STATE_DISCONNECTED && !connected.isCompleted)
-                connected.completeExceptionally(IllegalStateException("disconnected"))
+            else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                if (!connected.isCompleted) connected.completeExceptionally(IllegalStateException("disconnected"))
+                else {
+                    // Dropped after connecting (e.g. a pre-opened link the car let go): fail what's
+                    // pending now instead of letting each wait run out its timeout.
+                    linkLost = true
+                    val gone = IllegalStateException("link lost")
+                    servicesReady.completeExceptionally(gone)
+                    descriptorWritten.completeExceptionally(gone)
+                    charWritten.completeExceptionally(gone)
+                    notifications.values.forEach { it.completeExceptionally(gone) }
+                }
+            }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -196,14 +266,107 @@ class ActiveCommandManager(
         private const val CONNECT_MS = 35_000L
         private const val OP_MS = 5_000L
         private const val RETRY_DELAY_MS = 500L
+        /** Upper bound on waiting for the StrongBox ECDH (normally 0.5–2 s, or already cached). */
+        private const val ECDH_MS = 10_000L
 
-        /** Held for the whole of each one-shot (both attempts) — see the class doc. */
+        /**
+         * Pre-warm: how long a link opened when the tile comes into view is held for a tap. Long
+         * enough to read the tile and tap; short enough that glancing at it costs little.
+         */
+        private const val PREWARM_HOLD_MS = 15_000L
+        /** Pre-warm connect window. Shorter than a tap's: a car not reachable now is probably out of
+         *  range, and a tap made meanwhile waits for this before connecting itself. */
+        private const val PREWARM_CONNECT_MS = 10_000L
+
+        /** Held for the whole of each one-shot (both attempts) and of each pre-warm connect. */
         private val oneShotLock = Mutex()
 
-        /** Suspend until no one-shot command holds a GATT client on PK. */
+        private class WarmLink(val manager: ActiveCommandManager, val gatt: BluetoothGatt) {
+            var expiry: Job? = null
+        }
+
+        /** The pre-opened link waiting for a tap; guarded by [oneShotLock]. */
+        private var warm: WarmLink? = null
+        @Volatile private var prewarmJob: Job? = null
+        private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /**
+         * Tile came into view with the key off: start the ECDH and open (connect, discover,
+         * subscribe) a link to PK now, so a tap within [PREWARM_HOLD_MS] only has to authenticate and
+         * write the command. The caller checks the routing (key off, watch unlocked).
+         */
+        fun prewarm(context: Context, enrollment: Enrollment, keyManager: KeyManager) {
+            SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
+            if (prewarmJob?.isActive == true) return
+            prewarmJob = warmScope.launch {
+                oneShotLock.withLock {
+                    val current = warm
+                    if (current != null && !current.manager.linkLost) {
+                        armExpiryLocked(current) // still up: hold it for another window
+                        return@withLock
+                    }
+                    if (current != null) closeWarmLocked("link lost")
+                    DebugLog.add("cmd: pre-warming link for tile")
+                    val manager = ActiveCommandManager(context.applicationContext, keyManager)
+                    val gatt = try {
+                        manager.openLink(PREWARM_CONNECT_MS)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        DebugLog.add("cmd: pre-warm failed — ${e.message}")
+                        return@withLock
+                    }
+                    warm = WarmLink(manager, gatt).also { armExpiryLocked(it) }
+                    DebugLog.add("cmd: link pre-warmed")
+                }
+            }
+        }
+
+        /** Tile left view: drop an unused pre-opened link now rather than at its expiry. */
+        fun releasePrewarm() {
+            warmScope.launch {
+                prewarmJob?.cancel()
+                oneShotLock.withLock { closeWarmLocked("tile left") }
+            }
+        }
+
+        private fun armExpiryLocked(link: WarmLink) {
+            link.expiry?.cancel()
+            link.expiry = warmScope.launch {
+                delay(PREWARM_HOLD_MS)
+                oneShotLock.withLock { if (warm === link) closeWarmLocked("unused") }
+            }
+        }
+
+        /** Hand the pre-opened link to a command (null if none, or it dropped). Lock held. */
+        private fun takeWarmLocked(): WarmLink? {
+            val link = warm ?: return null
+            warm = null
+            link.expiry?.cancel()
+            if (link.manager.linkLost) {
+                link.manager.closeLink(link.gatt)
+                DebugLog.add("cmd: pre-warmed link had dropped — connecting fresh")
+                return null
+            }
+            return link
+        }
+
+        private fun closeWarmLocked(why: String) {
+            val link = warm ?: return
+            warm = null
+            link.expiry?.cancel()
+            link.manager.closeLink(link.gatt)
+            DebugLog.add("cmd: pre-warmed link closed ($why)")
+        }
+
+        /**
+         * Suspend until no one-shot command holds a GATT client on PK. A pre-warm in progress or an
+         * unused pre-opened link is dropped: the presence session is taking over the link.
+         */
         suspend fun awaitOneShotIdle() {
+            prewarmJob?.cancel()
             if (oneShotLock.isLocked) DebugLog.add("cmd: waiting for one-shot to finish")
-            oneShotLock.withLock { }
+            oneShotLock.withLock { closeWarmLocked("presence session starting") }
         }
 
         /** Classify a one-shot failure for retry policy and user feedback. */

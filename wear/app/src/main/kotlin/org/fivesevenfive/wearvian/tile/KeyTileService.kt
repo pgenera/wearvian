@@ -24,6 +24,7 @@ import androidx.wear.protolayout.ResourceBuilders.Resources
 import androidx.wear.protolayout.TimelineBuilders.Timeline
 import androidx.wear.protolayout.material.Button
 import androidx.wear.protolayout.material.ButtonColors
+import androidx.wear.tiles.EventBuilders
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders.Tile
 import androidx.wear.tiles.TileService
@@ -33,11 +34,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.fivesevenfive.wearvian.R
+import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandDispatcher
 import org.fivesevenfive.wearvian.ble.CommandOutcome
+import org.fivesevenfive.wearvian.ble.WatchLock
+import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.service.VehicleModel
 import org.fivesevenfive.wearvian.service.VehicleStatus
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames.Cmd
 import org.fivesevenfive.wearvian.store.EnrollmentStore
 import org.fivesevenfive.wearvian.store.SettingsStore
@@ -295,6 +300,33 @@ class KeyTileService : TileService() {
             .setHeight(dp(sizeDp))
             .setColorFilter(ColorFilter.Builder().setTint(argb(tintArgb)).build())
             .build()
+
+    /**
+     * Tile came into view. With the key off a tap will be a one-shot, which on a cold link spent
+     * seconds connecting and in the StrongBox ECDH before it could send anything — so start both
+     * now, while the user is still aiming (see [ActiveCommandManager.prewarm]). Otherwise (key on or
+     * passive) just make sure the secret is ready.
+     */
+    override fun onTileEnterEvent(requestParams: EventBuilders.TileEnterEvent) {
+        val ctx = applicationContext
+        scope.launch {
+            val enrollment = EnrollmentStore(ctx).load() ?: return@launch
+            if (WatchLock.isLocked(ctx)) return@launch
+            val keyManager = KeyManager()
+            // Only with the key fully off. While passive, PK is watched by a background autoConnect
+            // and opening a link would wake the key to active just because the tile was glanced at.
+            if (!PresenceService.isRunning) {
+                ActiveCommandManager.prewarm(ctx, enrollment, keyManager)
+            } else {
+                SharedSecretCache.prefetch(keyManager, enrollment.vehiclePublicKey)
+            }
+        }
+    }
+
+    /** Tile left view without a tap: let go of a pre-opened link now instead of at its expiry. */
+    override fun onTileLeaveEvent(requestParams: EventBuilders.TileLeaveEvent) {
+        ActiveCommandManager.releasePrewarm()
+    }
 
     private fun dispatch(code: Int, label: String) {
         val enrollment = EnrollmentStore(this).load() ?: run {
