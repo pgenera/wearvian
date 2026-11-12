@@ -196,12 +196,23 @@ two layers:
   authenticated heartbeats**. The vehicle loses presence within seconds and will
   not passively unlock or authorize drive for whoever is holding the watch. The
   link is kept up so presence resumes instantly when the legitimate wearer unlocks
-  it. This protects sessions that are already running (where a shared secret is
-  cached in memory).
+  it. This protects sessions that are already running.
 - **Layer 2 — key-use gating.** Keys are generated with
-  `setUnlockedDeviceRequired(true)`, so the Keystore will not even perform the
-  initial ECDH while the device is locked. A stolen, locked watch therefore can't
-  derive the shared secret to start a *new* session at all.
+  `setUnlockedDeviceRequired(true)`, so the Keystore will not perform the ECDH
+  while the device is locked. A stolen, locked watch therefore can't derive the
+  shared secret to start a *new* session.
+
+**Cached secret.** The StrongBox ECDH takes 0.5–2 s, so its result (the shared
+secret) is cached in memory *while the watch is unlocked* to keep taps fast. It
+is zeroed as soon as the app sees the watch locked: the presence service's lock
+monitor, every command attempt and tile view that reads the keyguard as locked,
+and a process-wide screen-off/screen-on receiver that re-checks the keyguard a
+few seconds after the screen goes off (off-body lock is not instant) all clear
+it. On unlock it is recomputed in the background so the ECDH overlaps the
+reconnect. So a locked watch holds no usable secret and Layer 2 remains the
+backstop; the residual window is the few seconds between the lock and the next
+re-check (and copies held by a live session until its BLE teardown, which the
+lock monitor does within its 2 s poll).
 
 When the watch is locked the service additionally tears down all BLE and releases
 the wake lock (keeping only the foreground service), and rebuilds everything on

@@ -63,6 +63,15 @@ class SecretCacheTest {
     }
 
     @Test
+    fun clearZeroesTheCachedValueButNotCopiesAlreadyHandedOut() = runBlocking {
+        val held = cache.get("v", secret(1))
+        cache.clear()
+        assertArrayEquals("caller's copy is the caller's to zero", byteArrayOf(1, 2, 3), held)
+        assertArrayEquals(byteArrayOf(5, 2, 3), cache.get("v", secret(5)))
+        assertEquals(2, calls.get())
+    }
+
+    @Test
     fun clearForcesRecompute() = runBlocking {
         cache.get("v", secret(1))
         cache.clear()

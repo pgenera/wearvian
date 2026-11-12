@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import org.fivesevenfive.wearvian.WearvianApp
 import org.fivesevenfive.wearvian.R
 import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
@@ -557,12 +558,18 @@ class PresenceService : Service() {
             if (nowLocked != locked) transition.withLock {
                 if (nowLocked == locked) return@withLock // another transition already caught up
                 locked = nowLocked
+                // Unlocked: recompute the secret (cleared on lock) now, so the StrongBox ECDH
+                // overlaps the reconnect instead of delaying the first handshake.
+                if (!nowLocked) WearvianApp.prefetchSecret(this)
                 if (nowLocked) {
                     DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                     wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
                     if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                     driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                     stopBle()
+                    // The ECDH secret must not outlive the lock: the Keystore key itself
+                    // (unlockedDeviceRequired) can't be used locked, and neither should a copy.
+                    SharedSecretCache.clear()
                     releaseWakeLock()
                     updateNotification(LOCKED_TEXT)
                 } else if (wasPassive) {
@@ -947,10 +954,20 @@ class PresenceService : Service() {
 
     // Runs as [loopJob]. Sessions are launched as CHILDREN (structured concurrency) so
     // cancelling loopJob (e.g. on lock) tears down every session too.
-    private suspend fun presenceLoop(enrollment: Enrollment) = coroutineScope {
-        val bleScope = this
+    private suspend fun presenceLoop(enrollment: Enrollment) {
         DebugLog.add("presence: loop start for ${enrollment.vin}")
         val sharedSecret = awaitSharedSecret(enrollment)
+        // coroutineScope returns only once every session (its children) has finished, so the copy
+        // shared by all of them can be zeroed here (loop cancelled on lock / stop).
+        try {
+            sessionsLoop(enrollment, sharedSecret)
+        } finally {
+            sharedSecret.fill(0)
+        }
+    }
+
+    private suspend fun sessionsLoop(enrollment: Enrollment, sharedSecret: ByteArray) = coroutineScope {
+        val bleScope = this
         val started = HashSet<String>()
         val labels = HashSet<String>() // PresenceStatus keys: must be unique per session
         val addresses = VehicleAddressStore(this@PresenceService)

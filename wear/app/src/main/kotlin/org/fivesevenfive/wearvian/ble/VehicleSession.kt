@@ -94,7 +94,8 @@ class VehicleSession(
      */
     private var commandCounter = 0
     /** HKDF session key derived once per session, not per heartbeat; frames are byte-identical. */
-    private val sessionKeys by lazy { ActiveCommandFrames.SessionKeys(sharedSecret) }
+    private val sessionKeysLazy = lazy { ActiveCommandFrames.SessionKeys(sharedSecret) }
+    private val sessionKeys by sessionKeysLazy
 
     /** Run the connect→session loop until [scope] is cancelled, reconnecting with backoff. */
     suspend fun runForever(scope: CoroutineScope) {
@@ -105,6 +106,15 @@ class VehicleSession(
         // the same after a few failures; backoff grows until a session authenticates
         // ([ReconnectPolicy]).
         val policy = ReconnectPolicy(primary)
+        try {
+            reconnectLoop(scope, policy)
+        } finally {
+            // Derived keys are this session's own; [sharedSecret] is shared and zeroed by its owner.
+            if (sessionKeysLazy.isInitialized()) sessionKeys.wipe()
+        }
+    }
+
+    private suspend fun reconnectLoop(scope: CoroutineScope, policy: ReconnectPolicy) {
         while (scope.isActive) {
             val outcome = try {
                 runOnce(scope, autoConnect = policy.useAutoConnect)

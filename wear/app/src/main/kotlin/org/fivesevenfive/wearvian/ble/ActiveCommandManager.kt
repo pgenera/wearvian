@@ -111,6 +111,7 @@ class ActiveCommandManager(
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
         // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
         if (keyguard?.isDeviceLocked == true) {
+            SharedSecretCache.clear() // a fresh locked reading: drop the secret too
             preopened?.let { closeLink(it) }
             throw CommandException(CommandFailure.WATCH_LOCKED, "watch locked — command blocked")
         }
@@ -177,13 +178,22 @@ class ActiveCommandManager(
     }
 
     private suspend fun authenticateAndSend(gatt: BluetoothGatt, enrollment: Enrollment, commandCode: Int, label: String) {
-        val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
-        val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
-        val cmdChar = requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND)
-
         // Started before the connect (or cached), so normally ready by now. Awaited before the first
         // handshake write so the car sees the same write timing as before.
         val shared = withTimeout(ECDH_MS) { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
+        try {
+            authenticateAndSendWith(gatt, enrollment, shared, commandCode, label)
+        } finally {
+            shared.fill(0) // our copy; the cache keeps its own
+        }
+    }
+
+    private suspend fun authenticateAndSendWith(
+        gatt: BluetoothGatt, enrollment: Enrollment, shared: ByteArray, commandCode: Int, label: String,
+    ) {
+        val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
+        val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
+        val cmdChar = requireChar(gatt, RivianBle.CHAR_ACTIVE_COMMAND)
 
         // 1) phone id -> vehicle echoes its id
         notifications[phoneIdChar.uuid] = CompletableDeferred()

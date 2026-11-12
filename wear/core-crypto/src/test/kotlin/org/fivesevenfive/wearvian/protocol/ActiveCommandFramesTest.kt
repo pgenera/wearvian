@@ -106,6 +106,14 @@ class ActiveCommandFramesTest {
     }
 
     @Test
+    fun sessionKeysWipeZeroesBothKeys() {
+        val keys = ActiveCommandFrames.SessionKeys(sharedSecret)
+        keys.wipe()
+        assertContentEquals(ByteArray(keys.sessionSecret.size), keys.sessionSecret)
+        assertContentEquals(ByteArray(16), keys.aes)
+    }
+
+    @Test
     fun aesKeyMatchesKnownAnswer() {
         assertEquals("c04243f7695b9313744e9497dc1a7c3f", RivianCrypto.toHex(ActiveCommandFrames.aesKey(sharedSecret)))
     }

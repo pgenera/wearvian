@@ -105,6 +105,12 @@ object ActiveCommandFrames {
         internal val sessionSecret: ByteArray = sessionKey(sharedSecret)
         /** AES-128 message key; see [aesKey]. */
         internal val aes: ByteArray = RivianCrypto.hmacSha256(sessionSecret, CONSTANT_B).copyOf(16)
+
+        /** Zero both keys once the session is over; the object must not be used afterwards. */
+        fun wipe() {
+            sessionSecret.fill(0)
+            aes.fill(0)
+        }
     }
 
     /** AES-128 message key = first 16 bytes of HMAC-SHA256(sessionSecret, CONSTANT_B). */

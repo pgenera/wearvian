@@ -55,17 +55,21 @@ class SecretCache(private val scope: CoroutineScope) {
 }
 
 /**
- * The per-vehicle ECDH secret, kept in memory for the life of the process.
+ * The per-vehicle ECDH secret, kept in memory only while the watch is unlocked.
  *
  * The ECDH runs inside StrongBox and takes 0.5–2 s on the watch (measured in device logs), and the
  * one-shot command path used to pay that on every tap, after the BLE connect. The secret is static
- * for a given (watch key, vehicle key) pair, so it is computed once — started early (process start,
- * tile view, alongside the connect) — and reused. Trade-off, accepted: the secret lives in app memory
- * for the process lifetime, as it already did for the whole of a presence session. Commands are still
- * blocked while the watch is locked, and the Keystore key itself (unlockedDeviceRequired) still can't
- * be used locked, so a first computation only happens while the watch is unlocked.
+ * for a given (watch key, vehicle key) pair, so it is computed once — started early (tile view,
+ * alongside the connect, on unlock) — and reused while the watch stays unlocked.
  *
- * Call [clear] whenever the enrollment is reset or the Keystore key is deleted.
+ * It is cleared (zeroed) as soon as the watch is seen locked, so a locked watch holds no usable
+ * secret and the Keystore key's unlockedDeviceRequired stays the backstop for a new derivation:
+ * PresenceService's lock monitor, the command paths and the tile clear it on a locked keyguard
+ * reading, and [org.fivesevenfive.wearvian.WearvianApp] re-checks the keyguard after screen-off
+ * ([LockSecretPolicy]) so it is cleared even with the key off. On unlock it is prefetched again so
+ * the recompute overlaps the reconnect.
+ *
+ * Also call [clear] whenever the enrollment is reset or the Keystore key is deleted.
  */
 object SharedSecretCache {
     private val cache = SecretCache(CoroutineScope(SupervisorJob() + Dispatchers.IO))

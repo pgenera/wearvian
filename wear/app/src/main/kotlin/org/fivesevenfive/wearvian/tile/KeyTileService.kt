@@ -313,7 +313,10 @@ class KeyTileService : TileService() {
         val ctx = applicationContext
         scope.launch {
             val enrollment = EnrollmentStore(ctx).load() ?: return@launch
-            if (WatchLock.isLocked(ctx)) return@launch
+            if (WatchLock.isLocked(ctx)) {
+                SharedSecretCache.clear() // a locked reading: drop the secret too
+                return@launch
+            }
             val keyManager = KeyManager()
             // Only with the key fully off. While passive, PK is watched by a background autoConnect
             // and opening a link would wake the key to active just because the tile was glanced at.

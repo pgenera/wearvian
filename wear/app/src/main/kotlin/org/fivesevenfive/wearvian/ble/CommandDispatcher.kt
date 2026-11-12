@@ -5,6 +5,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.crypto.KeyManager
+import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.service.PresenceService
 import org.fivesevenfive.wearvian.store.Enrollment
@@ -49,6 +50,7 @@ object CommandDispatcher {
         val locked = app.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
         return when (route(locked, PresenceService.isRunning, PresenceService.passive.value)) {
             Route.BLOCKED_LOCKED -> {
+                SharedSecretCache.clear() // a fresh locked reading: drop the secret too
                 DebugLog.add("cmd $label blocked — watch locked")
                 CommandOutcome.Failed(CommandFailure.WATCH_LOCKED)
             }
