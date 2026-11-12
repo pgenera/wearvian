@@ -2,6 +2,7 @@ package org.fivesevenfive.wearvian.ble
 
 import android.app.KeyguardManager
 import android.content.Context
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.fivesevenfive.wearvian.crypto.KeyManager
@@ -46,6 +47,8 @@ object CommandDispatcher {
     suspend fun send(
         context: Context, enrollment: Enrollment, keyManager: KeyManager, commandCode: Int, label: String,
     ): CommandOutcome {
+        // Stamped at the tap: a one-shot's deadline counts from here, including any wait in a queue.
+        val tapAtMs = SystemClock.elapsedRealtime()
         val app = context.applicationContext
         val locked = app.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
         return when (route(locked, PresenceService.isRunning, PresenceService.passive.value)) {
@@ -63,7 +66,7 @@ object CommandDispatcher {
                 // Read before sending: the one-shot's own connection can wake passive (autoConnect).
                 val wake = wakesKeyAfterOneShot(commandCode, PresenceService.parkedNearby.value)
                 val result = withContext(Dispatchers.IO) {
-                    ActiveCommandManager(app, keyManager).sendCommand(enrollment, commandCode, label)
+                    ActiveCommandManager(app, keyManager).sendCommand(enrollment, commandCode, label, OneShotPolicy.deadline(tapAtMs))
                 }
                 if (wake) PresenceService.start(app) // after the one-shot closed its GATT client
                 result.fold(

@@ -15,6 +15,8 @@ class PrewarmGate {
     private var visible = false
     private var generation = 0
     private var waitingCommands = 0
+    /** Deadlines ([OneShotPolicy]) of the taps waiting, one entry per [commandWaiting] that gave one. */
+    private val waitingDeadlines = mutableListOf<Long>()
 
     /** Tile came into view; returns the visit id. A repeated enter keeps the current visit. */
     @Synchronized fun entered(): Int {
@@ -35,8 +37,20 @@ class PrewarmGate {
     /** Whether [visit] is the visit in view now (a second enter for it needs no second pre-warm). */
     @Synchronized fun isCurrent(visit: Int): Boolean = visible && generation == visit
 
-    @Synchronized fun commandWaiting() { waitingCommands++ }
-    @Synchronized fun commandDone() { if (waitingCommands > 0) waitingCommands-- }
+    /** A tap is queued for the link; [deadlineMs] (if any) is when it gives up. */
+    @Synchronized fun commandWaiting(deadlineMs: Long? = null) {
+        waitingCommands++
+        deadlineMs?.let { waitingDeadlines += it }
+    }
+
+    /** That tap finished; pass the same [deadlineMs] it registered with. */
+    @Synchronized fun commandDone(deadlineMs: Long? = null) {
+        if (waitingCommands > 0) waitingCommands--
+        deadlineMs?.let { waitingDeadlines.remove(it) }
+    }
+
+    /** The latest deadline among the waiting taps, or null if none is waiting with one. */
+    @Synchronized fun latestWaitingDeadline(): Long? = waitingDeadlines.maxOrNull()
 
     companion object {
         /**

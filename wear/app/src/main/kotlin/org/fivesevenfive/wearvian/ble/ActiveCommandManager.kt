@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.PowerManager
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -48,7 +49,8 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * One-shots are serialized process-wide (and the PRIMARY [VehicleSession] waits for them via
  * [awaitOneShotIdle]) so two GATT clients never run the nonce handshake on PK at once. A failed
- * attempt is retried once unless the failure is one a retry can't fix (see [CommandFailure]).
+ * attempt is retried once unless the failure is one a retry can't fix (see [CommandFailure]) or the
+ * tap's deadline ([OneShotPolicy]) is too close. Past the deadline the frame is never written.
  *
  * Latency (cold tap measured at ~5.9 s in June logs): the ECDH comes from [SharedSecretCache] and
  * overlaps the connect instead of following it, the tile can [prewarm] the link before the tap, and
@@ -75,30 +77,45 @@ class ActiveCommandManager(
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
 
     /**
-     * Connect, authenticate and send [commandCode] once (retrying once on a retryable failure).
-     * Fully time-bounded; a failure's [CommandException.failure] says why (other exceptions mean
+     * Connect, authenticate and send [commandCode] once (retrying once on a retryable failure while
+     * [deadlineMs] allows). [deadlineMs] (elapsedRealtime, from [OneShotPolicy.deadline] at the tap)
+     * bounds the whole thing, queueing included: past it the frame is not written and the failure is
+     * [CommandFailure.EXPIRED]. A failure's [CommandException.failure] says why (other exceptions mean
      * [CommandFailure.SEND_FAILED]). Uses the tile's pre-opened link ([prewarm]) when one is up.
      */
-    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String): Result<Unit> {
+    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String, deadlineMs: Long): Result<Unit> {
+        // Timed, so it can never outlive the tap: the deadline timers must run with the screen off.
+        val wl = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wearvian:oneshot")
+            .apply { setReferenceCounted(false); acquire(OneShotPolicy.remaining(deadlineMs, now()) + WAKE_SLACK_MS) }
         // Registered before queueing on the lock: a pre-warm this tap is waiting on must finish
-        // (and hand over its link) even if the tile leaves view meanwhile.
-        prewarmGate.commandWaiting()
+        // (and hand over its link) even if the tile leaves view meanwhile, and keeps connecting
+        // until this tap's deadline rather than its own shorter window.
+        prewarmGate.commandWaiting(deadlineMs)
         try {
             return oneShotLock.withLock {
+                if (OneShotPolicy.expired(deadlineMs, now())) {
+                    DebugLog.add("cmd $label ✗ expired while queued — not sent")
+                    return@withLock Result.failure(CommandException(CommandFailure.EXPIRED, "expired while queued"))
+                }
                 val warmLink = takeWarmLocked()
-                var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt)
-                else attempt(enrollment, commandCode, label, null)
+                var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt, deadlineMs)
+                else attempt(enrollment, commandCode, label, null, deadlineMs)
                 val first = result.exceptionOrNull()
-                if (first != null && failureOf(first).retryable && currentCoroutineContext().isActive) {
+                // A pre-opened link that turned out dead isn't a reason to back off: connect now.
+                val pause = if (warmLink == null) RETRY_DELAY_MS else 0L
+                if (first != null && currentCoroutineContext().isActive &&
+                    OneShotPolicy.shouldRetry(failureOf(first), deadlineMs, now(), pause)
+                ) {
                     DebugLog.add("cmd $label retrying once")
-                    // A pre-opened link that turned out dead isn't a reason to back off: connect now.
-                    if (warmLink == null) delay(RETRY_DELAY_MS)
-                    result = attempt(enrollment, commandCode, label, null)
+                    if (pause > 0) delay(pause)
+                    result = attempt(enrollment, commandCode, label, null, deadlineMs)
                 }
                 result
             }
         } finally {
-            prewarmGate.commandDone()
+            prewarmGate.commandDone(deadlineMs)
+            runCatching { if (wl.isHeld) wl.release() }
         }
     }
 
@@ -107,7 +124,7 @@ class ActiveCommandManager(
      * otherwise this connects itself. Either way the link is closed when the try ends.
      */
     private suspend fun attempt(
-        enrollment: Enrollment, commandCode: Int, label: String, preopened: BluetoothGatt?,
+        enrollment: Enrollment, commandCode: Int, label: String, preopened: BluetoothGatt?, deadlineMs: Long,
     ): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
         // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
@@ -123,9 +140,9 @@ class ActiveCommandManager(
             DebugLog.ble("·", "gatt", "using pre-opened link")
             // A held link idles at the default interval (see prewarm); speed it up now it's in use.
             it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-        } ?: openLink(CONNECT_MS, highPriority = true, requireSubscriptions = false)
+        } ?: openLink({ deadlineMs }, highPriority = true, requireSubscriptions = false)
         try {
-            authenticateAndSend(gatt, enrollment, commandCode, label)
+            authenticateAndSend(gatt, enrollment, commandCode, label, deadlineMs)
         } finally {
             closeLink(gatt)
         }
@@ -142,8 +159,14 @@ class ActiveCommandManager(
      * [requireSubscriptions] fails the link if a CCCD write isn't acked — for a pre-warm, so a
      * half-subscribed link isn't kept for a tap to time out on. A tap keeps the old tolerant
      * behaviour.
+     *
+     * The connect waits until [connectUntil] (elapsedRealtime), re-read every [CONNECT_RECHECK_MS]
+     * so a pre-warm can be extended by a tap that queues behind it. A tap's is its deadline, always
+     * under the stack's own ~30 s direct-connect limit, so our timeout decides the outcome. A
+     * connect the stack fails slowly is [CommandFailure.NOT_REACHABLE] (not worth a retry); one it
+     * fails quickly is retryable (see [OneShotPolicy.connectFailure]).
      */
-    private suspend fun openLink(connectMs: Long, highPriority: Boolean, requireSubscriptions: Boolean): BluetoothGatt {
+    private suspend fun openLink(connectUntil: () -> Long, highPriority: Boolean, requireSubscriptions: Boolean): BluetoothGatt {
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
         descriptorWritten = CompletableDeferred()
@@ -153,10 +176,22 @@ class ActiveCommandManager(
         val device = PhoneKey.find(context, adapter)
             ?: throw CommandException(CommandFailure.NOT_BONDED, "phone key not paired (or Bluetooth off)")
         DebugLog.ble("·", "gatt", "connecting ${device.address}")
+        val startedMs = now()
         val gatt = device.connectGatt(context, false, gattCallback)
         try {
-            withTimeoutOrNull(connectMs) { connected.await() }
-                ?: throw CommandException(CommandFailure.NOT_REACHABLE, "connect timed out")
+            while (true) {
+                val left = connectUntil() - now()
+                if (left <= 0) throw CommandException(CommandFailure.NOT_REACHABLE, "connect timed out")
+                val up = try {
+                    withTimeoutOrNull(minOf(left, CONNECT_RECHECK_MS)) { connected.await() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The stack gave up (STATE_DISCONNECTED before connecting).
+                    throw CommandException(OneShotPolicy.connectFailure(startedMs, now()), "connect failed (${e.message})")
+                }
+                if (up != null) break
+            }
             // A one-shot is a short burst of sequential round trips: run it at the fastest interval.
             // (The car may still impose its own; the live session keeps BALANCED, see VehicleSession.)
             val pri = if (highPriority) gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) else null
@@ -178,12 +213,14 @@ class ActiveCommandManager(
         }
     }
 
-    private suspend fun authenticateAndSend(gatt: BluetoothGatt, enrollment: Enrollment, commandCode: Int, label: String) {
+    private suspend fun authenticateAndSend(
+        gatt: BluetoothGatt, enrollment: Enrollment, commandCode: Int, label: String, deadlineMs: Long,
+    ) {
         // Started before the connect (or cached), so normally ready by now. Awaited before the first
         // handshake write so the car sees the same write timing as before.
         val shared = withTimeout(ECDH_MS) { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
         try {
-            authenticateAndSendWith(gatt, enrollment, shared, commandCode, label)
+            authenticateAndSendWith(gatt, enrollment, shared, commandCode, label, deadlineMs)
         } finally {
             shared.fill(0) // our copy; the cache keeps its own
         }
@@ -191,6 +228,7 @@ class ActiveCommandManager(
 
     private suspend fun authenticateAndSendWith(
         gatt: BluetoothGatt, enrollment: Enrollment, shared: ByteArray, commandCode: Int, label: String,
+        deadlineMs: Long,
     ) {
         val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
         val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
@@ -213,7 +251,10 @@ class ActiveCommandManager(
         val vNonce = vResp.copyOf(16)
         DebugLog.ble("←", "0x15", "vNonce ${vNonce.toHexString().take(8)}…", vResp.size)
 
-        // 3) encrypted command frame
+        // 3) encrypted command frame — never written past the tap's deadline (no late firing).
+        if (OneShotPolicy.expired(deadlineMs, now())) {
+            throw CommandException(CommandFailure.EXPIRED, "past the tap's deadline — not sent")
+        }
         val frame = ActiveCommandFrames.activeCommandFrame(shared, pNonce, vNonce, counter = 0, commandCode = commandCode)
         notifications[cmdChar.uuid] = CompletableDeferred()
         writeChar(gatt, cmdChar, frame)
@@ -293,8 +334,10 @@ class ActiveCommandManager(
     }
 
     companion object {
-        /** Matches [VehicleSession]'s direct connect: a dormant module can take well over 10 s. */
-        private const val CONNECT_MS = 35_000L
+        /** How often a connect wait re-reads its deadline (a pre-warm's can be extended by a tap). */
+        private const val CONNECT_RECHECK_MS = 1_000L
+        /** A one-shot's wake lock outlives its deadline by this much, then expires on its own. */
+        private const val WAKE_SLACK_MS = 5_000L
         private const val OP_MS = 5_000L
         private const val RETRY_DELAY_MS = 500L
         /** Upper bound on waiting for the StrongBox ECDH (normally 0.5–2 s, or already cached). */
@@ -306,8 +349,9 @@ class ActiveCommandManager(
          */
         private const val PREWARM_HOLD_MS = 15_000L
         /** Pre-warm connect window. Shorter than a tap's: a car not reachable now is probably out of
-         *  range, and a tap made meanwhile waits for this before connecting itself. */
-        private const val PREWARM_CONNECT_MS = 10_000L
+         *  range. A tap made meanwhile extends it to the tap's own deadline (the pre-warm's connect
+         *  becomes the tap's attempt instead of the tap restarting it). */
+        private const val PREWARM_CONNECT_MS = 10_000L // extended while a tap waits on it
 
         /** Held for the whole of each one-shot (both attempts) and of each pre-warm connect. */
         private val oneShotLock = Mutex()
@@ -381,7 +425,11 @@ class ActiveCommandManager(
             DebugLog.add("cmd: pre-warming link for tile")
             val manager = ActiveCommandManager(app, keyManager)
             val gatt = try {
-                manager.openLink(PREWARM_CONNECT_MS, highPriority = false, requireSubscriptions = true)
+                val ownUntil = now() + PREWARM_CONNECT_MS
+                manager.openLink(
+                    { OneShotPolicy.prewarmConnectUntil(ownUntil, prewarmGate.latestWaitingDeadline()) },
+                    highPriority = false, requireSubscriptions = true,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -458,6 +506,8 @@ enum class CommandFailure(val userText: String, val retryable: Boolean) {
     NOT_REACHABLE("vehicle not reachable", false),
     /** Live-session path: no session picked the command up in time, or it was dropped on teardown. */
     NOT_CONNECTED("vehicle not connected", false),
+    /** One-shot: the tap's deadline ([OneShotPolicy.DEADLINE_MS]) passed before the frame was written. */
+    EXPIRED("timed out", false),
     SEND_FAILED("couldn't send", true),
 }
 
