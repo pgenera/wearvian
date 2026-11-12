@@ -269,11 +269,26 @@ class PresenceService : Service() {
         }
     }
 
-    /** (Re)start the passive proximity scan. A synchronous start failure counts as a scan failure. */
-    private fun armProximityScan(): Boolean {
+    /**
+     * (Re)start the passive proximity scan. A synchronous start failure counts as a scan failure.
+     *
+     * While parked nearby (`!seenDeparture`) departure is otherwise learned only from a MATCH_LOST
+     * of a node this scan reported — if it never reports the car before the wearer walks off, the
+     * departure is never confirmed and the autoConnect never armed. So, as the Bluetooth-on rebuild
+     * always did, treat every node as lost now and start the departure countdown: the fresh scan's
+     * first sighting within [parkedWindowMs] cancels it ("still here"); silence confirms the
+     * departure and arms the autoConnect. Trade-off: a car present but invisible to the scan wakes
+     * the key to active once (battery, not reliability) — hence a longer first window by default.
+     */
+    private fun armProximityScan(parkedWindowMs: Long = PARKED_ARM_WINDOW_MS): Boolean {
         val enrollment = EnrollmentStore(this).load() ?: return false
         ProximityWake.stopScan(this, proximityCallback)
-        proximity.reset() // the new scan re-reports every node in range
+        val now = SystemClock.elapsedRealtime()
+        proximity.reset(now) // the new scan re-reports every node in range
+        if (!seenDeparture) {
+            proximity.assumeAllLost(now, parkedWindowMs)
+            startDepartureCountdown(parkedWindowMs)
+        }
         val ok = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         if (!ok) onProximityScanFailed(SCAN_START_FAILED)
         return ok
@@ -314,15 +329,11 @@ class PresenceService : Service() {
                     locked -> updateNotification(LOCKED_TEXT) // unlock rebuilds
                     passive -> {
                         proximityScanFailures = 0
-                        armProximityScan()
-                        if (seenDeparture) {
-                            passiveLink.arm(this)
-                        } else {
-                            // The car may have left while we couldn't see it: count from now, and
-                            // let the fresh scan's FIRST_MATCH cancel the countdown if it's still here.
-                            proximity.assumeAllLost(SystemClock.elapsedRealtime())
-                            startDepartureCountdown()
-                        }
+                        // Parked nearby: the car may have left while we couldn't see it — the arm
+                        // counts from now (the plain debounce, as before) and the fresh scan's
+                        // FIRST_MATCH cancels the countdown if it's still here.
+                        armProximityScan(parkedWindowMs = DEPART_DEBOUNCE_MS)
+                        if (seenDeparture) passiveLink.arm(this)
                         updateNotification(passiveText())
                     }
                     else -> { stopBle(); startActivePresence() }
@@ -342,14 +353,14 @@ class PresenceService : Service() {
         startDepartureCountdown()
     }
 
-    /** After [DEPART_DEBOUNCE_MS] with no node seen, confirm the departure ([markDeparted]). */
-    private fun startDepartureCountdown() {
+    /** After [windowMs] with no node seen, confirm the departure ([markDeparted]). */
+    private fun startDepartureCountdown(windowMs: Long = DEPART_DEBOUNCE_MS) {
         if (departJob?.isActive == true) return
         departJob = scope.launch {
             // Coroutine delays don't advance while the CPU is suspended, and passive mode has no
             // wake lock — so hold a short self-expiring one for the debounce, or the autoConnect
             // below might not be armed until long after the car has gone.
-            withTimedWakeLock("wearvian:depart", DEPART_DEBOUNCE_MS + TIMED_WAKE_SLACK_MS) { delay(DEPART_DEBOUNCE_MS) }
+            withTimedWakeLock("wearvian:depart", windowMs + TIMED_WAKE_SLACK_MS) { delay(windowMs) }
             transition.withLock { markDeparted() }
         }
     }
@@ -1340,6 +1351,9 @@ class PresenceService : Service() {
         private const val PARKED_IDLE_TIMEOUT_MS = 15 * 60_000L
         /** Debounce a MATCH_LOST before counting the car as gone, so a brief dropout isn't a "left". */
         private const val DEPART_DEBOUNCE_MS = 30_000L
+        /** First departure window when a scan is armed while parked nearby ([armProximityScan]):
+         *  longer than the debounce, since a sleeping car can take a while to be reported. */
+        private const val PARKED_ARM_WINDOW_MS = 90_000L
         /** A node lost this long with no sighting since: the next sighting is a return even if other
          *  nodes were never reported lost (backstop for a dropped MATCH_LOST; see [ProximityTracker]). */
         private const val STRANDED_LOSS_MS = 3 * 60_000L

@@ -43,6 +43,12 @@ object ParkedIdlePolicy {
  * return (one wake to active, which the parked-idle drop undoes), the same as before the all-nodes
  * rule but [strandMs] later.
  *
+ * Backstop for a scan that never reports the car at all after it was armed ([reset] with the arming
+ * time): if nothing has been sighted for at least [strandMs] since arming, the first sighting is a
+ * return. Without it, a scan armed while parked nearby that misses the car before the wearer leaves
+ * gives no MATCH_LOST, so no departure, and the real return reads as "still parked beside it". A
+ * sighting soon after arming is still "parked nearby".
+ *
  * Not thread-safe: confined to the service's single-thread scope.
  */
 class ProximityTracker(private val debounceMs: Long, private val strandMs: Long) {
@@ -58,13 +64,26 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
     private var emptySinceMs: Long? = null
     /** First loss (while other nodes were still seen) with no sighting since; see [strandMs]. */
     private var partialLossSinceMs: Long? = null
+    /** When the current scan was armed (null: not armed / torn down), and whether it has seen anything. */
+    private var armedAtMs: Long? = null
+    private var sightedSinceArm = false
+    /** How long the set must stay empty to count as gone; longer after [assumeAllLost] with a window. */
+    private var emptyWindowMs = debounceMs
 
     val size: Int get() = seen.size
 
-    fun reset() {
+    /**
+     * Forget every node. Pass [nowMs] when a fresh scan is being armed (it re-reports every node in
+     * range), so a scan that then sees nothing for [strandMs] makes the first sighting a return;
+     * null when tearing down.
+     */
+    fun reset(nowMs: Long? = null) {
         seen.clear()
         emptySinceMs = null
         partialLossSinceMs = null
+        armedAtMs = nowMs
+        sightedSinceArm = false
+        emptyWindowMs = debounceMs
     }
 
     /**
@@ -75,11 +94,14 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         seen.add(address)
         val emptyFor = emptySinceMs?.let { nowMs - it }
         val strandedFor = partialLossSinceMs?.let { nowMs - it }
+        val blindFor = if (sightedSinceArm) null else armedAtMs?.let { nowMs - it }
         emptySinceMs = null
         partialLossSinceMs = null // any sighting is fresh evidence; a later loss restarts the clock
+        sightedSinceArm = true
         val gone = departureConfirmed ||
-            (wasEmpty && emptyFor != null && emptyFor >= debounceMs) ||
-            (strandedFor != null && strandedFor >= strandMs)
+            (wasEmpty && emptyFor != null && emptyFor >= emptyWindowMs) ||
+            (strandedFor != null && strandedFor >= strandMs) ||
+            (blindFor != null && blindFor >= strandMs)
         return if (gone) Found.RETURN else Found.PRESENT
     }
 
@@ -95,23 +117,26 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         }
         partialLossSinceMs = null // the normal all-lost debounce takes over
         emptySinceMs = nowMs
+        emptyWindowMs = debounceMs
         return true
     }
 
     /**
      * Visibility is unknown (the scan was down, e.g. across a Bluetooth restart): treat every node
      * as lost as of [nowMs], so the fresh scan's first sighting within the debounce reads as
-     * "still here" and silence for the debounce reads as a departure.
+     * "still here" and silence for the debounce reads as a departure. [windowMs] lengthens that
+     * window (a scan just armed beside the car may take a while to report it).
      */
-    fun assumeAllLost(nowMs: Long) {
+    fun assumeAllLost(nowMs: Long, windowMs: Long = debounceMs) {
         seen.clear()
         partialLossSinceMs = null
         emptySinceMs = nowMs
+        emptyWindowMs = windowMs
     }
 
-    /** True iff every node has been gone for at least [debounceMs] as of [nowMs]. */
+    /** True iff every node has been gone for at least the current window as of [nowMs]. */
     fun departureDue(nowMs: Long): Boolean {
         val since = emptySinceMs ?: return false
-        return seen.isEmpty() && nowMs - since >= debounceMs
+        return seen.isEmpty() && nowMs - since >= emptyWindowMs
     }
 }

@@ -197,4 +197,43 @@ class ProximityTrackerTest {
         t.assumeAllLost(1_000_002)
         assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000_002 + debounce - 1, departureConfirmed = false))
     }
+
+    @Test
+    fun sightingSoonAfterArmingIsParkedNearby() {
+        t.reset(nowMs = 1_000L)
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 1_000L + strand - 1, departureConfirmed = false))
+    }
+
+    @Test
+    fun blindArmOnlyCountsUntilTheFirstSighting() {
+        t.reset(nowMs = 0L)
+        t.found("A", 5_000L, departureConfirmed = false) // seen: the arm is no longer blind
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("B", 10_000_000L, departureConfirmed = false))
+    }
+
+    @Test
+    fun unarmedResetKeepsTheOldRule() {
+        t.reset()
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", 10_000_000L, departureConfirmed = false))
+    }
+
+    @Test
+    fun assumeAllLostWithALongerWindow() {
+        val window = 90_000L
+        t.reset(nowMs = 0L)
+        t.assumeAllLost(0L, window)
+        assertFalse(t.departureDue(window - 1))
+        assertTrue(t.departureDue(window))
+        assertEquals("seen within the window → still here", ProximityTracker.Found.PRESENT, t.found("A", debounce + 1, departureConfirmed = false))
+    }
+
+    @Test
+    fun aRealLossAfterALongWindowUsesThePlainDebounce() {
+        t.reset(nowMs = 0L)
+        t.assumeAllLost(0L, 90_000L)
+        t.found("A", 10_000L, departureConfirmed = false)
+        t.lost("A", 20_000L)
+        assertTrue(t.departureDue(20_000L + debounce))
+        assertEquals(ProximityTracker.Found.RETURN, t.found("A", 20_000L + debounce, departureConfirmed = false))
+    }
 }
