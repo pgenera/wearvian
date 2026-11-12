@@ -1,13 +1,21 @@
 package org.fivesevenfive.wearvian.ble
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 
 /**
  * Per-session reconnect schedule for [VehicleSession.runForever]. Pure (no Android) so it is
  * unit-testable.
  *
- * - Backoff grows exponentially (with jitter) while attempts keep failing, and resets only once a
- *   session AUTHENTICATES — a link that connects and then fails the handshake is still failing.
+ * - Backoff grows exponentially (with jitter) while attempts never connect, and resets once a
+ *   session AUTHENTICATES.
+ * - A CONNECTED outcome (connected, handshake failed) proves the module is awake and in range —
+ *   typically the edge of range on the walk back to the car. Earlier NO_CONNECT failures (the car
+ *   was away) then stop counting, and the first [QUICK_CONNECTED_RETRIES] consecutive connected-
+ *   but-unauthenticated attempts retry at the base delay; after that the exponential growth
+ *   resumes, so a permanently broken sensor still backs off.
  * - The PRIMARY falls back to autoConnect after one failed connect (it goes dormant when parked and
  *   a direct connect keeps missing its rare advertisements). Sensors follow after a few failed
  *   connects, so an unreachable sensor stops occupying the one-at-a-time direct-connect slot for
@@ -32,15 +40,19 @@ class ReconnectPolicy(
     var connectFailures = 0
         private set
 
-    /** Consecutive attempts that never authenticated. */
+    /** Consecutive attempts that never authenticated (NO_CONNECTs before a connect are forgotten). */
     var failures = 0
+        private set
+
+    /** Consecutive attempts that connected but did not authenticate. */
+    var connectedFailures = 0
         private set
 
     fun record(outcome: Outcome) {
         when (outcome) {
-            Outcome.NO_CONNECT -> { connectFailures++; failures++ }
-            Outcome.CONNECTED -> { connectFailures = 0; failures++ }
-            Outcome.AUTHENTICATED -> { connectFailures = 0; failures = 0 }
+            Outcome.NO_CONNECT -> { connectFailures++; failures++; connectedFailures = 0 }
+            Outcome.CONNECTED -> { connectFailures = 0; connectedFailures++; failures = connectedFailures }
+            Outcome.AUTHENTICATED -> { connectFailures = 0; failures = 0; connectedFailures = 0 }
         }
     }
 
@@ -50,7 +62,9 @@ class ReconnectPolicy(
     /** Delay before the next attempt. */
     fun nextDelayMs(): Long {
         if (failures == 0) return BASE_MS
-        val exp = BASE_MS shl (failures - 1).coerceAtMost(MAX_SHIFT)
+        // Connected at the edge of range: retry quickly a few times, then grow from there.
+        val steps = if (connectedFailures > 0) (connectedFailures - QUICK_CONNECTED_RETRIES).coerceAtLeast(0) else failures - 1
+        val exp = BASE_MS shl steps.coerceAtMost(MAX_SHIFT)
         val capped = exp.coerceAtMost(MAX_MS)
         // ±25% jitter so sessions that failed together don't retry in lockstep; never below BASE.
         val jitter = (capped * JITTER * (2 * random.nextDouble() - 1)).toLong()
@@ -61,8 +75,29 @@ class ReconnectPolicy(
         const val BASE_MS = 1_500L
         const val MAX_MS = 60_000L
         const val SENSOR_AUTOCONNECT_AFTER = 3
+        /** Connected-but-unauthenticated attempts retried at the base delay before backing off. */
+        const val QUICK_CONNECTED_RETRIES = 4
         private const val MAX_SHIFT = 10
         private const val JITTER = 0.25
+    }
+}
+
+/**
+ * "Reconnect now" signal for sessions sitting out a [ReconnectPolicy] backoff: a command submitted
+ * to [CommandBus] or a watch-key burst starting means the wearer is at the car, so a waiting
+ * session skips the rest of its delay. Process-wide; each [hurry] ends every wait in progress once.
+ */
+object ReconnectHurry {
+    private val generation = MutableStateFlow(0L)
+
+    fun hurry() {
+        generation.value = generation.value + 1
+    }
+
+    /** Wait up to [ms]; returns true if [hurry] cut the wait short. */
+    suspend fun delayUnlessHurried(ms: Long): Boolean {
+        val start = generation.value
+        return withTimeoutOrNull(ms) { generation.first { it != start } } != null
     }
 }
 

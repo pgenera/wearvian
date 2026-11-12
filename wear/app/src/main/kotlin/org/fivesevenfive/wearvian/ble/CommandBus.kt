@@ -87,6 +87,7 @@ object CommandBus {
         lastSubmitMs = now
         val cmd = Command(code, label, now)
         queue.trySend(cmd)
+        ReconnectHurry.hurry() // a session waiting out a backoff should come up for this now
         return cmd
     }
 

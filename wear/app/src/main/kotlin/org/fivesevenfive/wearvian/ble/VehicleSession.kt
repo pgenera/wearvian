@@ -129,7 +129,10 @@ class VehicleSession(
                 ReconnectPolicy.Outcome.NO_CONNECT
             }
             policy.record(outcome)
-            if (scope.isActive) delay(policy.nextDelayMs())
+            // A command or a watch-key burst means the wearer is at the car: skip the rest of the wait.
+            if (scope.isActive && ReconnectHurry.delayUnlessHurried(policy.nextDelayMs())) {
+                DebugLog.add("$label: backoff cut short — reconnecting now")
+            }
         }
     }
 

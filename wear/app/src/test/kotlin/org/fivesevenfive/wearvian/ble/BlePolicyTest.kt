@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.async
 import org.junit.Test
 import kotlin.random.Random
 
@@ -50,13 +51,55 @@ class ReconnectPolicyTest {
 
     @Test
     fun backoffResetsOnlyOnAuthentication() {
+        // New rule (reliability audit R5): a connect forgets the NO_CONNECT backoff and retries
+        // quickly a few times, then backs off again; only authentication resets everything.
         val p = ReconnectPolicy(primary = false, random = Random(2))
         repeat(5) { p.record(ReconnectPolicy.Outcome.NO_CONNECT) }
-        p.record(ReconnectPolicy.Outcome.CONNECTED)
-        assertEquals(6, p.failures)
         assertNotEquals(ReconnectPolicy.BASE_MS, p.nextDelayMs())
+        p.record(ReconnectPolicy.Outcome.CONNECTED)
+        assertEquals("earlier NO_CONNECTs no longer count", 1, p.failures)
+        assertTrue(p.nextDelayMs() <= 3_000L)
+        repeat(ReconnectPolicy.QUICK_CONNECTED_RETRIES - 1) {
+            p.record(ReconnectPolicy.Outcome.CONNECTED)
+            assertTrue("still quick within the first few", p.nextDelayMs() <= 3_000L)
+        }
+        repeat(3) { p.record(ReconnectPolicy.Outcome.CONNECTED) } // a sensor that never authenticates
+        assertTrue("backs off again after that", p.nextDelayMs() > 3_000L)
         p.record(ReconnectPolicy.Outcome.AUTHENTICATED)
+        assertEquals(0, p.failures)
         assertEquals(ReconnectPolicy.BASE_MS, p.nextDelayMs())
+    }
+
+    @Test
+    fun aPermanentlyBrokenSensorStillReachesTheCap() {
+        val p = ReconnectPolicy(primary = false, random = Random(3))
+        repeat(20) { p.record(ReconnectPolicy.Outcome.CONNECTED) }
+        assertTrue(p.nextDelayMs() >= ReconnectPolicy.MAX_MS * 3 / 4)
+    }
+
+    @Test
+    fun aNoConnectAfterAConnectedRunKeepsBackingOff() {
+        val p = ReconnectPolicy(primary = false, random = Random(4))
+        repeat(2) { p.record(ReconnectPolicy.Outcome.CONNECTED) }
+        p.record(ReconnectPolicy.Outcome.NO_CONNECT) // walked off again
+        assertEquals(3, p.failures)
+        assertEquals(0, p.connectedFailures)
+        assertTrue(p.nextDelayMs() > ReconnectPolicy.BASE_MS * 2)
+    }
+}
+
+class ReconnectHurryTest {
+    @Test
+    fun hurryCutsAWaitShort() = kotlinx.coroutines.runBlocking {
+        val waiter = async(kotlinx.coroutines.Dispatchers.Default) { ReconnectHurry.delayUnlessHurried(30_000L) }
+        // Signal until the waiter has subscribed and returned (it snapshots the generation first).
+        while (!waiter.isCompleted) { ReconnectHurry.hurry(); kotlinx.coroutines.delay(10) }
+        assertTrue(waiter.await())
+    }
+
+    @Test
+    fun anUnhurriedWaitRunsOut() = kotlinx.coroutines.runBlocking {
+        assertFalse(ReconnectHurry.delayUnlessHurried(20L))
     }
 }
 

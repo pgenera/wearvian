@@ -51,6 +51,7 @@ import org.fivesevenfive.wearvian.ble.ActiveCommandManager
 import org.fivesevenfive.wearvian.ble.CommandBus
 import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
 import org.fivesevenfive.wearvian.ble.PhoneKey
+import org.fivesevenfive.wearvian.ble.ReconnectHurry
 import org.fivesevenfive.wearvian.ble.RescanSchedule
 import org.fivesevenfive.wearvian.ble.SessionLabels
 import org.fivesevenfive.wearvian.ble.ProximityWake
@@ -893,6 +894,7 @@ class PresenceService : Service() {
             if (wantBurst && VehicleSession.heartbeatsPaused) {
                 acquireWakeLock()
                 VehicleSession.heartbeatsPaused = false
+                ReconnectHurry.hurry() // a session sitting out a backoff should join the burst now
                 DebugLog.add("watch: → burst — presence ON (drive-intent)")
                 updateNotification(PresenceStatus.summary.value)
             } else if (!wantBurst && !VehicleSession.heartbeatsPaused) {
