@@ -71,6 +71,15 @@ object CommandBus {
     @Volatile var lastSubmitMs = 0L
         private set
 
+    /**
+     * Record a manual command sent outside the queue (a successful one-shot), so a watch key bursts
+     * presence once its service is active — the usual return to the car is a one-shot unlock from the
+     * tile, and drive-enable needs the heartbeats that the burst starts.
+     */
+    fun noteManual() {
+        lastSubmitMs = clock()
+    }
+
     /** Enqueue a command for the live PRIMARY session to send on its next heartbeat tick. */
     fun submit(code: Int, label: String): Command {
         DebugLog.add("cmdbus: queued $label (0x%04x)".format(code))

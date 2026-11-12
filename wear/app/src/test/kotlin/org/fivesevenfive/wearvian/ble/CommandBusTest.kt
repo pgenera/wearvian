@@ -132,4 +132,12 @@ class CommandBusTest {
         CommandBus.markSent(polled, true)
         assertTrue(waiter.await())
     }
+
+    @Test
+    fun noteManualRecordsAManualActionWithoutQueueing() {
+        nowMs = 42_000L
+        CommandBus.noteManual()
+        assertEquals(42_000L, CommandBus.lastSubmitMs)
+        assertNull("nothing queued for the session to fire", CommandBus.poll())
+    }
 }

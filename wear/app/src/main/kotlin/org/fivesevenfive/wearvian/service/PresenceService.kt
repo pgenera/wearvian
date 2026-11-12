@@ -773,8 +773,10 @@ class PresenceService : Service() {
      * connected (0x1c flowing) but DOZE: heartbeats paused, no wake lock. We BURST full presence only
      * around the drive window so drive-enable works, then fall back to doze.
      *
-     * Burst triggers (any): a door opens, the vehicle wakes (asleep→awake), or a manual command (the
-     * heartbeat loop won't drain a queued command while paused, so a tap has to wake the burst). A burst
+     * Burst triggers (any, see [WatchBurstPolicy]): a door opens, the vehicle wakes (asleep→awake), the
+     * status comes up live with the car awake, parked and open/unlocked (a session that came up late),
+     * or a manual command — live-queue or one-shot (the heartbeat loop won't drain a queued command
+     * while paused, and a one-shot unlock is the usual way back to the car). A burst
      * holds for [WATCH_BURST_MS] of inactivity, then drops to doze; it also drops the instant the car
      * reports it went back to sleep, and never runs while actually driving (gear ≠ Park — already
      * validated heartbeat-free via driving-doze). UNVALIDATED on-vehicle: whether the link survives
@@ -787,34 +789,27 @@ class PresenceService : Service() {
      */
     private suspend fun monitorWatchPresence() {
         if (!watchMode) return
-        var prevDoorOpen = false
-        var prevAsleep = false
-        // elapsedRealtime() of the last door-open / vehicle-woke trigger; combined with
-        // CommandBus.lastSubmitMs (manual command). Local — only used in this loop.
-        var lastWatchTriggerMs = 0L
+        // Trigger edges + burst window (unit-tested); the manual signal is CommandBus.lastSubmitMs.
+        val policy = WatchBurstPolicy(WATCH_BURST_MS)
         var lastState = VehicleStatus.state.value
         while (true) {
             withTimeoutOrNull(WATCH_TICK_MS) { VehicleStatus.state.first { it != lastState } }
             val st = VehicleStatus.state.value
             lastState = st
-            if (locked || passive || btOff) { prevDoorOpen = false; prevAsleep = false; continue }
+            if (locked || passive || btOff) { policy.reset(); continue }
             val fresh = st.valid && st.live
-            if (fresh) {
-                if (st.anyDoorOpen && !prevDoorOpen) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = door opened") }
-                if (!st.asleep && prevAsleep) { lastWatchTriggerMs = SystemClock.elapsedRealtime(); DebugLog.add("watch: trigger = vehicle woke") }
-                prevDoorOpen = st.anyDoorOpen
-                prevAsleep = st.asleep
-            }
-            val now = SystemClock.elapsedRealtime()
             val carAsleep = fresh && st.asleep
             val inGear = fresh && ParkedIdlePolicy.inGear(st.gear)
             // A MANUAL command must burst so the heartbeat loop can drain it — even if the car is asleep
             // or in gear (else a tapped lock/unlock is queued and never sent: the heartbeat loop won't
-            // drain while paused). Passive triggers (door / wake) only burst while parked & awake — the
-            // drive-enable window — and stop when the car sleeps or you shift into gear.
-            val recentManual = CommandBus.lastSubmitMs > 0L && now - CommandBus.lastSubmitMs < WATCH_BURST_MS
-            val recentPassive = lastWatchTriggerMs > 0L && now - lastWatchTriggerMs < WATCH_BURST_MS
-            val wantBurst = recentManual || (recentPassive && !carAsleep && !inGear)
+            // drain while paused). Passive triggers (door / wake / status-live) only burst while parked
+            // & awake — the drive-enable window — and stop when the car sleeps or you shift into gear.
+            val decision = policy.evaluate(
+                fresh = fresh, doorOpen = st.anyDoorOpen, asleep = st.asleep, unlocked = !st.locked,
+                inGear = inGear, lastManualMs = CommandBus.lastSubmitMs, nowMs = SystemClock.elapsedRealtime(),
+            )
+            decision.trigger?.let { DebugLog.add("watch: trigger = $it") }
+            val wantBurst = decision.wantBurst
             // Drive off the real heartbeat flag (not a local) so this self-corrects after a lock/passive
             // reset flips it. In watch mode only this monitor un-pauses, so paused==false ⟺ bursting.
             if (wantBurst && VehicleSession.heartbeatsPaused) {

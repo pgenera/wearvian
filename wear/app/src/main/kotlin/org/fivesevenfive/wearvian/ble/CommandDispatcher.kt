@@ -68,6 +68,9 @@ object CommandDispatcher {
                 val result = withContext(Dispatchers.IO) {
                     ActiveCommandManager(app, keyManager).sendCommand(enrollment, commandCode, label, OneShotPolicy.deadline(tapAtMs))
                 }
+                // A manual action for the watch-key burst (see WatchBurstPolicy); the live route's
+                // submit records its own.
+                if (result.isSuccess) CommandBus.noteManual()
                 if (wake) PresenceService.start(app) // after the one-shot closed its GATT client
                 result.fold(
                     onSuccess = { CommandOutcome.Sent },
