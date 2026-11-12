@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.service.PresenceStatus
@@ -71,6 +72,9 @@ class VehicleSession(
     // Written by the session coroutine, read/completed by the GATT callback thread → concurrent.
     private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
     @Volatile private var sessionAlive = false
+    /** Completed by the GATT callback when this connection drops, so a heartbeat-period wait (the
+     *  paused loop holds no wake lock, and its timer stalls while the CPU sleeps) ends at once. */
+    @Volatile private var linkDown = CompletableDeferred<Unit>()
     /** Live phone→device RSSI, fed into the heartbeat. −128 (=0x80) until the first read. */
     @Volatile private var latestRssi: Int = RSSI_DEFAULT
     private var inbound = 0
@@ -280,7 +284,7 @@ class VehicleSession(
                     if (primary && msgChar != null && !heartbeatsLocked(reason)) {
                         drainCommandBus(g, msgChar, pNonce, vNonce)
                     }
-                    delay(HEARTBEAT_PERIOD_MS)
+                    awaitHeartbeatPeriod()
                     continue
                 }
                 if (pauseReason != null) {
@@ -313,7 +317,7 @@ class VehicleSession(
                 // round-trip doesn't throttle the heartbeat rate; it lands for a
                 // later cycle. RSSI doesn't change fast enough to need every beat.
                 if (counter % RSSI_EVERY == 0) g.readRemoteRssi()
-                delay(HEARTBEAT_PERIOD_MS)
+                awaitHeartbeatPeriod()
             }
         } catch (e: Exception) {
             currentCoroutineContext().ensureActive() // real cancellation propagates; timeouts don't
@@ -360,7 +364,13 @@ class VehicleSession(
         }
     }
 
+    /** Wait one heartbeat period, or less if the link drops meanwhile (see [linkDown]). */
+    private suspend fun awaitHeartbeatPeriod() {
+        withTimeoutOrNull(HEARTBEAT_PERIOD_MS) { linkDown.await() }
+    }
+
     private fun reset() {
+        linkDown = CompletableDeferred()
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
         descriptorWritten = CompletableDeferred()
@@ -517,6 +527,7 @@ class VehicleSession(
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 val wasAlive = sessionAlive
                 sessionAlive = false
+                linkDown.complete(Unit)
                 // status 0x13=remote-terminated, 0x08=link timeout, 0x16=local close,
                 // 0x3e=failed-to-establish, 0x85=gatt error.
                 val gone = IllegalStateException("disconnected status=$status")

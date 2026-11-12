@@ -115,6 +115,7 @@ class PresenceService : Service() {
     private var departJob: Job? = null // debounces a MATCH_LOST before we treat the car as gone
     private var drivingJob: Job? = null // driving-doze: drop the wake lock while the car is in gear
     private var watchJob: Job? = null   // watch-mode burst presence (only when registered as a watch)
+    private var bringUpJob: Job? = null // bounded wake lock while sessions come up without the main one
     private val keyguard by lazy { getSystemService(KeyguardManager::class.java) }
 
     /**
@@ -508,6 +509,8 @@ class PresenceService : Service() {
         drivingJob = scope.launch { monitorDriving() }
         // Watch keys: doze by default, burst presence only around the drive window.
         watchJob = scope.launch { monitorWatchPresence() }
+        // Standby / driving-doze hold no wake lock: cover a dropped link's reconnect with a bounded one.
+        scope.launch { monitorPrimaryDrop() }
         return START_STICKY
     }
 
@@ -556,12 +559,40 @@ class PresenceService : Service() {
         }
         if (watchMode) {
             VehicleSession.heartbeatsPaused = true // doze by default; bursts un-pause it
+            // No main wake lock in standby: cover the ECDH + connect + handshake with a bounded one.
+            if (BringUpWakePolicy.onSessionsStart(wakeLock != null)) holdBringUpWakeLock("watch-key bring-up")
             startBle()
         } else {
             acquireWakeLock()
             startBle()
         }
         updateNotification(activeNotificationText())
+    }
+
+    /**
+     * Hold a timed wake lock until the PRIMARY link is UP, at most [BringUpWakePolicy.MAX_MS]
+     * (see [BringUpWakePolicy]). Self-expiring: it can never be held indefinitely.
+     */
+    private fun holdBringUpWakeLock(why: String) {
+        if (bringUpJob?.isActive == true) return
+        DebugLog.add("presence: bring-up wake lock ($why) — until PK is up, ≤${BringUpWakePolicy.MAX_MS / 1000}s")
+        bringUpJob = scope.launch {
+            withTimedWakeLock("wearvian:bring-up", BringUpWakePolicy.MAX_MS + TIMED_WAKE_SLACK_MS) {
+                withTimeoutOrNull(BringUpWakePolicy.MAX_MS) { PresenceStatus.primaryLink.first { BringUpWakePolicy.done(it) } }
+            }
+        }
+    }
+
+    /** Watch standby / driving-doze: a dropped PRIMARY link takes the bring-up wake lock. */
+    private suspend fun monitorPrimaryDrop() {
+        var prev: PresenceStatus.Link? = null
+        PresenceStatus.primaryLink.collect { now ->
+            val active = !passive && !locked && !btOff
+            if (BringUpWakePolicy.onPrimaryChange(prev, now, wakeLock != null, active, VehicleSession.heartbeatsPaused)) {
+                holdBringUpWakeLock("PK dropped while heartbeats paused")
+            }
+            prev = now
+        }
     }
 
     /** The active-mode notification text: a sub-state's fixed text (watch standby / driving-doze),
@@ -608,6 +639,7 @@ class PresenceService : Service() {
                 wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
                 if (passive) { ProximityWake.stopScan(this@PresenceService, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                 driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
+                bringUpJob?.cancel() // nothing to bring up while locked
                 stopBle()
                 // The ECDH secret must not outlive the lock: the Keystore key itself
                 // (unlockedDeviceRequired) can't be used locked, and neither should a copy.
@@ -960,6 +992,7 @@ class PresenceService : Service() {
         ActiveCommandManager.awaitOneShotIdle()
         VehicleStatus.clear() // no session confirming state in passive — keep it, mark stale (dimmed)
         releaseWakeLock()
+        bringUpJob?.cancel() // no sessions in passive
         proximityScanFailures = 0
         proximityRetryJob?.cancel()
         val watching = !btOff && armProximityScan() // BT off: STATE_ON arms the scan + autoConnect
@@ -1035,10 +1068,10 @@ class PresenceService : Service() {
                 if (pk != null) {
                     pkStarted = true
                     started.add(pk.address)
-                    labels.add("PK")
+                    labels.add(PresenceStatus.PRIMARY_LABEL)
                     addresses.add(pk.address) // remember for the proximity-wake filters
                     setPhoneKeyMissing(false)
-                    bleScope.launch { VehicleSession(this@PresenceService, pk, enrollment, sharedSecret, "PK", primary = true).runForever(bleScope) }
+                    bleScope.launch { VehicleSession(this@PresenceService, pk, enrollment, sharedSecret, PresenceStatus.PRIMARY_LABEL, primary = true).runForever(bleScope) }
                 } else if (adapter?.isEnabled == true) {
                     if (!pkMissingLogged) { pkMissingLogged = true; DebugLog.add("presence: phone key not paired — retrying") }
                     setPhoneKeyMissing(true)

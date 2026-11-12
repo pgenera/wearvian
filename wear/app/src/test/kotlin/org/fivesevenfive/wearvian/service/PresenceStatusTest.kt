@@ -84,4 +84,16 @@ class PresenceStatusTest {
         PresenceStatus.set("PK", Link.DOWN)
         assertEquals("PK=DOWN", PresenceStatus.snapshot())
     }
+
+    @Test
+    fun primaryLinkTracksOnlyThePkLabel() {
+        assertEquals(null, PresenceStatus.primaryLink.value)
+        PresenceStatus.set("S1", PresenceStatus.Link.UP)
+        assertEquals(null, PresenceStatus.primaryLink.value)
+        PresenceStatus.set(PresenceStatus.PRIMARY_LABEL, PresenceStatus.Link.CONNECTING)
+        PresenceStatus.set(PresenceStatus.PRIMARY_LABEL, PresenceStatus.Link.UP)
+        assertEquals(PresenceStatus.Link.UP, PresenceStatus.primaryLink.value)
+        PresenceStatus.reset()
+        assertEquals(null, PresenceStatus.primaryLink.value)
+    }
 }

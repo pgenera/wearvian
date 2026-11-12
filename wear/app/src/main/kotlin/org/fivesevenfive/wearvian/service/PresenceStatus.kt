@@ -28,12 +28,20 @@ object PresenceStatus {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> get() = _connected
 
+    /** The PRIMARY phone-key link's state (label [PRIMARY_LABEL]); null before it has reported. */
+    private val _primaryLink = MutableStateFlow<Link?>(null)
+    val primaryLink: StateFlow<Link?> get() = _primaryLink
+
+    /** The label the PRIMARY phone-key session reports under. */
+    const val PRIMARY_LABEL = "PK"
+
     fun set(label: String, state: Link) {
         // A DOWN for a link we don't know is a cancelled session's `finally` landing after [reset]
         // (onDestroy cancels the scope without joining) — it carries no information, and recording
         // it would repopulate a stopped status. Every live session reports CONNECTING first.
         if (state == Link.DOWN && !links.containsKey(label)) return
         links[label] = state
+        if (label == PRIMARY_LABEL) _primaryLink.value = state
         recompute()
         DebugLog.add("status: $label=$state → \"${_summary.value}\"")
     }
@@ -42,6 +50,7 @@ object PresenceStatus {
     fun reset() {
         links.clear()
         _connected.value = false
+        _primaryLink.value = null
         _summary.value = "Stopped"
         DebugLog.add("status: reset")
     }
