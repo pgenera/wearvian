@@ -237,3 +237,15 @@ class ProximityTrackerTest {
         assertEquals(ProximityTracker.Found.RETURN, t.found("A", 20_000L + debounce, departureConfirmed = false))
     }
 }
+
+class ScanRetryPolicyTest {
+    @Test
+    fun backsOffFromThirtySecondsToFiveMinutes() {
+        assertEquals(30_000L, ScanRetryPolicy.delayMs(1))
+        assertEquals(60_000L, ScanRetryPolicy.delayMs(2))
+        assertEquals(120_000L, ScanRetryPolicy.delayMs(3))
+        assertEquals(240_000L, ScanRetryPolicy.delayMs(4))
+        assertEquals(ScanRetryPolicy.MAX_MS, ScanRetryPolicy.delayMs(5))
+        assertEquals(ScanRetryPolicy.MAX_MS, ScanRetryPolicy.delayMs(50))
+    }
+}

@@ -140,3 +140,13 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         return seen.isEmpty() && nowMs - since >= emptyWindowMs
     }
 }
+
+/** Backoff for retrying a failed passive proximity scan (pure, unit-tested). */
+object ScanRetryPolicy {
+    const val MIN_MS = 30_000L // > the 30 s scan-start rate-limit window
+    const val MAX_MS = 5 * 60_000L
+
+    /** Wait before the retry after [failures] consecutive failures (1-based): 30 s, 60 s … 5 min. */
+    fun delayMs(failures: Int): Long =
+        (MIN_MS shl (failures - 1).coerceIn(0, 4)).coerceAtMost(MAX_MS)
+}

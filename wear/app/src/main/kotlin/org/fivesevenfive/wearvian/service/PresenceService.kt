@@ -1,6 +1,7 @@
 package org.fivesevenfive.wearvian.service
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -30,7 +31,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -136,9 +136,8 @@ class PresenceService : Service() {
     /** True while active presence can't find the phone-key module (not paired). */
     @Volatile private var phoneKeyMissing = false
 
-    /** Consecutive proximity-scan failures in this passive stretch, and the pending retry. */
+    /** Consecutive proximity-scan failures in this passive stretch (the retry: [scheduleScanRetry]). */
     private var proximityScanFailures = 0
-    private var proximityRetryJob: Job? = null
 
     /**
      * Airplane mode / a Bluetooth toggle kills every scan, pending autoConnect and GATT link without
@@ -245,28 +244,65 @@ class PresenceService : Service() {
 
     /**
      * The passive proximity scan was rejected (rate limit, no filter slots…) — without handling this
-     * the key would sit passive with no scan running. Keep the autoConnect wake armed if the car has
-     * left, retry the scan with backoff, and surface a persistent failure in the notification.
+     * the key would sit passive with no scan running. Keep a wake path armed (the autoConnect if the
+     * car has left; otherwise start the departure countdown, so it gets armed — until the retry
+     * runs the scan is no wake path at all), retry the scan with backoff, and surface a persistent
+     * failure in the notification.
+     *
+     * The retry is an AlarmManager ELAPSED_REALTIME_WAKEUP alarm, not a coroutine delay: passive
+     * holds no wake lock and a coroutine timer stalls while the CPU sleeps, and a timed wake lock
+     * would be too costly for a wait of up to 5 minutes.
      */
     private fun onProximityScanFailed(errorCode: Int) {
         if (!passive || btOff) return // BT off: the STATE_ON handler re-arms everything
         if (errorCode == android.bluetooth.le.ScanCallback.SCAN_FAILED_ALREADY_STARTED) return // it IS running
         proximityScanFailures++
         DebugLog.add("presence: proximity scan failed err=$errorCode (x$proximityScanFailures) — retrying")
-        if (seenDeparture) passiveLink.arm(this) // the other wake path works without the scan
+        if (seenDeparture) {
+            passiveLink.arm(this) // the other wake path works without the scan
+        } else if (departJob?.isActive != true) {
+            // Parked nearby, and the scan can't tell us when the car leaves: count from now.
+            proximity.assumeAllLost(SystemClock.elapsedRealtime())
+            startDepartureCountdown()
+        }
         if (proximityScanFailures == SCAN_FAIL_NOTIFY_AFTER) updateNotification(passiveText())
-        if (proximityRetryJob?.isActive == true) return
-        val wait = (SCAN_RETRY_MIN_MS shl (proximityScanFailures - 1).coerceAtMost(4)).coerceAtMost(SCAN_RETRY_MAX_MS)
-        proximityRetryJob = scope.launch {
-            delay(wait)
-            transition.withLock {
-                // The wait is over: stop counting as the pending retry, or a synchronous failure of
-                // this attempt (armProximityScan → onProximityScanFailed) would see this very job
-                // as "a retry is already pending" and schedule nothing, ending the retry chain.
-                if (proximityRetryJob === currentCoroutineContext()[Job]) proximityRetryJob = null
-                if (passive && !locked && !btOff) armProximityScan()
+        if (scanRetryPending) return
+        scheduleScanRetry(ScanRetryPolicy.delayMs(proximityScanFailures))
+    }
+
+    /** True while a scan-retry alarm is set; touched only on [scope]. */
+    private var scanRetryPending = false
+
+    private val scanRetryListener = AlarmManager.OnAlarmListener {
+        // Delivered on the main thread under the alarm's own brief wake lock; hold a short timed
+        // one so the retry runs on scope before the CPU suspends again.
+        scope.launch {
+            withTimedWakeLock("wearvian:scan-retry", SCAN_RETRY_WAKE_MS) {
+                transition.withLock {
+                    // No longer pending, so a synchronous failure of this attempt
+                    // (armProximityScan → onProximityScanFailed) schedules the next one.
+                    scanRetryPending = false
+                    if (passive && !locked && !btOff) armProximityScan()
+                }
             }
         }
+    }
+
+    private fun scheduleScanRetry(waitMs: Long) {
+        val am = getSystemService(AlarmManager::class.java) ?: return
+        runCatching {
+            am.set(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + waitMs,
+                "wearvian:scan-retry", scanRetryListener, null,
+            )
+            scanRetryPending = true
+        }.onFailure { DebugLog.add("presence: scan retry alarm not set — ${it.javaClass.simpleName}") }
+    }
+
+    private fun cancelScanRetry() {
+        if (!scanRetryPending) return
+        scanRetryPending = false
+        runCatching { getSystemService(AlarmManager::class.java)?.cancel(scanRetryListener) }
     }
 
     /**
@@ -304,7 +340,7 @@ class PresenceService : Service() {
                 if (btOff) return@withLock
                 btOff = true
                 DebugLog.add("presence: Bluetooth off — tearing down BLE until it returns")
-                proximityRetryJob?.cancel()
+                cancelScanRetry()
                 if (passive) {
                     ProximityWake.stopScan(this, proximityCallback)
                     passiveLink.disarm()
@@ -649,7 +685,7 @@ class PresenceService : Service() {
             LockSyncPolicy.Action.LOCK -> withContext(NonCancellable) {
                 DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                 wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                if (passive) { ProximityWake.stopScan(this@PresenceService, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
+                if (passive) { ProximityWake.stopScan(this@PresenceService, proximityCallback); passiveLink.disarm(); departJob?.cancel(); cancelScanRetry(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                 driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                 bringUpJob?.cancel() // nothing to bring up while locked
                 stopBle()
@@ -1007,7 +1043,7 @@ class PresenceService : Service() {
         releaseWakeLock()
         bringUpJob?.cancel() // no sessions in passive
         proximityScanFailures = 0
-        proximityRetryJob?.cancel()
+        cancelScanRetry()
         val watching = !btOff && armProximityScan() // BT off: STATE_ON arms the scan + autoConnect
         if (seenDeparture && !btOff) passiveLink.arm(this)
         DebugLog.add("presence: → passive (carPresent=${!seenDeparture}, service alive); proximity watch=$watching, autoConnect=${seenDeparture}")
@@ -1031,7 +1067,7 @@ class PresenceService : Service() {
         _passive.value = false
         _parkedNearby.value = false
         departJob?.cancel()
-        proximityRetryJob?.cancel()
+        cancelScanRetry()
         proximity.reset()
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm() // hand PK off to the full session
@@ -1315,6 +1351,7 @@ class PresenceService : Service() {
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm()
         departJob?.cancel()
+        cancelScanRetry() // an alarm outlives the scope
         // Tear down the coroutine scope (the notification observer lives here) and reset shared
         // state, then remove the FG notification explicitly so deactivating the key clears it.
         scope.cancel()
@@ -1385,8 +1422,8 @@ class PresenceService : Service() {
         private const val PK_MISSING_TEXT = "Phone key not paired"
         private const val SCAN_FAILED_TEXT = "Proximity scan unavailable · retrying"
         /** Proximity-scan retry backoff, and the failure count at which the notification says so. */
-        private const val SCAN_RETRY_MIN_MS = 30_000L // > the 30 s scan-start rate-limit window
-        private const val SCAN_RETRY_MAX_MS = 5 * 60_000L
+        /** Timed wake lock around an alarm-triggered scan retry (it only has to restart the scan). */
+        private const val SCAN_RETRY_WAKE_MS = 5_000L
         private const val SCAN_FAIL_NOTIFY_AFTER = 3
         /** Pseudo error code: startScan was rejected synchronously (no scanner / threw / no filters). */
         private const val SCAN_START_FAILED = -1
