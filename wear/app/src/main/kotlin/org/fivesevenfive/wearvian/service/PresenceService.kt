@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -42,6 +43,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.WearvianApp
 import org.fivesevenfive.wearvian.R
@@ -140,6 +142,19 @@ class PresenceService : Service() {
      * Airplane mode / a Bluetooth toggle kills every scan, pending autoConnect and GATT link without
      * telling the callers. Tear down on OFF and rebuild the current mode on ON ([onBluetoothState]).
      */
+    /**
+     * Screen on/off and user-present: re-read the keyguard at once ([syncLockState]) instead of
+     * waiting for the 2 s poll, which stalls while the CPU sleeps (no wake lock is held while
+     * locked or passive). Under a short timed wake lock so the transition runs before the CPU
+     * suspends again — an unlock then restores BLE immediately.
+     */
+    private val lockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (lockJob?.isActive != true) return // not started (or stopping): nothing to sync
+            scope.launch { withTimedWakeLock("wearvian:lock-sync", LOCK_SYNC_WAKE_MS) { syncLockState() } }
+        }
+    }
+
     private val btStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
@@ -289,6 +304,9 @@ class PresenceService : Service() {
             BluetoothAdapter.STATE_ON -> {
                 if (!btOff) return@withLock
                 btOff = false
+                // A fresh keyguard read: if it disagrees, the lock/unlock transition itself rebuilds
+                // the right mode (Bluetooth is back on), so there is nothing more to do here.
+                if (syncLockStateLocked()) return@withLock
                 DebugLog.add("presence: Bluetooth on — rebuilding (${if (locked) "locked" else if (passive) "passive" else "active"})")
                 when {
                     locked -> updateNotification(LOCKED_TEXT) // unlock rebuilds
@@ -349,7 +367,8 @@ class PresenceService : Service() {
     }
 
     /** The car has been out of range for the debounce: a return now wakes (scan + PK autoConnect). */
-    private fun markDeparted() {
+    private suspend fun markDeparted() {
+        syncLockStateLocked() // don't trust the polled field: a lock tears passive down instead
         if (!passive || seenDeparture || locked) return
         seenDeparture = true
         settings.passiveSeenDeparture = true // keep the persisted sub-state current
@@ -389,6 +408,13 @@ class PresenceService : Service() {
         // A protected system broadcast: delivered to a NOT_EXPORTED receiver.
         runCatching { registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), RECEIVER_NOT_EXPORTED) }
             .onFailure { DebugLog.add("presence: BT state receiver not registered — ${it.javaClass.simpleName}") }
+        val lockFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        runCatching { registerReceiver(lockReceiver, lockFilter, RECEIVER_NOT_EXPORTED) }
+            .onFailure { DebugLog.add("presence: lock receiver not registered — ${it.javaClass.simpleName}") }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -550,42 +576,62 @@ class PresenceService : Service() {
      * Anti-theft: while the watch is locked (removed from the wrist with a screen lock),
      * tear down ALL BLE — no connections, no chatter, no wake lock — keeping the foreground
      * service alive so we can rebuild instantly on unlock without an FGS-restart (which the
-     * Android-12 background limit can block). Poll-based: there's no reliable "device
-     * locked" broadcast.
+     * Android-12 background limit can block). There's no reliable "device locked" broadcast, so
+     * the state is synced ([syncLockState]) on the screen / user-present broadcasts ([lockReceiver])
+     * and at the top of every transition that depends on it; this 2 s poll is only the backstop.
      */
     private suspend fun monitorLock() {
         while (true) {
-            val nowLocked = keyguard?.isDeviceLocked == true
-            if (nowLocked != locked) transition.withLock {
-                if (nowLocked == locked) return@withLock // another transition already caught up
-                locked = nowLocked
-                // Unlocked: recompute the secret (cleared on lock) now, so the StrongBox ECDH
-                // overlaps the reconnect instead of delaying the first handshake.
-                if (!nowLocked) WearvianApp.prefetchSecret(this)
-                if (nowLocked) {
-                    DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
-                    wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
-                    if (passive) { ProximityWake.stopScan(this, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
-                    driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
-                    stopBle()
-                    // The ECDH secret must not outlive the lock: the Keystore key itself
-                    // (unlockedDeviceRequired) can't be used locked, and neither should a copy.
-                    SharedSecretCache.clear()
-                    releaseWakeLock()
-                    updateNotification(LOCKED_TEXT)
-                } else if (wasPassive) {
-                    // Were idling passively (car out of range) → come back up passive: re-arm the proximity
-                    // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
-                    // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
-                    DebugLog.add("presence: watch unlocked — restoring passive idle")
-                    enterPassiveLocked() // sets its own passive notification text (parked-nearby vs waiting)
-                } else {
-                    DebugLog.add("presence: watch unlocked — restoring active presence")
-                    startActivePresence() // sets the active notification text
-                }
-            }
+            if (keyguardLocked() != locked) syncLockState()
             delay(LOCK_POLL_MS)
         }
+    }
+
+    private fun keyguardLocked(): Boolean = keyguard?.isDeviceLocked == true
+
+    private suspend fun syncLockState(): Boolean = transition.withLock { syncLockStateLocked() }
+
+    /**
+     * Read the keyguard FRESH and, if it disagrees with [locked], run the lock / unlock transition
+     * ([LockSyncPolicy]). Caller holds [transition]. @return true if a transition ran.
+     */
+    private suspend fun syncLockStateLocked(): Boolean {
+        val action = LockSyncPolicy.decide(keyguardLocked(), locked, wasPassive)
+        if (action == LockSyncPolicy.Action.NONE) return false
+        locked = action == LockSyncPolicy.Action.LOCK
+        when (action) {
+            LockSyncPolicy.Action.NONE -> Unit
+            // NonCancellable: this can run inside the very job it cancels (a departure countdown
+            // reading the keyguard in markDeparted), and the anti-theft teardown must finish.
+            LockSyncPolicy.Action.LOCK -> withContext(NonCancellable) {
+                DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
+                wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
+                if (passive) { ProximityWake.stopScan(this@PresenceService, proximityCallback); passiveLink.disarm(); departJob?.cancel(); proximityRetryJob?.cancel(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
+                driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
+                stopBle()
+                // The ECDH secret must not outlive the lock: the Keystore key itself
+                // (unlockedDeviceRequired) can't be used locked, and neither should a copy.
+                SharedSecretCache.clear()
+                releaseWakeLock()
+                updateNotification(LOCKED_TEXT)
+            }
+            LockSyncPolicy.Action.UNLOCK_TO_PASSIVE -> {
+                // Unlocked: recompute the secret (cleared on lock) now, so the StrongBox ECDH
+                // overlaps the reconnect instead of delaying the first handshake.
+                WearvianApp.prefetchSecret(this)
+                // Were idling passively (car out of range) → come back up passive: re-arm the proximity
+                // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
+                // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
+                DebugLog.add("presence: watch unlocked — restoring passive idle")
+                enterPassiveLocked() // sets its own passive notification text (parked-nearby vs waiting)
+            }
+            LockSyncPolicy.Action.UNLOCK_TO_ACTIVE -> {
+                WearvianApp.prefetchSecret(this)
+                DebugLog.add("presence: watch unlocked — restoring active presence")
+                startActivePresence() // sets the active notification text
+            }
+        }
+        return true
     }
 
     /**
@@ -928,7 +974,12 @@ class PresenceService : Service() {
     private suspend fun exitPassive() = transition.withLock { exitPassiveLocked() }
 
     /** [exitPassive] body; caller holds [transition]. */
-    private fun exitPassiveLocked() {
+    private suspend fun exitPassiveLocked() {
+        // Read the keyguard fresh first: a watch taken off while passive still has locked == false
+        // until the poll runs. If it is locked, the lock transition tears passive down (recording
+        // wasPassive) and we stop here instead of taking the wake lock for a session that can't
+        // authenticate.
+        syncLockStateLocked()
         if (!passive) return
         passive = false
         _passive.value = false
@@ -1213,6 +1264,7 @@ class PresenceService : Service() {
         _passive.value = false
         _parkedNearby.value = false
         runCatching { unregisterReceiver(btStateReceiver) }
+        runCatching { unregisterReceiver(lockReceiver) }
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm()
@@ -1271,6 +1323,8 @@ class PresenceService : Service() {
         )
         /** How often to check the watch lock state (no reliable "device locked" broadcast). */
         private const val LOCK_POLL_MS = 2_000L
+        /** Timed wake lock around a broadcast-triggered lock sync (it only has to run the transition). */
+        private const val LOCK_SYNC_WAKE_MS = 5_000L
         /** Settle time before refreshing the tile on a 0x1c change — the stream flickers fast. */
         private const val TILE_REFRESH_DEBOUNCE_MS = 3_000L
         private const val LOCKED_TEXT = "Watch locked"
