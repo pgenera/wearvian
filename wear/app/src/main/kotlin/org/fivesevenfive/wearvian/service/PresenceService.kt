@@ -59,6 +59,7 @@ import org.fivesevenfive.wearvian.ble.VehicleSession
 import org.fivesevenfive.wearvian.complication.ComplicationRefresher
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.crypto.SharedSecretCache
+import org.fivesevenfive.wearvian.crypto.WatchLockedException
 import org.fivesevenfive.wearvian.store.DebugOverrides
 import org.fivesevenfive.wearvian.store.Enrollment
 import org.fivesevenfive.wearvian.store.EnrollmentStore
@@ -1052,12 +1053,24 @@ class PresenceService : Service() {
      * failure (e.g. racing the unlock that just started us — the key is unlockedDeviceRequired) must
      * not end the loop with nothing retrying. While this waits no link comes up, so [monitorIdle]
      * still falls back to passive if it never succeeds. Cancelled with the loop.
+     *
+     * A locked watch (the cache reads the keyguard fresh, whatever our polled [locked] says) is not
+     * a failure: wait for the unlock on a short fixed poll instead of the backoff, so a stray locked
+     * reading can't delay the reconnect by a minute. The wait takes no wake lock: in passive / watch
+     * doze none is held, and where one is (phone key, active) [monitorLock] sees the lock on its next
+     * 2 s poll and tears down BLE (cancelling this) and releases it.
      */
     private suspend fun awaitSharedSecret(enrollment: Enrollment): ByteArray {
         var backoff = ECDH_RETRY_MIN_MS
+        var lockedLogged = false
         while (true) {
             val result = runCatching { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
             result.onSuccess { return it }
+            if (result.exceptionOrNull() is WatchLockedException) {
+                if (!lockedLogged) { lockedLogged = true; DebugLog.add("presence: secret withheld — watch locked; waiting for unlock") }
+                delay(LOCKED_SECRET_POLL_MS)
+                continue
+            }
             DebugLog.add("presence: ECDH failed (${result.exceptionOrNull()?.javaClass?.simpleName}) — retry in ${backoff / 1000}s")
             delay(backoff)
             backoff = (backoff * 2).coerceAtMost(ECDH_RETRY_MAX_MS)
@@ -1252,6 +1265,8 @@ class PresenceService : Service() {
         private const val TIMED_WAKE_SLACK_MS = 5_000L
         /** Backoff bounds for retrying a failed ECDH in [presenceLoop]. */
         private const val ECDH_RETRY_MIN_MS = 2_000L
+        /** Poll while the secret is withheld because the watch is locked (see awaitSharedSecret). */
+        private const val LOCKED_SECRET_POLL_MS = 2_000L
         private const val ECDH_RETRY_MAX_MS = 60_000L
         /** Charge states that mean the cord is connected (idle drops faster when plugged in). */
         private val PLUGGED_STATES = setOf(

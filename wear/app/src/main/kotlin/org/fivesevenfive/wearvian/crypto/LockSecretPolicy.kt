@@ -7,8 +7,9 @@ package org.fivesevenfive.wearvian.crypto
  *
  * The broadcasts are prompts to RE-READ the keyguard, never the lock signal itself:
  *  - screen off: the watch is not necessarily locked yet (off-body lock follows removal by a few
- *    seconds, or never, while worn), so re-check [isLocked] on a short schedule and clear once it
- *    reads locked;
+ *    seconds, or much later if it is taken off with the screen already off), so re-check [isLocked]
+ *    on a schedule — tightening at first, then every [recheckDelaysMs].last() for as long as the
+ *    screen stays off — and clear once it reads locked;
  *  - screen on: someone is about to interact — if the keyguard is up, clear now;
  *  - user present (keyguard dismissed): stop re-checking and start recomputing the secret
  *    ([prefetch]) so the StrongBox ECDH overlaps the reconnect / the next tap.
@@ -45,9 +46,10 @@ class LockSecretPolicy(
         if (!isLocked()) prefetch()
     }
 
+    /** Past the end of [recheckDelaysMs] the last delay repeats until screen-on / user-present. */
     private fun scheduleRecheckLocked(gen: Int, index: Int) {
-        if (index >= recheckDelaysMs.size) { pending = null; return }
-        pending = schedule(recheckDelaysMs[index]) { recheck(gen, index) }
+        val delay = recheckDelaysMs.getOrElse(index) { recheckDelaysMs.last() }
+        pending = schedule(delay) { recheck(gen, index + 1) }
     }
 
     private fun recheck(gen: Int, index: Int) {
@@ -57,7 +59,7 @@ class LockSecretPolicy(
             synchronized(lock) { if (gen == generation) pending = null }
             return
         }
-        synchronized(lock) { if (gen == generation) scheduleRecheckLocked(gen, index + 1) }
+        synchronized(lock) { if (gen == generation) scheduleRecheckLocked(gen, index) }
     }
 
     private fun cancelLocked() {
@@ -67,7 +69,8 @@ class LockSecretPolicy(
     }
 
     companion object {
-        /** Re-check offsets after each screen-off (each delay is relative to the previous check). */
+        /** Re-check offsets after each screen-off (each relative to the previous check); the last
+         *  repeats. Run on an uptime Handler, so they add no wakeups of their own. */
         val RECHECK_DELAYS_MS = listOf(5_000L, 15_000L, 60_000L, 300_000L)
     }
 }

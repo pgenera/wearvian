@@ -208,11 +208,17 @@ is zeroed as soon as the app sees the watch locked: the presence service's lock
 monitor, every command attempt and tile view that reads the keyguard as locked,
 and a process-wide screen-off/screen-on receiver that re-checks the keyguard a
 few seconds after the screen goes off (off-body lock is not instant) all clear
-it. On unlock it is recomputed in the background so the ECDH overlaps the
-reconnect. So a locked watch holds no usable secret and Layer 2 remains the
-backstop; the residual window is the few seconds between the lock and the next
-re-check (and copies held by a live session until its BLE teardown, which the
-lock monitor does within its 2 s poll).
+it; while the screen stays off the re-check repeats every 5 minutes. On unlock
+it is recomputed in the background so the ECDH overlaps the reconnect.
+
+Residual, stated plainly: the re-checks run only while the CPU is awake and add
+no wakeups of their own, so the secret **may sit in RAM on a locked watch** until
+the next time the app runs and re-reads the keyguard (and a live session's copy
+until its BLE teardown, which the lock monitor does within its 2 s poll). It is
+never *handed out* while locked, though: the cache itself reads the keyguard
+fresh on every request and, if locked, clears and refuses (commands report
+"watch locked"; the presence service waits for the unlock), and Layer 2 still
+blocks a new derivation.
 
 When the watch is locked the service additionally tears down all BLE and releases
 the wake lock (keeping only the foreground service), and rebuilds everything on
@@ -220,8 +226,11 @@ unlock.
 
 ## 9. Command and status authentication
 
-All meaningful traffic with the vehicle is cryptographically bound to the session,
-so neither commands nor status can be forged or replayed without the shared key.
+Commands, heartbeats and the encrypted status/ack frames are cryptographically
+bound to the session, so they can't be forged or replayed without the shared key.
+**Exception: the in-the-clear `0x1c` vehicle-status stream is not authenticated on
+the watch today.** The vehicle appends a 32-byte HMAC, but the watch's link runs at
+the default ATT MTU (20-byte notifications), so the MAC is never received.
 
 - **Pairing handshake.** Each connection runs a nonce exchange: the watch signs a
   random nonce with `HMAC-SHA256` under the HKDF-derived key, and the vehicle
@@ -242,7 +251,9 @@ so neither commands nor status can be forged or replayed without the shared key.
   acknowledgement frames are encrypted with `AES-128-GCM`; the app decrypts and
   verifies them with the session key and nonces. (A separate, in-the-clear
   vehicle-status stream carries non-sensitive telemetry such as lock state, charge
-  state, and range; it is read but not relied on for authorization.)
+  state, and range. It is not authenticated (see above) and doesn't authorize
+  anything, but in watch-key mode a door-open / wake bit in it starts a short
+  presence-heartbeat burst.)
 
 The net effect: presence, commands, and confidential status are all gated on
 possession of the shared secret, which is itself gated on the watch's

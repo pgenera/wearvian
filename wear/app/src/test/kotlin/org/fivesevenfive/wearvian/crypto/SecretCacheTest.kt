@@ -89,4 +89,56 @@ class SecretCacheTest {
         gate.countDown()
         assertArrayEquals(byteArrayOf(2), cache.get("v") { byteArrayOf(2) })
     }
+
+    private val locked = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val guarded = SecretCache(CoroutineScope(SupervisorJob() + Dispatchers.Default)) { locked.get() }
+
+    @Test
+    fun getWhileLockedClearsAndThrowsWithoutComputing() = runBlocking {
+        guarded.get("v", secret(1))
+        locked.set(true)
+        try {
+            guarded.get("v", secret(2))
+            fail("expected WatchLockedException")
+        } catch (_: WatchLockedException) {
+        }
+        assertEquals("nothing computed while locked", 1, calls.get())
+        locked.set(false)
+        assertArrayEquals("cache was cleared: recomputed after unlock", byteArrayOf(3, 2, 3), guarded.get("v", secret(3)))
+        assertEquals(2, calls.get())
+    }
+
+    @Test
+    fun prefetchWhileLockedComputesNothingAndDoesNotThrow() = runBlocking {
+        locked.set(true)
+        guarded.prefetch("v", secret(1))
+        locked.set(false)
+        assertArrayEquals(byteArrayOf(4, 2, 3), guarded.get("v", secret(4)))
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun lockDuringComputationWithholdsTheResultAndCachesNothing() = runBlocking {
+        val started = CountDownLatch(1)
+        val gate = CountDownLatch(1)
+        val slow: () -> ByteArray = {
+            started.countDown(); gate.await(5, TimeUnit.SECONDS); calls.incrementAndGet(); byteArrayOf(7)
+        }
+        val waiter = async(Dispatchers.Default) { runCatching { guarded.get("v", slow) } }
+        started.await(5, TimeUnit.SECONDS)
+        locked.set(true) // watch locks while the ECDH is running
+        gate.countDown()
+        assertEquals(true, waiter.await().exceptionOrNull() is WatchLockedException)
+        locked.set(false)
+        assertArrayEquals(byteArrayOf(1, 2, 3), guarded.get("v", secret(1)))
+        assertEquals("not cached across the lock", 2, calls.get())
+    }
+
+    @Test
+    fun prefetchOfACachedKeyIsANoOp() = runBlocking {
+        cache.get("v", secret(1))
+        cache.prefetch("v", secret(9))
+        assertArrayEquals(byteArrayOf(1, 2, 3), cache.get("v", secret(9)))
+        assertEquals(1, calls.get())
+    }
 }

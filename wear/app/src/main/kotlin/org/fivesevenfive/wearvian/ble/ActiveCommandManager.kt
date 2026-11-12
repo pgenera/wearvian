@@ -27,6 +27,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.crypto.SharedSecretCache
+import org.fivesevenfive.wearvian.crypto.WatchLockedException
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
 import org.fivesevenfive.wearvian.protocol.PairingFrames
 import org.fivesevenfive.wearvian.service.PresenceService
@@ -441,7 +442,11 @@ class ActiveCommandManager(
         }
 
         /** Classify a one-shot failure for retry policy and user feedback. */
-        fun failureOf(t: Throwable): CommandFailure = (t as? CommandException)?.failure ?: CommandFailure.SEND_FAILED
+        fun failureOf(t: Throwable): CommandFailure = when (t) {
+            is CommandException -> t.failure
+            is WatchLockedException -> CommandFailure.WATCH_LOCKED // the secret cache saw the lock
+            else -> CommandFailure.SEND_FAILED
+        }
     }
 }
 

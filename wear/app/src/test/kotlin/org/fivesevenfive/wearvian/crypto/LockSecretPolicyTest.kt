@@ -50,11 +50,23 @@ class LockSecretPolicyTest {
     }
 
     @Test
-    fun scheduleIsBounded() {
+    fun keepsRecheckingAtTheLastDelayWhileTheScreenStaysOff() {
         policy.onScreenOff()
-        repeat(3) { fireLast() }
-        assertEquals(3, scheduled.size)
+        repeat(6) { fireLast() } // still worn, screen off for a long time
+        assertEquals(listOf(5L, 15L, 60L, 60L, 60L, 60L, 60L), scheduled.map { it.first })
         assertEquals(0, clears)
+        locked = true // taken off long after the screen went off
+        fireLast()
+        assertEquals(1, clears)
+        assertEquals("stops once cleared", 7, scheduled.size)
+    }
+
+    @Test
+    fun userPresentAfterALongScreenOffCancelsTheRepeat() {
+        policy.onScreenOff()
+        repeat(5) { fireLast() }
+        policy.onUserPresent()
+        assertEquals(setOf(5), cancelled)
     }
 
     @Test

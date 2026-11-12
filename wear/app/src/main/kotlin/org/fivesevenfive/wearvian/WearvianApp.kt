@@ -24,6 +24,9 @@ class WearvianApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // Before anything can ask for the secret: the cache reads the keyguard fresh on every use.
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        SharedSecretCache.lockCheck = { keyguard?.isDeviceLocked == true }
         // Open the encrypted enrollment store (Keystore IPC + keyset decrypt) off the main thread, so
         // the tile / service / UI find it cached instead of each paying that cost on their thread.
         Thread({ EnrollmentStore.warmUp(this) }, "enrollment-warmup").start()
@@ -32,15 +35,14 @@ class WearvianApp : Application() {
         CrashLog.reports(this).firstOrNull()?.let {
             DebugLog.add("⚠ prior crash recorded: ${it.name} (pull ${it.path})")
         }
-        watchLockForSecret()
+        watchLockForSecret(keyguard)
     }
 
     /**
      * Clear the cached ECDH secret when the watch locks, whether or not PresenceService (which has
      * its own lock monitor) is running, and prefetch it again on unlock. See [LockSecretPolicy].
      */
-    private fun watchLockForSecret() {
-        val keyguard = getSystemService(KeyguardManager::class.java)
+    private fun watchLockForSecret(keyguard: KeyguardManager?) {
         val handler = Handler(Looper.getMainLooper())
         val policy = LockSecretPolicy(
             isLocked = { keyguard?.isDeviceLocked == true },
