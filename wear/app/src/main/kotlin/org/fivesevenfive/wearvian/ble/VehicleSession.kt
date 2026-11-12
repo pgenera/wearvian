@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.SystemClock
 import org.fivesevenfive.wearvian.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -69,6 +70,9 @@ class VehicleSession(
     private var servicesReady = CompletableDeferred<Boolean>()
     private var descriptorWritten = CompletableDeferred<Boolean>()
     private var charWritten = CompletableDeferred<Boolean>()
+    /** The characteristic write still in flight after its wait timed out (null: none). Android
+     *  allows one write at a time, so the next write must wait for it; see [HeartbeatWriteGate]. */
+    private var inFlight: CompletableDeferred<Boolean>? = null
     // Written by the session coroutine, read/completed by the GATT callback thread → concurrent.
     private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
     @Volatile private var sessionAlive = false
@@ -260,7 +264,7 @@ class VehicleSession(
             // Ranging heartbeat: every ~300 ms, report the live RSSI to this device.
             var counter = 0
             var pauseReason: String? = null
-            var hbFailures = 0 // consecutive stalled heartbeat writes; see HB_MAX_FAILURES
+            val hbGate = HeartbeatWriteGate() // one stalled write must not cascade into BUSY "stalls"
             while (scope.isActive && sessionAlive) {
                 // Pause SENDING heartbeats (but keep the GATT link + 0x1c subscription) for either:
                 //  - anti-theft (Layer 1): watch locked / off-wrist — the car loses presence so a
@@ -301,15 +305,24 @@ class VehicleSession(
                 // presence-gated closures (charge-port/windows/liftgate). A fresh one-shot's
                 // counter=0 would look stale mid-session. See CommandBus / docs.
                 if (primary && msgChar != null) drainCommandBus(g, msgChar, pNonce, vNonce)
+                // Non-fatal: a stalled beat (marginal RSSI, airtime contention) is tolerated so the
+                // session doesn't flap on a single miss. While our timed-out write is still pending,
+                // skip beats (a new write would only be rejected BUSY); cycle the link only if it
+                // stays stuck for HeartbeatWriteGate.STALL_MAX_MS or real failures keep coming.
+                when (hbGate.beforeBeat(SystemClock.elapsedRealtime(), inFlightState())) {
+                    HeartbeatWriteGate.Step.CYCLE -> {
+                        DebugLog.add("$label: heartbeat write stuck — cycling link")
+                        break
+                    }
+                    HeartbeatWriteGate.Step.SKIP -> { awaitHeartbeatPeriod(); continue }
+                    HeartbeatWriteGate.Step.WRITE -> Unit
+                }
                 val rssiByte = latestRssi.toByte()
                 val hb = ActiveCommandFrames.heartbeatFrame(sessionKeys, pNonce, vNonce, counter, rssiByte)
-                // Non-fatal: a stalled beat (marginal RSSI, airtime contention) is tolerated so the
-                // session doesn't flap on a single miss; force a reconnect only if beats stay stuck.
-                val hbOk = runCatching { writeChar(g, readChar, hb, hbWriteType, HB_WRITE_TIMEOUT_MS) }.isSuccess
-                if (hbOk) {
-                    hbFailures = 0
-                } else if (++hbFailures >= HB_MAX_FAILURES) {
-                    DebugLog.add("$label: $hbFailures heartbeats stalled — cycling link")
+                val hbStarted = SystemClock.elapsedRealtime()
+                val hbResult = writeHeartbeat(g, readChar, hb, hbWriteType)
+                if (hbGate.after(hbResult, hbStarted, SystemClock.elapsedRealtime())) {
+                    DebugLog.add("$label: heartbeats failing (${hbGate.failures} in a row, last $hbResult) — cycling link")
                     break
                 }
                 if (counter % HB_LOG_EVERY == 0) {
@@ -353,6 +366,13 @@ class VehicleSession(
     ) {
         while (true) {
             val cmd = CommandBus.poll() ?: break
+            // A timed-out earlier write still holds the one GATT write slot: wait for it (within
+            // the command's TTL) rather than have the command rejected BUSY.
+            if (!awaitInFlight(CommandBus.COMMAND_TTL_MS - (CommandBus.clock() - cmd.submittedAtMs))) {
+                DebugLog.add("$label: CMD ${cmd.label} not sent — an earlier write is still pending")
+                CommandBus.markSent(cmd, false)
+                continue
+            }
             val frame = ActiveCommandFrames.activeCommandFrame(
                 sharedSecret, pNonce, vNonce, commandCounter, cmd.code,
             )
@@ -372,7 +392,48 @@ class VehicleSession(
         withTimeoutOrNull(HEARTBEAT_PERIOD_MS) { linkDown.await() }
     }
 
+    /** The in-flight write's state for [HeartbeatWriteGate]; a completed one is cleared. */
+    private suspend fun inFlightState(): HeartbeatWriteGate.Pending {
+        val d = inFlight ?: return HeartbeatWriteGate.Pending.NONE
+        if (!d.isCompleted) return HeartbeatWriteGate.Pending.PENDING
+        inFlight = null
+        // Already complete, so await returns at once (false or an exception: the write failed).
+        return if (runCatching { d.await() }.getOrDefault(false)) HeartbeatWriteGate.Pending.DONE_OK
+        else HeartbeatWriteGate.Pending.DONE_FAILED
+    }
+
+    /** Wait up to [maxMs] for a pending write to finish. @return true if the write slot is free. */
+    private suspend fun awaitInFlight(maxMs: Long): Boolean {
+        val d = inFlight ?: return true
+        if (!d.isCompleted && maxMs > 0) withTimeoutOrNull(maxMs) { runCatching { d.await() } }
+        if (!d.isCompleted) return false
+        inFlight = null
+        return true
+    }
+
+    /** One heartbeat write; never throws for a GATT outcome (see [HeartbeatWriteGate.Result]). */
+    private suspend fun writeHeartbeat(
+        g: BluetoothGatt, char: BluetoothGattCharacteristic, value: ByteArray, writeType: Int,
+    ): HeartbeatWriteGate.Result {
+        val d = CompletableDeferred<Boolean>()
+        charWritten = d
+        val rc = g.writeCharacteristic(char, value, writeType)
+        if (rc == BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY) return HeartbeatWriteGate.Result.BUSY
+        if (rc != BluetoothStatusCodes.SUCCESS) return HeartbeatWriteGate.Result.FAILED
+        inFlight = d
+        val ok = try {
+            withTimeoutOrNull(HB_WRITE_TIMEOUT_MS) { d.await() } ?: return HeartbeatWriteGate.Result.TIMED_OUT
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false // link lost: the loop exits on sessionAlive
+        }
+        inFlight = null
+        return if (ok) HeartbeatWriteGate.Result.OK else HeartbeatWriteGate.Result.FAILED
+    }
+
     private fun reset() {
+        inFlight = null
         linkDown = CompletableDeferred()
         connected = CompletableDeferred()
         servicesReady = CompletableDeferred()
@@ -432,13 +493,16 @@ class VehicleSession(
         writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
         timeoutMs: Long = OP_MS,
     ) {
-        charWritten = CompletableDeferred()
+        val d = CompletableDeferred<Boolean>()
+        charWritten = d
         // Distinguish "the stack rejected the write" (in-process congestion, e.g.
         // WRITE_REQUEST_BUSY — a real signal) from "write accepted but no response"
         // (airtime starvation or remote silence). A rejected submit never calls back.
         val rc = g.writeCharacteristic(char, value, writeType)
         if (rc != BluetoothStatusCodes.SUCCESS) error("write ${tag(char.uuid)} rejected rc=${rcName(rc)}")
-        if (!withTimeout(timeoutMs) { charWritten.await() }) error("write ${tag(char.uuid)} failed")
+        inFlight = d // until it completes; a timed-out write keeps the slot (see awaitInFlight)
+        if (!withTimeout(timeoutMs) { d.await() }) { inFlight = null; error("write ${tag(char.uuid)} failed") }
+        inFlight = null
     }
 
     /** Decode the common BluetoothStatusCodes returned by GATT submit calls. */
@@ -603,10 +667,10 @@ class VehicleSession(
         private const val HEARTBEAT_PERIOD_MS = 300L
         // A single with-response heartbeat write stalling must NOT tear down the session (that was
         // the connect→up→5 s-timeout→reconnect flap). Detect a stalled beat fast (1.5 s ≈ 5 missed
-        // beats, vs the healthy tens-of-ms), tolerate it, and only cycle the link if beats stay
-        // stuck for HB_MAX_FAILURES in a row — a genuine disconnect already exits via sessionAlive.
+        // beats, vs the healthy tens-of-ms), then keep waiting on that same write instead of issuing
+        // new ones, and only cycle the link if it stays stuck (HeartbeatWriteGate) — a genuine
+        // disconnect already exits via sessionAlive.
         private const val HB_WRITE_TIMEOUT_MS = 1_500L
-        private const val HB_MAX_FAILURES = 5
         private const val HB_LOG_EVERY = 10
         /** Re-read RSSI every Nth heartbeat (~every 1.2 s at 300 ms cadence). */
         private const val RSSI_EVERY = 4
