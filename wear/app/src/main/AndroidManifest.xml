@@ -21,6 +21,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Double-buzz when a tapped command did not reach the vehicle (CommandFeedback). -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Re-arm an armed key after a watch reboot (BootReceiver). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".WearvianApp"
@@ -68,6 +70,16 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Re-arm the key after a watch reboot, so it isn't silently off while the tile shows it
+             armed. Gated on keyArmed inside the receiver; comes up locked until the first unlock. -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

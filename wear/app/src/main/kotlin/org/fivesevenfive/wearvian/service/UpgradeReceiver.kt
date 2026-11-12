@@ -15,8 +15,8 @@ import org.fivesevenfive.wearvian.util.DebugLog
  * MY_PACKAGE_REPLACED is one of the documented exemptions to the background FGS-start restriction.
  * If not enrolled, the service self-stops.
  *
- * We intentionally do NOT listen for BOOT_COMPLETED — after a reboot the key re-arms when the app is
- * next launched (SetupViewModel restores presence from keyArmed).
+ * A reboot is handled separately by [BootReceiver] (BOOT_COMPLETED, also gated on keyArmed), which
+ * starts the key normally — active, or locked until the first unlock — not resuming passive idle.
  */
 class UpgradeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
