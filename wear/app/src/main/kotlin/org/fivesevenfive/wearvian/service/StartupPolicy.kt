@@ -32,8 +32,9 @@ sealed interface StartupDecision {
 
     /**
      * Watch is locked (off wrist) at startup — keep BLE down until unlock. [wasPassive] records
-     * whether unlock should restore passive (true only when this start would otherwise have restored
-     * passive idle), so the anti-theft path doesn't snap a parked-nearby key back to active on unlock.
+     * whether unlock should restore passive (true when this start would otherwise have restored
+     * passive idle, or was the manual "go passive" button), so the anti-theft path doesn't snap a
+     * parked-nearby or manually-passive key back to active on unlock.
      */
     data class Locked(val wasPassive: Boolean) : StartupDecision
 }
@@ -59,7 +60,7 @@ object StartupPolicy {
         // passiveIdle is only meaningful on an upgrade restore; any other trigger ignores it.
         val restorePassive = trigger == StartTrigger.UPGRADE_RESTORE && passiveIdle
         return when {
-            locked -> StartupDecision.Locked(wasPassive = restorePassive)
+            locked -> StartupDecision.Locked(wasPassive = restorePassive || trigger == StartTrigger.GO_PASSIVE)
             trigger == StartTrigger.GO_PASSIVE -> StartupDecision.ManualPassive
             restorePassive -> StartupDecision.Passive(restoreSeenDeparture = seenDeparture)
             else -> StartupDecision.Active

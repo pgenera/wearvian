@@ -88,6 +88,34 @@ class ReconnectPolicyTest {
     }
 }
 
+class ReconnectStableSessionTest {
+    @Test
+    fun aSessionDroppedRightAfterAuthenticatingDoesNotResetTheBackoff() {
+        val p = ReconnectPolicy(primary = true, random = Random(5))
+        repeat(ReconnectPolicy.QUICK_CONNECTED_RETRIES + 3) {
+            p.record(ReconnectPolicy.Outcome.AUTHENTICATED, authenticatedForMs = 500L)
+        }
+        assertTrue("backs off instead of retrying every 1.5 s forever", p.nextDelayMs() > 3_000L)
+        assertFalse("still counts as connected: no autoConnect fallback", p.useAutoConnect)
+    }
+
+    @Test
+    fun aSessionThatStayedUpResetsTheBackoff() {
+        val p = ReconnectPolicy(primary = true, random = Random(5))
+        repeat(8) { p.record(ReconnectPolicy.Outcome.NO_CONNECT) }
+        p.record(ReconnectPolicy.Outcome.AUTHENTICATED, authenticatedForMs = ReconnectPolicy.MIN_STABLE_SESSION_MS)
+        assertEquals(0, p.failures)
+        assertEquals(ReconnectPolicy.BASE_MS, p.nextDelayMs())
+    }
+
+    @Test
+    fun aShortAuthenticatedSessionStillRetriesQuicklyAtFirst() {
+        val p = ReconnectPolicy(primary = true, random = Random(5))
+        p.record(ReconnectPolicy.Outcome.AUTHENTICATED, authenticatedForMs = 500L)
+        assertTrue(p.nextDelayMs() <= 3_000L)
+    }
+}
+
 class ReconnectHurryTest {
     @Test
     fun hurryCutsAWaitShort() = kotlinx.coroutines.runBlocking {

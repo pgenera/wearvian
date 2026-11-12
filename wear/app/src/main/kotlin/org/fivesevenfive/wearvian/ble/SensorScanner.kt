@@ -47,9 +47,12 @@ class SensorScanner(context: Context) {
             }
 
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val prev = hits[result.device.address]
-                if (prev == null || result.rssi > prev.rssi) {
-                    hits[result.device.address] = Hit(result.device.name, result.device.address, result.rssi)
+                // Scan-callback thread; read on the coroutine thread below → guarded.
+                synchronized(hits) {
+                    val prev = hits[result.device.address]
+                    if (prev == null || result.rssi > prev.rssi) {
+                        hits[result.device.address] = Hit(result.device.name, result.device.address, result.rssi)
+                    }
                 }
             }
         }
@@ -67,6 +70,6 @@ class SensorScanner(context: Context) {
             runCatching { scanner.stopScan(cb) }
         }
         if (failCode != null) throw ScanFailedException(failCode)
-        return hits.values.sortedByDescending { it.rssi }
+        return synchronized(hits) { hits.values.sortedByDescending { it.rssi } }
     }
 }

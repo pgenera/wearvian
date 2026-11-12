@@ -102,9 +102,10 @@ class StartupPolicyTest {
 
     @Test
     fun lockedWinsOverGoPassive() {
-        // Locked is checked first, so a manual go-passive while locked still just stays locked.
+        // Locked is checked first, so a manual go-passive while locked stays locked — but remembers
+        // the request (reliability audit R10), so the unlock comes up passive rather than active.
         assertEquals(
-            StartupDecision.Locked(wasPassive = false),
+            StartupDecision.Locked(wasPassive = true),
             resolve(StartTrigger.GO_PASSIVE, locked = true),
         )
     }

@@ -66,16 +66,19 @@ class VehicleSession(
      */
     private val primary: Boolean,
 ) {
-    private var connected = CompletableDeferred<Boolean>()
-    private var servicesReady = CompletableDeferred<Boolean>()
-    private var descriptorWritten = CompletableDeferred<Boolean>()
-    private var charWritten = CompletableDeferred<Boolean>()
+    // Reassigned on the coroutine thread, read/completed on the GATT binder thread → volatile.
+    @Volatile private var connected = CompletableDeferred<Boolean>()
+    @Volatile private var servicesReady = CompletableDeferred<Boolean>()
+    @Volatile private var descriptorWritten = CompletableDeferred<Boolean>()
+    @Volatile private var charWritten = CompletableDeferred<Boolean>()
     /** The characteristic write still in flight after its wait timed out (null: none). Android
      *  allows one write at a time, so the next write must wait for it; see [HeartbeatWriteGate]. */
     private var inFlight: CompletableDeferred<Boolean>? = null
     // Written by the session coroutine, read/completed by the GATT callback thread → concurrent.
     private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
     @Volatile private var sessionAlive = false
+    /** How long the last [runOnce]'s session stayed authenticated (0 if it never did). */
+    private var lastAuthenticatedForMs = 0L
     /** Completed by the GATT callback when this connection drops, so a heartbeat-period wait (the
      *  paused loop holds no wake lock, and its timer stalls while the CPU sleeps) ends at once. */
     @Volatile private var linkDown = CompletableDeferred<Unit>()
@@ -132,7 +135,7 @@ class VehicleSession(
                 DebugLog.add("$label: session ended — ${e.message}")
                 ReconnectPolicy.Outcome.NO_CONNECT
             }
-            policy.record(outcome)
+            policy.record(outcome, lastAuthenticatedForMs)
             // A command or a watch-key burst means the wearer is at the car: skip the rest of the wait.
             if (scope.isActive && ReconnectHurry.delayUnlessHurried(policy.nextDelayMs())) {
                 DebugLog.add("$label: backoff cut short — reconnecting now")
@@ -151,6 +154,8 @@ class VehicleSession(
         reset()
         var established = false
         var authenticated = false
+        var authenticatedAtMs = 0L
+        lastAuthenticatedForMs = 0L
         PresenceStatus.set(label, PresenceStatus.Link.CONNECTING)
         DebugLog.ble("·", label, "connecting ${device.address}${if (autoConnect) " (autoConnect)" else ""}")
         // connectGatt returns null (or throws) while Bluetooth is turning off.
@@ -221,6 +226,7 @@ class VehicleSession(
             this.vNonce = vNonce
             PresenceStatus.set(label, PresenceStatus.Link.UP)
             authenticated = true
+            authenticatedAtMs = SystemClock.elapsedRealtime()
             DebugLog.add("$label: session up (vNonce ${vNonce.toHexString().take(8)}…)")
 
             // Now subscribe 0x20 (the ranging channel) and kick it off with
@@ -341,6 +347,7 @@ class VehicleSession(
             DebugLog.add("$label: session ended — ${e.message}")
         } finally {
             sessionAlive = false
+            if (authenticated) lastAuthenticatedForMs = SystemClock.elapsedRealtime() - authenticatedAtMs
             if (primary) CommandBus.clear()
             PresenceStatus.set(label, PresenceStatus.Link.DOWN)
             runCatching { g.disconnect() }

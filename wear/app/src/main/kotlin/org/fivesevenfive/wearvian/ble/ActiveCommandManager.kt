@@ -64,10 +64,11 @@ class ActiveCommandManager(
     private val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
 
-    private var connected = CompletableDeferred<Boolean>()
-    private var servicesReady = CompletableDeferred<Boolean>()
-    private var descriptorWritten = CompletableDeferred<Boolean>()
-    private var charWritten = CompletableDeferred<Boolean>()
+    // Reassigned on the coroutine thread, read/completed on the GATT binder thread → volatile.
+    @Volatile private var connected = CompletableDeferred<Boolean>()
+    @Volatile private var servicesReady = CompletableDeferred<Boolean>()
+    @Volatile private var descriptorWritten = CompletableDeferred<Boolean>()
+    @Volatile private var charWritten = CompletableDeferred<Boolean>()
     // Written by the command coroutine, read/completed by the GATT callback thread → concurrent.
     private val notifications = ConcurrentHashMap<UUID, CompletableDeferred<ByteArray>>()
 

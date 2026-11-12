@@ -10,7 +10,9 @@ import kotlin.random.Random
  * unit-testable.
  *
  * - Backoff grows exponentially (with jitter) while attempts never connect, and resets once a
- *   session AUTHENTICATES.
+ *   session AUTHENTICATES and stays up for [MIN_STABLE_SESSION_MS]. One dropped sooner counts
+ *   like a connected-but-unauthenticated attempt, so a link the car drops at once doesn't retry
+ *   every 1.5 s forever.
  * - A CONNECTED outcome (connected, handshake failed) proves the module is awake and in range —
  *   typically the edge of range on the walk back to the car. Earlier NO_CONNECT failures (the car
  *   was away) then stop counting, and the first [QUICK_CONNECTED_RETRIES] consecutive connected-
@@ -48,11 +50,14 @@ class ReconnectPolicy(
     var connectedFailures = 0
         private set
 
-    fun record(outcome: Outcome) {
-        when (outcome) {
-            Outcome.NO_CONNECT -> { connectFailures++; failures++; connectedFailures = 0 }
-            Outcome.CONNECTED -> { connectFailures = 0; connectedFailures++; failures = connectedFailures }
-            Outcome.AUTHENTICATED -> { connectFailures = 0; failures = 0; connectedFailures = 0 }
+    /** Record an attempt's [outcome]; [authenticatedForMs] is how long an AUTHENTICATED one stayed up. */
+    fun record(outcome: Outcome, authenticatedForMs: Long = Long.MAX_VALUE) {
+        val stable = outcome == Outcome.AUTHENTICATED && authenticatedForMs >= MIN_STABLE_SESSION_MS
+        when {
+            outcome == Outcome.NO_CONNECT -> { connectFailures++; failures++; connectedFailures = 0 }
+            stable -> { connectFailures = 0; failures = 0; connectedFailures = 0 }
+            // CONNECTED, or authenticated but dropped almost at once: the module is awake and in range.
+            else -> { connectFailures = 0; connectedFailures++; failures = connectedFailures }
         }
     }
 
@@ -77,6 +82,8 @@ class ReconnectPolicy(
         const val SENSOR_AUTOCONNECT_AFTER = 3
         /** Connected-but-unauthenticated attempts retried at the base delay before backing off. */
         const val QUICK_CONNECTED_RETRIES = 4
+        /** An authenticated session shorter than this doesn't reset the backoff. */
+        const val MIN_STABLE_SESSION_MS = 10_000L
         private const val MAX_SHIFT = 10
         private const val JITTER = 0.25
     }

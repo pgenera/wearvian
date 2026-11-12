@@ -514,6 +514,9 @@ class PresenceService : Service() {
             return START_STICKY
         }
         _running.value = true
+        // In-process wake for callers in this process (a tile unlock while parked nearby), so they
+        // don't need a foreground-service start, which can be refused from the background.
+        wakeHook = { scope.launch { exitPassive() } }
         // Anti-theft: don't bring BLE up while the watch is locked (off wrist); monitorLock
         // restores it on unlock. Otherwise go straight to passive (manual button) or active.
         // Transitions launch onto `scope` (single-thread lane) so they serialize with the monitors.
@@ -1343,6 +1346,7 @@ class PresenceService : Service() {
         // notification below (which would leave it lingering — the "Off didn't clear it" bug).
         stopping = true
         _running.value = false
+        wakeHook = null
         _passive.value = false
         _parkedNearby.value = false
         runCatching { unregisterReceiver(btStateReceiver) }
@@ -1455,6 +1459,19 @@ class PresenceService : Service() {
 
         fun start(context: Context): Boolean =
             startPresence(context, Intent(context, PresenceService::class.java))
+
+        /** Set while a service instance runs in this process: wakes it out of passive in-process. */
+        @Volatile private var wakeHook: (() -> Unit)? = null
+
+        /**
+         * Wake the key to active (no-op if already active). Uses the running service's in-process
+         * hook when there is one; [start] only when it isn't running, since a foreground-service start
+         * can be refused while the app is in the background.
+         */
+        fun wakeToActive(context: Context): Boolean {
+            wakeHook?.let { it(); return true }
+            return start(context)
+        }
 
         /** Re-arm after an app upgrade, resuming the prior mode (active, or persisted passive idle). */
         fun startAfterUpgrade(context: Context): Boolean =
