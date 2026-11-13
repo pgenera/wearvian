@@ -2,6 +2,8 @@ package org.fivesevenfive.wearvian.service
 
 import org.fivesevenfive.wearvian.service.LockSyncPolicy.Action
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LockSyncPolicyTest {
@@ -23,5 +25,11 @@ class LockSyncPolicyTest {
     fun unlockRestoresTheRememberedMode() {
         assertEquals(Action.UNLOCK_TO_PASSIVE, LockSyncPolicy.decide(keyguardLocked = false, believedLocked = true, wasPassive = true))
         assertEquals(Action.UNLOCK_TO_ACTIVE, LockSyncPolicy.decide(keyguardLocked = false, believedLocked = true, wasPassive = false))
+    }
+
+    @Test
+    fun aLockedWatchIgnoresAManualGoPassive() {
+        assertFalse(LockSyncPolicy.acceptManualPassive(keyguardLocked = true))
+        assertTrue(LockSyncPolicy.acceptManualPassive(keyguardLocked = false))
     }
 }

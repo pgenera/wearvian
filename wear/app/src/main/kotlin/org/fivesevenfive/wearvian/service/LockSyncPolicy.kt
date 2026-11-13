@@ -18,6 +18,14 @@ object LockSyncPolicy {
         UNLOCK_TO_ACTIVE,
     }
 
+    /**
+     * A manual "go passive" request (the button) reaching an already-running service. While the
+     * watch is locked the key is unavailable and stays off (all BLE torn down): the request is
+     * ignored — no passive scan, autoConnect or session — and not remembered for the unlock.
+     * [keyguardLocked] must be a fresh keyguard read (after [decide]'s transition has run).
+     */
+    fun acceptManualPassive(keyguardLocked: Boolean): Boolean = !keyguardLocked
+
     fun decide(keyguardLocked: Boolean, believedLocked: Boolean, wasPassive: Boolean): Action = when {
         keyguardLocked == believedLocked -> Action.NONE
         keyguardLocked -> Action.LOCK

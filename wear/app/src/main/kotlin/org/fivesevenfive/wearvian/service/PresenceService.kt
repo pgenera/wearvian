@@ -507,7 +507,7 @@ class PresenceService : Service() {
             // Transitions run on `scope` (the single-thread lane) so they can't interleave with the
             // monitors — onStartCommand itself is on the main thread, so launch onto scope.
             when {
-                goPassiveNow -> { DebugLog.add("presence: manual passive (already running)"); scope.launch { enterPassive() } }
+                goPassiveNow -> { DebugLog.add("presence: manual passive (already running)"); scope.launch { manualPassive() } }
                 passive -> { DebugLog.add("presence: start while passive → wake"); scope.launch { exitPassive() } }
                 else -> DebugLog.add("presence: already running; ignoring duplicate start")
             }
@@ -531,7 +531,7 @@ class PresenceService : Service() {
         locked = keyguard?.isDeviceLocked == true
         when (val decision = StartupPolicy.resolve(trigger, locked, settings.passiveIdle, settings.passiveSeenDeparture)) {
             is StartupDecision.Locked -> { if (decision.wasPassive) wasPassive = true; updateNotification(LOCKED_TEXT) }
-            StartupDecision.ManualPassive -> { DebugLog.add("presence: manual passive requested"); scope.launch { enterPassive() } }
+            StartupDecision.ManualPassive -> { DebugLog.add("presence: manual passive requested"); scope.launch { manualPassive() } }
             is StartupDecision.Passive -> {
                 DebugLog.add("presence: upgrade — resuming passive idle (seenDeparture=${decision.restoreSeenDeparture})")
                 scope.launch { enterPassive(restoreSeenDeparture = decision.restoreSeenDeparture) }
@@ -1011,6 +1011,20 @@ class PresenceService : Service() {
      */
     private suspend fun enterPassive(restoreSeenDeparture: Boolean? = null): Boolean =
         transition.withLock { enterPassiveLocked(restoreSeenDeparture) }
+
+    /**
+     * The manual "go passive" button. Reads the keyguard fresh ([syncLockStateLocked]) first: on a
+     * locked watch the key stays off until the unlock, so the request is ignored
+     * ([LockSyncPolicy.acceptManualPassive]).
+     */
+    private suspend fun manualPassive(): Boolean = transition.withLock {
+        syncLockStateLocked()
+        if (!LockSyncPolicy.acceptManualPassive(keyguardLocked())) {
+            DebugLog.add("presence: manual passive ignored — watch locked, key stays off")
+            return@withLock false
+        }
+        enterPassiveLocked()
+    }
 
     /** [enterPassive] body; caller holds [transition]. */
     private suspend fun enterPassiveLocked(restoreSeenDeparture: Boolean? = null): Boolean {
