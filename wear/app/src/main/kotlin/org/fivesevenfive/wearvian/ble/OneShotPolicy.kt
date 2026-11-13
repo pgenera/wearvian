@@ -13,12 +13,15 @@ object OneShotPolicy {
     /**
      * Tap → command-frame write. Deliberately generous ("sometimes tile taps take a while"): a first
      * connect to a dormant car, which advertises slowly, can legitimately take up to Android's own
-     * ~30 s direct-connect limit. 28 s keeps every tap that would have succeeded on its first attempt
-     * before this limit existed, while staying just under the stack's timeout so that our deadline,
-     * not the stack's disconnect, decides the outcome. What it removes is only the second ~30 s
-     * attempt after a slow failure and the unbounded late firing (a tap landing a minute later).
+     * ~30 s direct-connect limit, and the handshake after the connect adds 1–2 s. 35 s sits above
+     * both, so a connect that lands just before the stack gives up still has time to authenticate
+     * and send: every tap that would have succeeded on its first attempt before this limit existed
+     * still does. A hopeless connect is ended by the stack's own ~30 s failure (a slow failure, so
+     * NOT_REACHABLE and no retry); this deadline only bounds what is left. What it removes is the
+     * second ~30 s attempt after a slow failure and the unbounded late firing: the worst case is a
+     * command about 35 s after the tap instead of about a minute.
      */
-    const val DEADLINE_MS = 28_000L
+    const val DEADLINE_MS = 35_000L
 
     /**
      * A connect that fails faster than this (the transient GATT status-133 kind) is worth one quick

@@ -162,8 +162,9 @@ class ActiveCommandManager(
      * behaviour.
      *
      * The connect waits until [connectUntil] (elapsedRealtime), re-read every [CONNECT_RECHECK_MS]
-     * so a pre-warm can be extended by a tap that queues behind it. A tap's is its deadline, always
-     * under the stack's own ~30 s direct-connect limit, so our timeout decides the outcome. A
+     * so a pre-warm can be extended by a tap that queues behind it. A tap's is its deadline
+     * ([OneShotPolicy.DEADLINE_MS]), which is above the stack's own ~30 s direct-connect limit: the
+     * stack's failure normally ends a hopeless connect first, and the deadline bounds the rest. A
      * connect the stack fails slowly is [CommandFailure.NOT_REACHABLE] (not worth a retry); one it
      * fails quickly is retryable (see [OneShotPolicy.connectFailure]).
      */

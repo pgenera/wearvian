@@ -12,9 +12,11 @@ class OneShotPolicyTest {
     private val deadline = OneShotPolicy.deadline(tap)
 
     @Test
-    fun deadlineIsGenerousButUnderTheStacksConnectLimit() {
-        assertEquals(tap + 28_000L, deadline)
-        assertTrue("our timeout must decide, not the stack's ~30 s", DEADLINE_MS < 30_000L)
+    fun deadlineLeavesRoomToAuthenticateAfterALateConnect() {
+        assertEquals(tap + 35_000L, deadline)
+        // A connect landing just before Android's ~30 s direct-connect give-up, plus a 1–2 s
+        // handshake, must still be inside the deadline.
+        assertFalse(OneShotPolicy.expired(deadline, tap + 30_000L + 2_000L))
     }
 
     @Test
@@ -31,6 +33,15 @@ class OneShotPolicyTest {
         val f = OneShotPolicy.connectFailure(startedMs = tap, failedMs = tap + 27_000L)
         assertEquals(CommandFailure.NOT_REACHABLE, f)
         assertFalse(OneShotPolicy.shouldRetry(f, deadline, tap + 27_000L, pauseMs = 500L))
+    }
+
+    @Test
+    fun stackGiveUpAtThirtySecondsIsSlowAndNotRetriedDespiteTimeLeft() {
+        // ~5 s of deadline remain, but the failure was slow: the car wasn't reachable for 30 s.
+        val f = OneShotPolicy.connectFailure(startedMs = tap, failedMs = tap + 30_000L)
+        assertEquals(CommandFailure.NOT_REACHABLE, f)
+        assertTrue(OneShotPolicy.remaining(deadline, tap + 30_000L) >= OneShotPolicy.MIN_RETRY_WINDOW_MS)
+        assertFalse(OneShotPolicy.shouldRetry(f, deadline, tap + 30_000L, pauseMs = 500L))
     }
 
     @Test
