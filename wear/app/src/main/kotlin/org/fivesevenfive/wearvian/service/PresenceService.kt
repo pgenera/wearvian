@@ -184,6 +184,14 @@ class PresenceService : Service() {
     @Volatile private var wasPassive = false
 
     /**
+     * Passive sub-state ([seenDeparture]) taken at lock with [wasPassive], so the unlock restores
+     * "parked nearby" rather than "departed" (which would read the first sighting of a car that
+     * never left as a return and wake the key). Null: not known, recompute on entry. If the car did
+     * leave while locked, the parked-nearby arm window ([armProximityScan]) confirms the departure.
+     */
+    @Volatile private var lockedSeenDeparture: Boolean? = null
+
+    /**
      * True when this key was registered with Rivian as a WATCH (keyDeviceSubtype="WATCH") — the car
      * does NO passive lock/unlock for it, so proximity presence on approach/departure is wasted. The
      * gating signal for the watch-mode presence lifecycle (presence only around the drive window).
@@ -531,7 +539,14 @@ class PresenceService : Service() {
         }
         locked = keyguard?.isDeviceLocked == true
         when (val decision = StartupPolicy.resolve(trigger, locked, settings.passiveIdle, settings.passiveSeenDeparture)) {
-            is StartupDecision.Locked -> { if (decision.wasPassive) wasPassive = true; updateNotification(LOCKED_TEXT) }
+            is StartupDecision.Locked -> {
+                if (decision.wasPassive) {
+                    wasPassive = true
+                    // An upgrade restore resumes the persisted sub-state; a manual go-passive has none.
+                    lockedSeenDeparture = if (trigger == StartTrigger.UPGRADE_RESTORE) settings.passiveSeenDeparture else null
+                }
+                updateNotification(LOCKED_TEXT)
+            }
             StartupDecision.ManualPassive -> { DebugLog.add("presence: manual passive requested"); scope.launch { manualPassive() } }
             is StartupDecision.Passive -> {
                 DebugLog.add("presence: upgrade — resuming passive idle (seenDeparture=${decision.restoreSeenDeparture})")
@@ -692,6 +707,7 @@ class PresenceService : Service() {
             LockSyncPolicy.Action.LOCK -> withContext(NonCancellable) {
                 DebugLog.add("presence: watch locked — tearing down BLE (anti-theft)")
                 wasPassive = passive // remember the mode so unlock restores it, not a forced active probe
+                lockedSeenDeparture = if (passive) seenDeparture else null
                 if (passive) { ProximityWake.stopScan(this@PresenceService, proximityCallback); passiveLink.disarm(); departJob?.cancel(); cancelScanRetry(); proximity.reset(); passive = false; _passive.value = false; _parkedNearby.value = false }
                 driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                 bringUpJob?.cancel() // nothing to bring up while locked
@@ -710,7 +726,7 @@ class PresenceService : Service() {
                 // scan, no wake lock. If the car arrived while off-wrist, FIRST_MATCH promotes us to
                 // active within seconds. Avoids re-paying a full ~45s active probe on every unlock.
                 DebugLog.add("presence: watch unlocked — restoring passive idle")
-                enterPassiveLocked() // sets its own passive notification text (parked-nearby vs waiting)
+                enterPassiveLocked(restoreSeenDeparture = lockedSeenDeparture) // sets its own passive notification text
             }
             LockSyncPolicy.Action.UNLOCK_TO_ACTIVE -> {
                 WearvianApp.prefetchSecret(this)
