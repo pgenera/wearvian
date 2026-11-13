@@ -30,6 +30,26 @@ object CommandBus {
     /** Max age of a queued command before [poll] discards it as stale instead of firing late. */
     const val COMMAND_TTL_MS = 5_000L
 
+    /**
+     * Max age for a command submitted while no PRIMARY session was authenticated (e.g. a tap just
+     * after a passive wake, while the session is still reconnecting): it may wait this long for the
+     * session to come up, and still never fires after it. See [ttlMs].
+     */
+    const val AWAITING_SESSION_TTL_MS = 20_000L
+
+    /** The TTL for a command, by whether a PRIMARY session was authenticated when it was submitted. */
+    fun ttlMs(sessionUpAtSubmit: Boolean): Long =
+        if (sessionUpAtSubmit) COMMAND_TTL_MS else AWAITING_SESSION_TTL_MS
+
+    /** True while the PRIMARY session is authenticated; reported by that session ([primaryUp]). */
+    @Volatile var primaryAuthenticated = false
+        private set
+
+    /** The PRIMARY session authenticated ([up] = true) or ended (false). */
+    fun primaryUp(up: Boolean) {
+        primaryAuthenticated = up
+    }
+
     /** Monotonic clock in ms; injectable so JVM unit tests can advance time without Robolectric. */
     internal var clock: () -> Long = { SystemClock.elapsedRealtime() }
 
@@ -43,6 +63,8 @@ object CommandBus {
         val code: Int,
         val label: String,
         val submittedAtMs: Long = clock(),
+        /** How long it may wait to be sent ([ttlMs]); fixed at submit. */
+        val ttlMs: Long = COMMAND_TTL_MS,
     ) {
         // Not part of equals/hashCode (body properties): identity of the queued item, not its value.
         private val state = AtomicInteger(PENDING)
@@ -85,7 +107,7 @@ object CommandBus {
         DebugLog.add("cmdbus: queued $label (0x%04x)".format(code))
         val now = clock()
         lastSubmitMs = now
-        val cmd = Command(code, label, now)
+        val cmd = Command(code, label, now, ttlMs(primaryAuthenticated))
         queue.trySend(cmd)
         ReconnectHurry.hurry() // a session waiting out a backoff should come up for this now
         return cmd
@@ -98,12 +120,13 @@ object CommandBus {
 
     /**
      * Wait for [cmd]'s outcome: true once its frame was written on the live session, false if it
-     * failed, went stale, was cleared, or no drainer picked it up within [pickupMs]. A command that
-     * was picked up just before the deadline gets [writeMs] more to finish its write.
+     * failed, went stale, was cleared, or no drainer picked it up within [pickupMs] (its own TTL plus
+     * a grace). A command that was picked up just before the deadline gets [writeMs] more to finish
+     * its write.
      */
     suspend fun awaitOutcome(
         cmd: Command,
-        pickupMs: Long = COMMAND_TTL_MS + PICKUP_GRACE_MS,
+        pickupMs: Long = cmd.ttlMs + PICKUP_GRACE_MS,
         writeMs: Long = WRITE_WAIT_MS,
     ): Boolean {
         withTimeoutOrNull(pickupMs) { cmd.outcome.await() }?.let { return it }
@@ -116,14 +139,14 @@ object CommandBus {
 
     /**
      * Non-blocking dequeue for the PRIMARY session loop; null when nothing fresh is pending.
-     * Commands older than [COMMAND_TTL_MS] are discarded so a tap during an outage/pause never fires late.
+     * Commands older than their TTL ([ttlMs]) are discarded so a tap during an outage/pause never fires late.
      */
     fun poll(): Command? {
         val now = clock()
         while (true) {
             val cmd = queue.tryReceive().getOrNull() ?: return null
             val ageMs = now - cmd.submittedAtMs
-            if (ageMs > COMMAND_TTL_MS) {
+            if (ageMs > cmd.ttlMs) {
                 cmd.expire()
                 DebugLog.add("cmdbus: dropped stale ${cmd.label} (age=${ageMs}ms)")
                 continue
@@ -133,7 +156,10 @@ object CommandBus {
         }
     }
 
-    /** Discard all queued commands (called when the PRIMARY session tears down). */
+    /**
+     * Discard all queued commands (called when the PRIMARY session tears down). A command waiting
+     * for a session is dropped too, as before: the next session is not guaranteed to come up.
+     */
     fun clear() {
         var dropped = 0
         while (true) {

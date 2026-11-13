@@ -21,11 +21,13 @@ class CommandBusTest {
         nowMs = 1_000L
         CommandBus.clock = { nowMs }
         CommandBus.clear()
+        CommandBus.primaryUp(true) // most tests: a live session is up
     }
 
     @After
     fun tearDown() {
         CommandBus.clear()
+        CommandBus.primaryUp(false)
         CommandBus.clock = { SystemClock.elapsedRealtime() }
     }
 
@@ -139,5 +141,47 @@ class CommandBusTest {
         CommandBus.noteManual()
         assertEquals(42_000L, CommandBus.lastSubmitMs)
         assertNull("nothing queued for the session to fire", CommandBus.poll())
+    }
+
+    @Test
+    fun aTapWhileTheSessionIsDownWaitsLongerButNeverPastTheBound() {
+        CommandBus.primaryUp(false)
+        val cmd = CommandBus.submit(0x0101, "UNLOCK")
+        assertEquals(CommandBus.AWAITING_SESSION_TTL_MS, cmd.ttlMs)
+        nowMs += 8_000L // session reconnecting + authenticating took 8 s
+        CommandBus.primaryUp(true)
+        assertEquals("still sent after 8 s", cmd, CommandBus.poll())
+    }
+
+    @Test
+    fun aTapWaitingForTheSessionExpiresAtTheLongerBound() {
+        CommandBus.primaryUp(false)
+        CommandBus.submit(0x0101, "UNLOCK")
+        nowMs += CommandBus.AWAITING_SESSION_TTL_MS + 1
+        assertNull("never fires after the bound", CommandBus.poll())
+    }
+
+    @Test
+    fun aTapWithTheSessionUpKeepsTheShortTtl() {
+        val cmd = CommandBus.submit(0x0101, "UNLOCK")
+        assertEquals(CommandBus.COMMAND_TTL_MS, cmd.ttlMs)
+        nowMs += CommandBus.COMMAND_TTL_MS + 1
+        assertNull(CommandBus.poll())
+    }
+
+    @Test
+    fun ttlRule() {
+        assertEquals(5_000L, CommandBus.ttlMs(sessionUpAtSubmit = true))
+        assertEquals(20_000L, CommandBus.ttlMs(sessionUpAtSubmit = false))
+    }
+
+    @Test
+    fun theResultWaitCoversTheLongerTtl() = runBlocking {
+        CommandBus.primaryUp(false)
+        val cmd = CommandBus.submit(0x0101, "UNLOCK")
+        // Nothing drains it: the waiter must give up within ttl + grace (fake clock is irrelevant
+        // to awaitOutcome, so use tiny explicit bounds and check the default instead).
+        assertFalse(CommandBus.awaitOutcome(cmd, pickupMs = 10L, writeMs = 10L))
+        assertEquals(CommandBus.AWAITING_SESSION_TTL_MS, cmd.ttlMs)
     }
 }

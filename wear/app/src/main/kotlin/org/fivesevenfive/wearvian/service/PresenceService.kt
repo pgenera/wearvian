@@ -579,6 +579,9 @@ class PresenceService : Service() {
         val job = loopJob
         loopJob = null
         job?.cancelAndJoin()
+        // No session will drain them now (passive / locked / Bluetooth off / rebuild).
+        CommandBus.primaryUp(false)
+        CommandBus.clear()
     }
 
     private fun acquireWakeLock() {

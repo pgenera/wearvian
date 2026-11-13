@@ -224,6 +224,7 @@ class VehicleSession(
             // Publish the nonces so the GATT callback can decrypt inbound 0x20 status/ack frames.
             this.pNonce = pNonce
             this.vNonce = vNonce
+            if (primary) CommandBus.primaryUp(true)
             PresenceStatus.set(label, PresenceStatus.Link.UP)
             authenticated = true
             authenticatedAtMs = SystemClock.elapsedRealtime()
@@ -348,7 +349,10 @@ class VehicleSession(
         } finally {
             sessionAlive = false
             if (authenticated) lastAuthenticatedForMs = SystemClock.elapsedRealtime() - authenticatedAtMs
-            if (primary) CommandBus.clear()
+            // A live session ending drops what was queued for it. An attempt that never
+            // authenticated keeps the queue: a tap waiting for the session (CommandBus TTL) may
+            // still ride the next attempt, and expires by its own TTL otherwise.
+            if (primary && authenticated) { CommandBus.primaryUp(false); CommandBus.clear() }
             PresenceStatus.set(label, PresenceStatus.Link.DOWN)
             runCatching { g.disconnect() }
             runCatching { g.close() }
@@ -375,7 +379,7 @@ class VehicleSession(
             val cmd = CommandBus.poll() ?: break
             // A timed-out earlier write still holds the one GATT write slot: wait for it (within
             // the command's TTL) rather than have the command rejected BUSY.
-            if (!awaitInFlight(CommandBus.COMMAND_TTL_MS - (CommandBus.clock() - cmd.submittedAtMs))) {
+            if (!awaitInFlight(cmd.ttlMs - (CommandBus.clock() - cmd.submittedAtMs))) {
                 DebugLog.add("$label: CMD ${cmd.label} not sent — an earlier write is still pending")
                 CommandBus.markSent(cmd, false)
                 continue
