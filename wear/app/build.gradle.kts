@@ -156,7 +156,10 @@ dependencies {
     implementation("androidx.wear:wear:1.3.0")
 
     // Wear OS Tile: quick lock/unlock/key without opening the app.
-    implementation("androidx.wear.tiles:tiles:1.4.0")
+    // tiles 1.5.0: 1.4.0 can throw SecurityException on Wear 5 (API 34) when targeting API 35+.
+    // tiles-proto >= 1.4.1 is built against the patched protobuf (CVE-2024-7254); pin it explicitly.
+    implementation("androidx.wear.tiles:tiles:1.5.0")
+    implementation("androidx.wear.tiles:tiles-proto:1.5.0")
     // protolayout 1.4.0: 1.2.0 bundled a vulnerable protolayout-external-protobuf (pre-fix
     // protobuf-javalite, CVE-2024-7254 — recursive-message StackOverflow). 1.4.0 carries the patched one.
     implementation("androidx.wear.protolayout:protolayout:1.4.0")
