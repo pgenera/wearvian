@@ -78,6 +78,7 @@ object CommandDispatcher {
                 // A manual action for the watch-key burst (see WatchBurstPolicy), for an unlock only;
                 // the live route's submit records its own.
                 if (result.isSuccess && oneShotStartsBurst(commandCode)) CommandBus.noteManual()
+                CommandBus.noteCommand() // any tap clears a fruitless-wake hold-off
                 if (wake) PresenceService.wakeToActive(app) // after the one-shot closed its GATT client
                 result.fold(
                     onSuccess = { CommandOutcome.Sent },

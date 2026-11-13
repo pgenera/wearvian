@@ -249,3 +249,59 @@ class ScanRetryPolicyTest {
         assertEquals(ScanRetryPolicy.MAX_MS, ScanRetryPolicy.delayMs(50))
     }
 }
+
+class FruitlessWakePolicyTest {
+    private val min = 60_000L
+    private val p = FruitlessWakePolicy()
+
+    @Test
+    fun noHoldOffUntilAWakeFailsToAuthenticate() {
+        assertTrue(p.sightingWakes(0L, 0L))
+        p.wakeEnded(authenticated = true, nowMs = 1_000L)
+        assertTrue(p.sightingWakes(2_000L, 0L))
+    }
+
+    @Test
+    fun oneFruitlessWakeHoldsSightingsOffForFiveMinutesByTheClock() {
+        p.wakeEnded(authenticated = false, nowMs = 0L)
+        assertFalse(p.sightingWakes(1_000L, 0L)) // the fresh scan re-reports the visible nodes at once
+        assertFalse(p.sightingWakes(5 * min - 1, 0L))
+        assertTrue(p.sightingWakes(5 * min, 0L))
+    }
+
+    @Test
+    fun holdOffDoublesToFortyMinutes() {
+        assertEquals(listOf(5L, 10L, 20L, 40L, 40L), (1..5).map { FruitlessWakePolicy.holdOffMs(it) / min })
+        var t = 0L
+        repeat(3) { p.wakeEnded(false, t); t += 60 * min }
+        p.wakeEnded(false, t)
+        assertFalse(p.sightingWakes(t + 39 * min, 0L))
+        assertTrue(p.sightingWakes(t + 40 * min, 0L))
+    }
+
+    @Test
+    fun anAuthenticatedSessionClearsIt() {
+        p.wakeEnded(false, 0L)
+        p.authenticated()
+        assertEquals(0, p.fruitless)
+        assertTrue(p.sightingWakes(1_000L, 0L))
+    }
+
+    @Test
+    fun aManualCommandSinceTheHoldOffBeganClearsIt() {
+        p.wakeEnded(false, 10_000L)
+        assertFalse("an older command doesn't count", p.sightingWakes(20_000L, lastManualMs = 5_000L))
+        assertTrue(p.sightingWakes(20_000L, lastManualMs = 15_000L))
+        assertEquals(0, p.fruitless)
+    }
+
+    @Test
+    fun anAuthenticatedWakeResetsTheCount() {
+        p.wakeEnded(false, 0L)
+        p.wakeEnded(false, 10 * min)
+        p.wakeEnded(true, 30 * min)
+        p.wakeEnded(false, 40 * min)
+        assertEquals(1, p.fruitless)
+        assertTrue(p.sightingWakes(45 * min, 0L))
+    }
+}

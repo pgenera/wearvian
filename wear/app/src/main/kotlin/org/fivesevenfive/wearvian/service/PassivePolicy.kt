@@ -150,3 +150,51 @@ object ScanRetryPolicy {
     fun delayMs(failures: Int): Long =
         (MIN_MS shl (failures - 1).coerceIn(0, 4)).coerceAtMost(MAX_MS)
 }
+
+/**
+ * Fruitless-wake hold-off (pure, unit-tested). If the car's adverts are visible but no session
+ * authenticates, a scan wake holds the key active for the idle backstop, it goes passive as
+ * "departed", the fresh scan re-reports the visible nodes at once, and it wakes again — forever.
+ *
+ * So: count consecutive wakes from passive that ended without any session authenticating. After
+ * each one, scan sightings do not wake the key for a hold-off of 5, 10, 20, then 40 minutes. The
+ * PK autoConnect stays armed and a tapped command always works; any authenticated session or
+ * manual command clears it. All judged lazily from `elapsedRealtime()` at the sighting — no timer.
+ */
+class FruitlessWakePolicy {
+    var fruitless = 0
+        private set
+    private var holdOffUntilMs: Long? = null
+    private var holdOffSinceMs = 0L
+
+    /** A wake from passive ended (the key went passive again); [authenticated]: a session came up. */
+    fun wakeEnded(authenticated: Boolean, nowMs: Long) {
+        if (authenticated) { clear(); return }
+        fruitless++
+        holdOffSinceMs = nowMs
+        holdOffUntilMs = nowMs + holdOffMs(fruitless)
+    }
+
+    /** A session authenticated. */
+    fun authenticated() = clear()
+
+    /**
+     * Should a scan sighting at [nowMs] wake the key? [lastManualMs] is the latest manual command
+     * (elapsedRealtime, 0 if none): one since the hold-off began clears it.
+     */
+    fun sightingWakes(nowMs: Long, lastManualMs: Long): Boolean {
+        val until = holdOffUntilMs ?: return true
+        if (lastManualMs > 0L && lastManualMs >= holdOffSinceMs) { clear(); return true }
+        return nowMs >= until
+    }
+
+    private fun clear() {
+        fruitless = 0
+        holdOffUntilMs = null
+    }
+
+    companion object {
+        /** Hold-off after the [n]th consecutive fruitless wake: 5, 10, 20, then 40 minutes. */
+        fun holdOffMs(n: Int): Long = (5 * 60_000L) shl (n - 1).coerceIn(0, 3)
+    }
+}

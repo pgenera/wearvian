@@ -128,6 +128,12 @@ class PresenceService : Service() {
      */
     private val transition = Mutex()
 
+    /** Hold-off for scan wakes that keep failing to authenticate (see [FruitlessWakePolicy]). */
+    private val fruitlessWake = FruitlessWakePolicy()
+    /** This active stretch began with a wake from passive; and whether any session authenticated in it. */
+    private var wokeFromPassive = false
+    private var activeAuthenticated = false
+
     /** Which of the car's nodes the passive proximity scan currently sees (departure = all lost). */
     private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS, STRANDED_LOSS_MS)
 
@@ -416,6 +422,10 @@ class PresenceService : Service() {
         departJob?.cancel() // a node is (back) in range — cancel any pending "it left"
         when (proximity.found(address, now, seenDeparture)) {
             ProximityTracker.Found.RETURN -> {
+                if (!fruitlessWake.sightingWakes(now, CommandBus.lastCommandMs)) {
+                    DebugLog.add("presence: proximity return $address — held off (${fruitlessWake.fruitless} wake(s) never authenticated); autoConnect + taps still work")
+                    return
+                }
                 DebugLog.add("presence: proximity return $address rssi=$rssi → wake")
                 exitPassive()
             }
@@ -576,6 +586,12 @@ class PresenceService : Service() {
         drivingJob = scope.launch { monitorDriving() }
         // Watch keys: doze by default, burst presence only around the drive window.
         watchJob = scope.launch { monitorWatchPresence() }
+        // Any authenticated session clears the fruitless-wake hold-off.
+        scope.launch {
+            PresenceStatus.connected.collect { up ->
+                if (up && !passive) { activeAuthenticated = true; fruitlessWake.authenticated() }
+            }
+        }
         // Standby / driving-doze hold no wake lock: cover a dropped link's reconnect with a bounded one.
         scope.launch { monitorPrimaryDrop() }
         return START_STICKY
@@ -1050,6 +1066,12 @@ class PresenceService : Service() {
     private suspend fun enterPassiveLocked(restoreSeenDeparture: Boolean? = null): Boolean {
         if (passive) return true
         val enrollment = EnrollmentStore(this).load() ?: run { stopSelf(); return true }
+        if (wokeFromPassive) {
+            // A wake from passive is ending: count it if no session ever authenticated.
+            fruitlessWake.wakeEnded(activeAuthenticated, SystemClock.elapsedRealtime())
+            if (!activeAuthenticated) DebugLog.add("presence: wake never authenticated (x${fruitlessWake.fruitless}) — scan wakes held off ${FruitlessWakePolicy.holdOffMs(fruitlessWake.fruitless) / 60_000}m")
+            wokeFromPassive = false
+        }
         passive = true
         _passive.value = true
         departJob?.cancel()
@@ -1113,6 +1135,8 @@ class PresenceService : Service() {
             updateNotification(LOCKED_TEXT)
             return
         }
+        wokeFromPassive = true
+        activeAuthenticated = PresenceStatus.connected.value
         startActivePresence() // sets the active notification text
         DebugLog.add("presence: proximity wake → active")
         TileRefresher.refresh(this) // passive→active: tile state changed

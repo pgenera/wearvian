@@ -93,6 +93,15 @@ object CommandBus {
     @Volatile var lastSubmitMs = 0L
         private set
 
+    /** elapsedRealtime() of the last manual command of any kind (live or one-shot, any command). */
+    @Volatile var lastCommandMs = 0L
+        private set
+
+    /** Record any manual command sent outside the queue (a one-shot), for [lastCommandMs]. */
+    fun noteCommand() {
+        lastCommandMs = clock()
+    }
+
     /**
      * Record a manual command sent outside the queue (a successful one-shot), so a watch key bursts
      * presence once its service is active — the usual return to the car is a one-shot unlock from the
@@ -107,6 +116,7 @@ object CommandBus {
         DebugLog.add("cmdbus: queued $label (0x%04x)".format(code))
         val now = clock()
         lastSubmitMs = now
+        lastCommandMs = now
         val cmd = Command(code, label, now, ttlMs(primaryAuthenticated))
         queue.trySend(cmd)
         ReconnectHurry.hurry() // a session waiting out a backoff should come up for this now
