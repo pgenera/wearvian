@@ -53,6 +53,7 @@ import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
 import org.fivesevenfive.wearvian.ble.PhoneKey
 import org.fivesevenfive.wearvian.ble.ReconnectHurry
 import org.fivesevenfive.wearvian.ble.RescanSchedule
+import org.fivesevenfive.wearvian.ble.SensorSeed
 import org.fivesevenfive.wearvian.ble.SessionLabels
 import org.fivesevenfive.wearvian.ble.ProximityWake
 import org.fivesevenfive.wearvian.tile.TileRefresher
@@ -1124,6 +1125,7 @@ class PresenceService : Service() {
         var rescanMs = RescanSchedule.MIN_MS
         var lastScanAt = 0L
         var wasPaused = false
+        var seeded = false // sessions for the saved sensor addresses started (once per loop)
 
         while (bleScope.isActive) {
             // PRIMARY phone-key: looked up on every pass, not once — bondedDevices is empty while
@@ -1151,6 +1153,27 @@ class PresenceService : Service() {
             val now = SystemClock.elapsedRealtime()
             val resumed = wasPaused && !paused
             wasPaused = paused
+            // Sensors already known from earlier sessions: start them now rather than after a 6 s
+            // scan re-finds them (the scan below still looks for new ones). Only once the PRIMARY is
+            // running, so its address is in `started` and can never be opened as a sensor.
+            if (svc != null && !paused && pkStarted && !seeded) {
+                seeded = true
+                val seeds = SensorSeed.toStart(addresses.load(), PhoneKey.storedAddress(this@PresenceService), started)
+                seeds.forEach { started.add(it) }
+                if (seeds.isNotEmpty()) {
+                    DebugLog.add("presence: starting ${seeds.size} saved sensor session(s)")
+                    // Alongside the discovery scan, staggered as before (one connect at a time).
+                    bleScope.launch {
+                        seeds.forEachIndexed { i, address ->
+                            if (i > 0) delay(STAGGER_MS)
+                            val label = SessionLabels.unique(null, address, labels)
+                            DebugLog.ble("·", label, "$address (saved) → session")
+                            val dev = adapter.getRemoteDevice(address)
+                            bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
+                        }
+                    }
+                }
+            }
             if (svc != null && !paused && (resumed || lastScanAt == 0L || now - lastScanAt >= rescanMs)) {
                 lastScanAt = now
                 val foundNew = runCatching {
@@ -1182,7 +1205,9 @@ class PresenceService : Service() {
                 }
                 rescanMs = RescanSchedule.next(rescanMs, foundNew)
             }
-            delay(LOOP_TICK_MS)
+            // A watch-key burst starting (or a tapped command) un-pauses heartbeats: run the next
+            // pass at once instead of after the tick, so sensor sessions come up for the burst.
+            ReconnectHurry.delayUnlessHurried(LOOP_TICK_MS)
         }
     }
 

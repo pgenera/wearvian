@@ -109,6 +109,23 @@ object ReconnectHurry {
 }
 
 /**
+ * Which saved vehicle addresses ([org.fivesevenfive.wearvian.store.VehicleAddressStore], learned
+ * from earlier sessions and already trusted for the proximity-wake filters) to open sensor sessions
+ * for straight away when sensors are wanted, instead of waiting for a 6 s discovery scan to re-find
+ * them. The scan still runs to find new ones. Pure, unit-tested.
+ */
+object SensorSeed {
+    /**
+     * [saved] minus the phone key ([pkAddress]) and anything already [started] (which holds the
+     * running PRIMARY's address too), case-insensitively, in a stable order.
+     */
+    fun toStart(saved: Set<String>, pkAddress: String?, started: Set<String>): List<String> {
+        val skip = (started + listOfNotNull(pkAddress)).map { it.uppercase() }.toSet()
+        return saved.filter { it.uppercase() !in skip }.distinctBy { it.uppercase() }.sorted()
+    }
+}
+
+/**
  * Sensor-discovery cadence for the presence loop. Every scan is a 6 s LOW_LATENCY window, so once
  * nothing new turns up the interval backs off (the sessions already launched reconnect on their
  * own); any new sensor snaps it back to the minimum. A failed scan (null) keeps the interval.
