@@ -3,8 +3,13 @@ package org.fivesevenfive.wearvian.ble
 import android.app.KeyguardManager
 import android.content.Context
 import android.os.SystemClock
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import org.fivesevenfive.wearvian.crypto.KeyManager
 import org.fivesevenfive.wearvian.crypto.SharedSecretCache
 import org.fivesevenfive.wearvian.protocol.ActiveCommandFrames
@@ -30,6 +35,9 @@ sealed interface CommandOutcome {
  *    UNLOCK also re-activates the key, started only AFTER the one-shot has closed its GATT client.
  */
 object CommandDispatcher {
+
+    /** Runs a one-shot past its reported outcome (response linger, close, wake); each is deadline-bounded. */
+    private val tailScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     enum class Route { BLOCKED_LOCKED, LIVE_SESSION, ONE_SHOT }
 
@@ -72,14 +80,28 @@ object CommandDispatcher {
             Route.ONE_SHOT -> {
                 // Read before sending: the one-shot's own connection can wake passive (autoConnect).
                 val wake = wakesKeyAfterOneShot(commandCode, PresenceService.parkedNearby.value)
-                val result = withContext(Dispatchers.IO) {
-                    ActiveCommandManager(app, keyManager).sendCommand(enrollment, commandCode, label, OneShotPolicy.deadline(tapAtMs))
-                }
-                // A manual action for the watch-key burst (see WatchBurstPolicy), for an unlock only;
-                // the live route's submit records its own.
-                if (result.isSuccess && oneShotStartsBurst(commandCode)) CommandBus.noteManual()
                 CommandBus.noteCommand() // any tap clears a fruitless-wake hold-off
-                if (wake) PresenceService.wakeToActive(app) // after the one-shot closed its GATT client
+                // The outcome is known at the command's write ack; the one-shot then lingers briefly
+                // for the response and closes its client. That tail runs on [tailScope] so the tap's
+                // result isn't held for it, and the follow-ups that need the client closed run after.
+                val delivered = CompletableDeferred<Unit>()
+                val run = tailScope.async {
+                    ActiveCommandManager(app, keyManager).sendCommand(
+                        enrollment, commandCode, label, OneShotPolicy.deadline(tapAtMs),
+                        onDelivered = { delivered.complete(Unit) },
+                    )
+                }
+                tailScope.launch {
+                    val r = run.await()
+                    // A manual action for the watch-key burst (see WatchBurstPolicy), for an unlock
+                    // only; the live route's submit records its own.
+                    if (r.isSuccess && oneShotStartsBurst(commandCode)) CommandBus.noteManual()
+                    if (wake) PresenceService.wakeToActive(app) // after the one-shot closed its GATT client
+                }
+                val result = select<Result<Unit>> {
+                    delivered.onAwait { Result.success(Unit) }
+                    run.onAwait { it }
+                }
                 result.fold(
                     onSuccess = { CommandOutcome.Sent },
                     onFailure = { CommandOutcome.Failed(ActiveCommandManager.failureOf(it)) },

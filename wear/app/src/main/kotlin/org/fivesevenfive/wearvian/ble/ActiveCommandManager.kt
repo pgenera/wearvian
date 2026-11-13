@@ -84,7 +84,10 @@ class ActiveCommandManager(
      * [CommandFailure.EXPIRED]. A failure's [CommandException.failure] says why (other exceptions mean
      * [CommandFailure.SEND_FAILED]). Uses the tile's pre-opened link ([prewarm]) when one is up.
      */
-    suspend fun sendCommand(enrollment: Enrollment, commandCode: Int, label: String, deadlineMs: Long): Result<Unit> {
+    suspend fun sendCommand(
+        enrollment: Enrollment, commandCode: Int, label: String, deadlineMs: Long,
+        onDelivered: () -> Unit = {},
+    ): Result<Unit> {
         // Timed, so it can never outlive the tap: the deadline timers must run with the screen off.
         val wl = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wearvian:oneshot")
@@ -100,8 +103,8 @@ class ActiveCommandManager(
                     return@withLock Result.failure(CommandException(CommandFailure.EXPIRED, "expired while queued"))
                 }
                 val warmLink = takeWarmLocked()
-                var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt, deadlineMs)
-                else attempt(enrollment, commandCode, label, null, deadlineMs)
+                var result = if (warmLink != null) warmLink.manager.attempt(enrollment, commandCode, label, warmLink.gatt, deadlineMs, onDelivered)
+                else attempt(enrollment, commandCode, label, null, deadlineMs, onDelivered)
                 val first = result.exceptionOrNull()
                 // A pre-opened link that turned out dead isn't a reason to back off: connect now.
                 val pause = if (warmLink == null) RETRY_DELAY_MS else 0L
@@ -110,7 +113,7 @@ class ActiveCommandManager(
                 ) {
                     DebugLog.add("cmd $label retrying once")
                     if (pause > 0) delay(pause)
-                    result = attempt(enrollment, commandCode, label, null, deadlineMs)
+                    result = attempt(enrollment, commandCode, label, null, deadlineMs, onDelivered)
                 }
                 result
             }
@@ -126,6 +129,7 @@ class ActiveCommandManager(
      */
     private suspend fun attempt(
         enrollment: Enrollment, commandCode: Int, label: String, preopened: BluetoothGatt?, deadlineMs: Long,
+        onDelivered: () -> Unit,
     ): Result<Unit> = runCatching {
         DebugLog.add("cmd $label (0x%04x) → start".format(commandCode))
         // Layer 1 anti-theft: don't send commands while the watch is locked (off wrist).
@@ -143,7 +147,7 @@ class ActiveCommandManager(
             it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         } ?: openLink({ deadlineMs }, highPriority = true, requireSubscriptions = false)
         try {
-            authenticateAndSend(gatt, enrollment, commandCode, label, deadlineMs)
+            authenticateAndSend(gatt, enrollment, commandCode, label, deadlineMs, onDelivered)
         } finally {
             closeLink(gatt)
         }
@@ -217,12 +221,13 @@ class ActiveCommandManager(
 
     private suspend fun authenticateAndSend(
         gatt: BluetoothGatt, enrollment: Enrollment, commandCode: Int, label: String, deadlineMs: Long,
+        onDelivered: () -> Unit,
     ) {
         // Started before the connect (or cached), so normally ready by now. Awaited before the first
         // handshake write so the car sees the same write timing as before.
         val shared = withTimeout(ECDH_MS) { SharedSecretCache.get(keyManager, enrollment.vehiclePublicKey) }
         try {
-            authenticateAndSendWith(gatt, enrollment, shared, commandCode, label, deadlineMs)
+            authenticateAndSendWith(gatt, enrollment, shared, commandCode, label, deadlineMs, onDelivered)
         } finally {
             shared.fill(0) // our copy; the cache keeps its own
         }
@@ -231,6 +236,7 @@ class ActiveCommandManager(
     private suspend fun authenticateAndSendWith(
         gatt: BluetoothGatt, enrollment: Enrollment, shared: ByteArray, commandCode: Int, label: String,
         deadlineMs: Long,
+        onDelivered: () -> Unit,
     ) {
         val phoneIdChar = requireChar(gatt, RivianBle.CHAR_PHONE_ID_VEHICLE_ID)
         val nonceChar = requireChar(gatt, RivianBle.CHAR_PHONE_NONCE_VEHICLE_NONCE)
@@ -259,9 +265,13 @@ class ActiveCommandManager(
         }
         val frame = ActiveCommandFrames.activeCommandFrame(shared, pNonce, vNonce, counter = 0, commandCode = commandCode)
         notifications[cmdChar.uuid] = CompletableDeferred()
-        writeChar(gatt, cmdChar, frame)
+        writeChar(gatt, cmdChar, frame) // throws unless the write was acknowledged
         DebugLog.ble("→", "0x20", "CMD $label (enc)", frame.size)
-        val resp = runCatching { withTimeout(OP_MS) { notifications.getValue(cmdChar.uuid).await() } }.getOrNull()
+        // Delivered at the write ack: report success now. The 0x20 response is only logged, so give
+        // it a short linger (was a 5 s wait before success) — still inside oneShotLock, so no other
+        // client touches PK meanwhile, and the lock is released sooner than before.
+        onDelivered()
+        val resp = runCatching { withTimeout(RESPONSE_LINGER_MS) { notifications.getValue(cmdChar.uuid).await() } }.getOrNull()
         DebugLog.add(resp?.let { "← 0x20 resp ${it.toHexString().take(12)}… ${it.size}B" } ?: "cmd $label written (no resp)")
         DebugLog.add("cmd $label ✓ done")
     }
@@ -338,6 +348,8 @@ class ActiveCommandManager(
     companion object {
         /** How often a connect wait re-reads its deadline (a pre-warm's can be extended by a tap). */
         private const val CONNECT_RECHECK_MS = 1_000L
+        /** After a command's write ack, how long to wait for its 0x20 response (for the log only). */
+        private const val RESPONSE_LINGER_MS = 1_000L
         /** A one-shot's wake lock outlives its deadline by this much, then expires on its own. */
         private const val WAKE_SLACK_MS = 5_000L
         private const val OP_MS = 5_000L
