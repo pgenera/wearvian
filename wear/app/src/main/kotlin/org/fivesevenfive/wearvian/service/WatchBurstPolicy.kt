@@ -7,9 +7,11 @@ package org.fivesevenfive.wearvian.service
  *
  * Triggers:
  *  - a door-open edge, or an asleep→awake edge, in live 0x1c state;
- *  - the status becoming live (first fresh frame after none) while the car is awake and parked
- *    with a door open or unlocked — a session that came up late (e.g. after a passive wake by a
- *    one-shot unlock) has missed the door/wake edges, but this is still the drive window;
+ *  - the FIRST live status after the key leaves passive or locked (or starts), while the car is
+ *    awake and parked with a door open or unlocked — a session that came up late (e.g. after a
+ *    passive wake by a one-shot unlock) has missed the door/wake edges, but this is still the
+ *    drive window. Only that first one: a link blip in standby beside an unlocked, awake car
+ *    must not start a burst each time it comes back;
  *  - a manual command ([lastManualMs], from [org.fivesevenfive.wearvian.ble.CommandBus]: a live-queue
  *    submit or a successful one-shot).
  *
@@ -23,6 +25,8 @@ class WatchBurstPolicy(private val burstMs: Long) {
     private var prevAsleep = false
     private var prevFresh = false
     private var lastTriggerMs = 0L
+    /** The status-live trigger is still available (armed at start and by [reset], used up by the first live status). */
+    private var liveTriggerArmed = true
 
     /** What [evaluate] decided, and the trigger that fired on this sample (for the log), if any. */
     data class Decision(val wantBurst: Boolean, val trigger: String?)
@@ -32,6 +36,7 @@ class WatchBurstPolicy(private val burstMs: Long) {
         prevDoorOpen = false
         prevAsleep = false
         prevFresh = false
+        liveTriggerArmed = true
     }
 
     fun evaluate(
@@ -43,9 +48,10 @@ class WatchBurstPolicy(private val burstMs: Long) {
             trigger = when {
                 doorOpen && !prevDoorOpen -> "door opened"
                 !asleep && prevAsleep -> "vehicle woke"
-                !prevFresh && !asleep && !inGear && (doorOpen || unlocked) -> "status live, car awake + open"
+                liveTriggerArmed && !prevFresh && !asleep && !inGear && (doorOpen || unlocked) -> "status live, car awake + open"
                 else -> null
             }
+            liveTriggerArmed = false // the first live status after a reset has been seen
             prevDoorOpen = doorOpen
             prevAsleep = asleep
         }

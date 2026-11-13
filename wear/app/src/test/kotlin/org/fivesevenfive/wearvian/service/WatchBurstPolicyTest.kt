@@ -58,11 +58,30 @@ class WatchBurstPolicyTest {
     }
 
     @Test
-    fun goingStaleThenLiveAgainRetriggers() {
-        eval(now = 1_000L, unlocked = true)
+    fun aLinkBlipInStandbyDoesNotRetrigger() {
+        // B3: the first live status after start triggers; a blip (stale, then live again) beside
+        // the same unlocked, awake car does not start another burst.
+        assertTrue(eval(now = 1_000L, unlocked = true).wantBurst)
         eval(now = 1_000L + burstMs + 1, fresh = false)
         val d = eval(now = 1_000L + burstMs + 2, unlocked = true)
+        assertFalse(d.wantBurst)
+        assertNull(d.trigger)
+    }
+
+    @Test
+    fun leavingPassiveOrLockedRearmsTheStatusLiveTrigger() {
+        eval(now = 1_000L, unlocked = true)
+        p.reset() // key went passive / locked, then came back
+        val d = eval(now = 1_000L + burstMs + 2, unlocked = true)
+        assertEquals("status live, car awake + open", d.trigger)
         assertTrue(d.wantBurst)
+    }
+
+    @Test
+    fun theFirstLiveStatusUsesTheTriggerEvenIfItDoesNotFire() {
+        eval(now = 1_000L, unlocked = false) // first live status: locked + shut, no trigger
+        eval(now = 2_000L, fresh = false)
+        assertNull("later blip, now unlocked: not the first live status", eval(now = 3_000L, unlocked = true).trigger)
     }
 
     @Test
