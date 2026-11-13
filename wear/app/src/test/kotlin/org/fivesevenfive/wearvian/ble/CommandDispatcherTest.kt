@@ -43,4 +43,12 @@ class CommandDispatcherTest {
             assertEquals(f, ActiveCommandManager.failureOf(CommandException(f, "x")))
         }
     }
+
+    @Test
+    fun onlyAOneShotUnlockStartsTheWatchBurst() {
+        assertTrue(CommandDispatcher.oneShotStartsBurst(Cmd.UNLOCK_ALL))
+        assertFalse(CommandDispatcher.oneShotStartsBurst(Cmd.LOCK_ALL))
+        assertFalse(CommandDispatcher.oneShotStartsBurst(Cmd.OPEN_FRUNK))
+        assertFalse(CommandDispatcher.oneShotStartsBurst(Cmd.OPEN_CHARGE_PORT))
+    }
 }

@@ -44,6 +44,13 @@ object CommandDispatcher {
     fun wakesKeyAfterOneShot(commandCode: Int, parkedNearby: Boolean): Boolean =
         parkedNearby && commandCode == ActiveCommandFrames.Cmd.UNLOCK_ALL
 
+    /**
+     * Whether a successful one-shot of [commandCode] counts as a manual action for the watch-key
+     * burst ([CommandBus.noteManual]): only an unlock, which leads to driving. A lock (walking away)
+     * or a closure doesn't need presence, and starting a 3 minute burst for it only costs battery.
+     */
+    fun oneShotStartsBurst(commandCode: Int): Boolean = commandCode == ActiveCommandFrames.Cmd.UNLOCK_ALL
+
     suspend fun send(
         context: Context, enrollment: Enrollment, keyManager: KeyManager, commandCode: Int, label: String,
     ): CommandOutcome {
@@ -68,9 +75,9 @@ object CommandDispatcher {
                 val result = withContext(Dispatchers.IO) {
                     ActiveCommandManager(app, keyManager).sendCommand(enrollment, commandCode, label, OneShotPolicy.deadline(tapAtMs))
                 }
-                // A manual action for the watch-key burst (see WatchBurstPolicy); the live route's
-                // submit records its own.
-                if (result.isSuccess) CommandBus.noteManual()
+                // A manual action for the watch-key burst (see WatchBurstPolicy), for an unlock only;
+                // the live route's submit records its own.
+                if (result.isSuccess && oneShotStartsBurst(commandCode)) CommandBus.noteManual()
                 if (wake) PresenceService.wakeToActive(app) // after the one-shot closed its GATT client
                 result.fold(
                     onSuccess = { CommandOutcome.Sent },
