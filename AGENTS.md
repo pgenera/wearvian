@@ -121,6 +121,13 @@ Deep detail lives in `../rivian-re` and `docs/`; the essentials:
   "Parked nearby" = `passive && !seenDeparture` (car in range); "departed" = `passive &&
   seenDeparture`. Long-press the key → passive; an explicit **unlock** (only) from parked-nearby
   reactivates the live key.
+- **Bedtime key-off** (`service/BedtimePolicy.kt`, `BedtimeMode.kt`): when Wear OS bedtime mode
+  comes on, the running service disarms the key (`keyArmed = false`) and stops, like the
+  notification's Off action, and posts a "Key turned off" alert. Boot, upgrade and sticky-restart
+  starts during bedtime disarm instead of starting; user-made starts ignore bedtime. Bedtime is read
+  from two **undocumented** `Settings.Global` keys, `bedtime_mode` (Pixel/stock) and
+  `setting_bedtime_mode_running_state` (Samsung). If neither is readable the feature does nothing.
+  Only the rising edge acts, and the key is never re-armed when bedtime ends.
 - **BLE connection interval:** the official app runs ~45 ms baseline, relaxing to 90/135 ms — it
   relaxes intervals rather than tearing down. Match that; don't thrash HIGH/teardown.
 - **Passive entry is a continuous authenticated session** (heartbeat `0x1b` + control `0x20` +

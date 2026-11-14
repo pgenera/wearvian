@@ -15,7 +15,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.database.ContentObserver
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -159,7 +162,30 @@ class PresenceService : Service() {
     private val lockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (lockJob?.isActive != true) return // not started (or stopping): nothing to sync
-            scope.launch { withTimedWakeLock("wearvian:lock-sync", LOCK_SYNC_WAKE_MS) { syncLockState() } }
+            scope.launch {
+                withTimedWakeLock("wearvian:lock-sync", LOCK_SYNC_WAKE_MS) {
+                    // Bedtime turns the screen off: backstop for a missed observer callback. If it
+                    // turned the key off, don't let an unlock start BLE on a stopping service.
+                    if (!checkBedtime()) syncLockState()
+                }
+            }
+        }
+    }
+
+    /**
+     * Last [BedtimeMode] read; [checkBedtime] turns the key off on its rising edge ([BedtimePolicy]).
+     * Baselined when the service first comes up, so a key the user starts during bedtime stays on.
+     */
+    @Volatile private var bedtimeState = BedtimeState.UNKNOWN
+
+    /** Latched once [checkBedtime] turned the key off, until [onDestroy] (which sets [stopping]). */
+    @Volatile private var bedtimeStopped = false
+
+    /** Bedtime mode's (undocumented) settings changed: re-check on [scope]. */
+    private val bedtimeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            if (lockJob?.isActive != true) return // not started (or stopping)
+            scope.launch { checkBedtime() }
         }
     }
 
@@ -483,6 +509,10 @@ class PresenceService : Service() {
         }
         runCatching { registerReceiver(lockReceiver, lockFilter, RECEIVER_NOT_EXPORTED) }
             .onFailure { DebugLog.add("presence: lock receiver not registered — ${it.javaClass.simpleName}") }
+        for (uri in BedtimeMode.uris()) {
+            runCatching { contentResolver.registerContentObserver(uri, false, bedtimeObserver) }
+                .onFailure { DebugLog.add("presence: bedtime observer not registered — ${it.javaClass.simpleName}") }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -492,15 +522,23 @@ class PresenceService : Service() {
         // Gate going foreground first: without Bluetooth permission (revoked, auto-reset) startForeground
         // throws on Android 14+, and a sticky restart of a key the user turned off shouldn't come back.
         // Not proceeding returns START_NOT_STICKY so the system doesn't retry; the key re-arms from
-        // keyArmed the next time the app opens (SetupViewModel.refresh).
+        // keyArmed the next time the app opens (SetupViewModel.refresh). A sticky restart during
+        // bedtime mode instead disarms the key, like the running service's bedtime key-off.
         val gate = ServiceStartGate.check(
             isSystemRestart = intent == null,
             keyArmed = settings.keyArmed,
             hasBlePermissions = BlePermissions.granted(this),
+            bedtime = if (intent == null) BedtimeMode.read(this) else BedtimeState.UNKNOWN, // only restarts use it
         )
         if (gate != ServiceStartGate.Result.PROCEED) {
             DebugLog.add("presence: not starting (${gate.name}); stopping")
-            if (lockJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
+            if (lockJob?.isActive != true) {
+                if (gate == ServiceStartGate.Result.BEDTIME) {
+                    DebugLog.add("presence: system restart during bedtime mode — turning key OFF")
+                    settings.keyArmed = false
+                }
+                stopSelf(); return START_NOT_STICKY
+            }
             // Already running (permission revoked mid-run already kills the process, so this is a
             // rare race): leave the running instance alone.
             return START_STICKY
@@ -533,6 +571,12 @@ class PresenceService : Service() {
             return START_STICKY
         }
         _running.value = true
+        // Baseline before the monitors that re-check it start (see checkBedtime).
+        bedtimeState = BedtimeMode.read(this)
+        DebugLog.add(
+            if (bedtimeState == BedtimeState.UNKNOWN) "presence: bedtime mode not readable on this watch — bedtime key-off inactive"
+            else "presence: bedtime mode ${bedtimeState.name} at start",
+        )
         // In-process wake for callers in this process (a tile unlock while parked nearby), so they
         // don't need a foreground-service start, which can be refused from the background.
         wakeHook = { scope.launch { exitPassive() } }
@@ -700,8 +744,34 @@ class PresenceService : Service() {
     private suspend fun monitorLock() {
         while (true) {
             if (keyguardLocked() != locked) syncLockState()
+            if (checkBedtime()) return // key turned off: the service is stopping
             delay(LOCK_POLL_MS)
         }
+    }
+
+    /**
+     * Re-read bedtime mode and, on its rising edge ([BedtimePolicy.shouldTurnKeyOff]), turn the key
+     * OFF exactly as [KeyOffReceiver] does: disarm, then stop — [onDestroy] tears BLE down and
+     * refreshes the tile, and the UI follows [running] + keyArmed. Not re-armed when bedtime ends.
+     * Runs on [scope]; called from [bedtimeObserver], [lockReceiver], the [monitorLock] poll and
+     * [exitPassiveLocked]. @return true if the key was turned off (now or earlier): the service is
+     * stopping and the caller must not bring anything up.
+     */
+    private fun checkBedtime(): Boolean {
+        if (stopping || bedtimeStopped) return true
+        val previous = bedtimeState
+        val now = BedtimeMode.read(this)
+        bedtimeState = now
+        if (!BedtimePolicy.shouldTurnKeyOff(previous, now)) {
+            if (now != previous) DebugLog.add("presence: bedtime mode ${previous.name} → ${now.name}")
+            return false
+        }
+        bedtimeStopped = true
+        DebugLog.add("presence: bedtime mode on — turning key OFF")
+        settings.keyArmed = false
+        postAlert(R.string.bedtime_key_off_title, R.string.bedtime_key_off_text, NotificationCompat.CATEGORY_STATUS, "bedtime key-off")
+        stopSelf()
+        return true
     }
 
     private fun keyguardLocked(): Boolean = keyguard?.isDeviceLocked == true
@@ -1116,6 +1186,11 @@ class PresenceService : Service() {
 
     /** [exitPassive] body; caller holds [transition]. */
     private suspend fun exitPassiveLocked() {
+        // Read bedtime fresh too: while passive (no wake lock, poll stalled, screen already off) a
+        // scheduled bedtime start has only the observer callback to report it. If that was lost or
+        // delayed, a proximity wake would bring the key fully active during bedtime; this catches
+        // the rising edge first. A user wake during bedtime is not a rising edge and still proceeds.
+        if (checkBedtime()) return
         // Read the keyguard fresh first: a watch taken off while passive still has locked == false
         // until the poll runs. If it is locked, the lock transition tears passive down (recording
         // wasPassive) and we stop here instead of taking the wake lock for a session that can't
@@ -1310,7 +1385,11 @@ class PresenceService : Service() {
      * the foreground restart. Tapping it opens the app, which restarts the key from keyArmed
      * (SetupViewModel.refresh); a later successful foreground start retracts it.
      */
-    private fun notifyKeyStopped() {
+    private fun notifyKeyStopped() =
+        postAlert(R.string.key_stopped_title, R.string.key_stopped_text, NotificationCompat.CATEGORY_ERROR, "key-stopped")
+
+    /** An ordinary alert notification (key stopped / turned off) that opens the app on tap. */
+    private fun postAlert(title: Int, text: Int, category: String, what: String) {
         runCatching {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
@@ -1326,16 +1405,16 @@ class PresenceService : Service() {
             nm.notify(
                 ALERT_NOTIFICATION_ID,
                 NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
-                    .setContentTitle(getString(R.string.key_stopped_title))
-                    .setContentText(getString(R.string.key_stopped_text))
+                    .setContentTitle(getString(title))
+                    .setContentText(getString(text))
                     .setSmallIcon(R.drawable.ic_launcher_foreground)
                     .setContentIntent(open)
                     .setAutoCancel(true)
-                    .setCategory(NotificationCompat.CATEGORY_ERROR)
+                    .setCategory(category)
                     .build(),
             )
-            DebugLog.add("presence: posted key-stopped notification")
-        }.onFailure { logw("PresenceService: key-stopped notification failed (${it.javaClass.simpleName})") }
+            DebugLog.add("presence: posted $what notification")
+        }.onFailure { logw("PresenceService: $what notification failed (${it.javaClass.simpleName})") }
     }
 
     private fun startAsForegroundOrThrow() {
@@ -1433,6 +1512,7 @@ class PresenceService : Service() {
         _parkedNearby.value = false
         runCatching { unregisterReceiver(btStateReceiver) }
         runCatching { unregisterReceiver(lockReceiver) }
+        runCatching { contentResolver.unregisterContentObserver(bedtimeObserver) }
         // A real stop (user deactivated the key, or system kill) — stop the proximity watch.
         ProximityWake.stopScan(this, proximityCallback)
         passiveLink.disarm()
