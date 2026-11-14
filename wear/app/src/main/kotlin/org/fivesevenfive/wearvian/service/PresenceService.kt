@@ -109,7 +109,7 @@ class PresenceService : Service() {
     private val settings by lazy { SettingsStore(this) }
     private val adapter by lazy { (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter }
     /** Passive wake: an autoConnect pending on the bonded PK, alongside the FIRST_MATCH scan. */
-    private val passiveLink = PassiveAutoConnect { scope.launch { exitPassive() } }
+    private val passiveLink = PassiveAutoConnect { scope.launch { exitPassive(automatic = true) } }
     private var wakeLock: PowerManager.WakeLock? = null
     private var loopJob: Job? = null   // owns the BLE work (sessions + scan); torn down when locked
     private var notifJob: Job? = null
@@ -139,6 +139,11 @@ class PresenceService : Service() {
 
     /** Which of the car's nodes the passive proximity scan currently sees (departure = all lost). */
     private val proximity = ProximityTracker(DEPART_DEBOUNCE_MS, STRANDED_LOSS_MS)
+
+    /** Stops blind parked-nearby departures once one has bounced (see [BlindDeparturePolicy]). */
+    private val blindDeparture = BlindDeparturePolicy()
+    /** The "blind countdown skipped" line was logged in this passive stretch (log it once). */
+    private var blindSkipLogged = false
 
     /** True while the Bluetooth adapter is off: BLE is torn down and rebuilt on STATE_ON. */
     @Volatile private var btOff = false
@@ -301,7 +306,7 @@ class PresenceService : Service() {
         DebugLog.add("presence: proximity scan failed err=$errorCode (x$proximityScanFailures) — retrying")
         if (seenDeparture) {
             passiveLink.arm(this) // the other wake path works without the scan
-        } else if (departJob?.isActive != true) {
+        } else if (departJob?.isActive != true && blindCountdownAllowed()) {
             // Parked nearby, and the scan can't tell us when the car leaves: count from now.
             proximity.assumeAllLost(SystemClock.elapsedRealtime())
             startDepartureCountdown()
@@ -355,20 +360,46 @@ class PresenceService : Service() {
      * always did, treat every node as lost now and start the departure countdown: the fresh scan's
      * first sighting within [parkedWindowMs] cancels it ("still here"); silence confirms the
      * departure and arms the autoConnect. Trade-off: a car present but invisible to the scan wakes
-     * the key to active once (battery, not reliability) — hence a longer first window by default.
+     * the key to active (battery, not reliability) — hence a longer first window by default.
+     *
+     * That wake happens at most once: if an automatic wake follows the blind departure within
+     * [BlindDeparturePolicy.BOUNCE_MS] the car never left, and later blind countdowns are skipped
+     * until a departure is observed or the links actually drop ([BlindDeparturePolicy]); without
+     * that, parked-idle → blind "departure" → autoConnect wake → parked-idle loops all night. The
+     * accepted limitation this restores (the pre-blind-countdown behavior): where the scan can't see
+     * the parked car, after one bounce the key stays "Parked nearby" until an observed departure, a
+     * tap, or the app is opened.
+     *
+     * While suppressed, the scan is also armed WITHOUT the blind-arm backstop ([ProximityTracker.reset]
+     * with no arming time), so a first sighting more than [STRANDED_LOSS_MS] after arming reads as
+     * "still parked nearby", not a return: suppression already means the scan here doesn't report the
+     * parked car in time, so a late first sighting is no evidence the car left and came back —
+     * otherwise a merely slow scan would loop the same way. Again the pre-R4 behavior in that spot.
      */
     private fun armProximityScan(parkedWindowMs: Long = PARKED_ARM_WINDOW_MS): Boolean {
         val enrollment = EnrollmentStore(this).load() ?: return false
         ProximityWake.stopScan(this, proximityCallback)
         val now = SystemClock.elapsedRealtime()
-        proximity.reset(now) // the new scan re-reports every node in range
-        if (!seenDeparture) {
+        // Parked nearby with blind departures suppressed: no blind countdown and no blind-arm backstop.
+        val blindOk = seenDeparture || blindCountdownAllowed()
+        proximity.reset(if (blindOk) now else null) // the new scan re-reports every node in range
+        if (!seenDeparture && blindOk) {
             proximity.assumeAllLost(now, parkedWindowMs)
             startDepartureCountdown(parkedWindowMs)
         }
         val ok = ProximityWake.scanForVehicle(this, enrollment.vasVehicleId, proximityCallback)
         if (!ok) onProximityScanFailed(SCAN_START_FAILED)
         return ok
+    }
+
+    /** [BlindDeparturePolicy.allowBlindCountdown], logging a skip once per passive stretch. */
+    private fun blindCountdownAllowed(): Boolean {
+        if (blindDeparture.allowBlindCountdown) return true
+        if (!blindSkipLogged) {
+            blindSkipLogged = true
+            DebugLog.add("presence: parked nearby: blind departure countdown skipped (scan can't see the parked car here)")
+        }
+        return false
     }
 
     /** Passive notification text for the current sub-state. */
@@ -453,7 +484,7 @@ class PresenceService : Service() {
                     return
                 }
                 DebugLog.add("presence: proximity return $address rssi=$rssi → wake")
-                exitPassive()
+                exitPassive(automatic = true)
             }
             ProximityTracker.Found.PRESENT ->
                 DebugLog.add("presence: proximity hit $address (${proximity.size} node(s) seen, parked nearby) → ignore")
@@ -465,6 +496,7 @@ class PresenceService : Service() {
         syncLockStateLocked() // don't trust the polled field: a lock tears passive down instead
         if (!passive || seenDeparture || locked) return
         seenDeparture = true
+        blindDeparture.departed(blind = proximity.departureAssumed, nowMs = SystemClock.elapsedRealtime())
         settings.passiveSeenDeparture = true // keep the persisted sub-state current
         _parkedNearby.value = false // no longer parked beside it — now waiting for return
         updateNotification(PASSIVE_TEXT) // relabel from "Parked nearby" → "Waiting for vehicle"
@@ -1154,6 +1186,9 @@ class PresenceService : Service() {
         // (Read before stopBle, which drops the links.)
         seenDeparture = restoreSeenDeparture ?: !PresenceStatus.connected.value
         _parkedNearby.value = !seenDeparture // in range → parked nearby; gone → waiting for return
+        // Links actually down at entry (not a restored sub-state): the car really left.
+        if (restoreSeenDeparture == null && seenDeparture) blindDeparture.linksDropped()
+        blindSkipLogged = false
         // Persist so a near-instant restart (app upgrade) can resume passive with the same sub-state.
         settings.passiveIdle = true
         settings.passiveSeenDeparture = seenDeparture
@@ -1181,11 +1216,15 @@ class PresenceService : Service() {
         return true
     }
 
-    /** Proximity woke us (or unlock): leave passive — re-acquire the wake lock and rebuild BLE. */
-    private suspend fun exitPassive() = transition.withLock { exitPassiveLocked() }
+    /**
+     * Proximity woke us (or unlock): leave passive — re-acquire the wake lock and rebuild BLE.
+     * [automatic]: the PK autoConnect or a scan return (not a user wake) — checked against a recent
+     * blind departure ([BlindDeparturePolicy.woke]).
+     */
+    private suspend fun exitPassive(automatic: Boolean = false) = transition.withLock { exitPassiveLocked(automatic) }
 
     /** [exitPassive] body; caller holds [transition]. */
-    private suspend fun exitPassiveLocked() {
+    private suspend fun exitPassiveLocked(automatic: Boolean = false) {
         // Read bedtime fresh too: while passive (no wake lock, poll stalled, screen already off) a
         // scheduled bedtime start has only the observer callback to report it. If that was lost or
         // delayed, a proximity wake would bring the key fully active during bedtime; this catches
@@ -1209,6 +1248,11 @@ class PresenceService : Service() {
             DebugLog.add("presence: proximity woke but watch locked — staying down")
             updateNotification(LOCKED_TEXT)
             return
+        }
+        if (!automatic) {
+            blindDeparture.manualWake() // a user wake: a pending blind departure can't be bounced by a later one
+        } else if (blindDeparture.woke(SystemClock.elapsedRealtime())) {
+            DebugLog.add("presence: blind departure bounced — car never left; not assuming departures blind until one is observed")
         }
         wokeFromPassive = true
         activeAuthenticated = PresenceStatus.connected.value

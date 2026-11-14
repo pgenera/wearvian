@@ -49,6 +49,10 @@ object ParkedIdlePolicy {
  * gives no MATCH_LOST, so no departure, and the real return reads as "still parked beside it". A
  * sighting soon after arming is still "parked nearby".
  *
+ * [departureAssumed] tells an assumed loss ([assumeAllLost]: the scan was just armed or was down, so
+ * nothing was actually observed to leave) from an observed one (a MATCH_LOST emptied the set), so a
+ * departure confirmed from the former can be judged "blind" ([BlindDeparturePolicy]).
+ *
  * Not thread-safe: confined to the service's single-thread scope.
  */
 class ProximityTracker(private val debounceMs: Long, private val strandMs: Long) {
@@ -69,8 +73,17 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
     private var sightedSinceArm = false
     /** How long the set must stay empty to count as gone; longer after [assumeAllLost] with a window. */
     private var emptyWindowMs = debounceMs
+    /** The set is empty because [assumeAllLost] said so, and nothing has been sighted since. */
+    private var lossAssumed = false
 
     val size: Int get() = seen.size
+
+    /**
+     * True iff the current all-lost state was ASSUMED ([assumeAllLost]) and no node has been
+     * sighted since — a departure confirmed now is blind, not observed. Cleared by any sighting,
+     * by a MATCH_LOST that empties the set (an observed loss), and by [reset].
+     */
+    val departureAssumed: Boolean get() = lossAssumed
 
     /**
      * Forget every node. Pass [nowMs] when a fresh scan is being armed (it re-reports every node in
@@ -84,6 +97,7 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         armedAtMs = nowMs
         sightedSinceArm = false
         emptyWindowMs = debounceMs
+        lossAssumed = false
     }
 
     /**
@@ -98,6 +112,7 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         emptySinceMs = null
         partialLossSinceMs = null // any sighting is fresh evidence; a later loss restarts the clock
         sightedSinceArm = true
+        lossAssumed = false
         val gone = departureConfirmed ||
             (wasEmpty && emptyFor != null && emptyFor >= emptyWindowMs) ||
             (strandedFor != null && strandedFor >= strandMs) ||
@@ -118,6 +133,7 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         partialLossSinceMs = null // the normal all-lost debounce takes over
         emptySinceMs = nowMs
         emptyWindowMs = debounceMs
+        lossAssumed = false
         return true
     }
 
@@ -132,12 +148,87 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
         partialLossSinceMs = null
         emptySinceMs = nowMs
         emptyWindowMs = windowMs
+        lossAssumed = true
     }
 
     /** True iff every node has been gone for at least the current window as of [nowMs]. */
     fun departureDue(nowMs: Long): Boolean {
         val since = emptySinceMs ?: return false
         return seen.isEmpty() && nowMs - since >= emptyWindowMs
+    }
+}
+
+/**
+ * Makes the blind parked-nearby departure ([PresenceService.armProximityScan]) bounce at most once
+ * (pure, unit-tested; judged lazily from `elapsedRealtime()`, no timers).
+ *
+ * A scan armed while parked nearby assumes every node lost and confirms a departure if it reports
+ * nothing within the arm window, so a wearer who walks off before the scan ever reports the car
+ * still gets a return wake. But where the offloaded scan can't see the parked car at all (marginal
+ * signal indoors, while a direct connection still works) that "departure" is false: the PK
+ * autoConnect it arms completes at once, the session authenticates, the parked-idle drop sends the
+ * key passive again 15 minutes later, and the same blind countdown repeats — all night.
+ *
+ * So: when a passive stretch ends in an AUTOMATIC wake (PK autoConnect or scan return, not a user
+ * wake) within [BOUNCE_MS] of a blind departure, the car never left — stop assuming departures blind
+ * ([allowBlindCountdown] = false) until one is observed (a MATCH_LOST after a sighting) or the key
+ * goes passive because the links actually dropped. The cost is the pre-blind-countdown limitation:
+ * in that spot the key stays "Parked nearby" until an observed departure, a tap, or the app is
+ * opened. [BOUNCE_MS] is generous (a background autoConnect at marginal signal can take several
+ * minutes): the key still wakes on a bounce; the only effect is that later blind countdowns (and the
+ * blind-arm backstop, see [PresenceService.armProximityScan]) are skipped, and a false bounce clears
+ * the next time the links really drop. A user wake drops a pending blind departure ([manualWake]).
+ */
+class BlindDeparturePolicy {
+    private var suppressed = false
+    /** elapsedRealtime of the latest blind departure not yet followed by a wake; null: none. */
+    private var blindDepartedAtMs: Long? = null
+
+    /** Blind departure countdowns may run (none has bounced since the last observed departure). */
+    val allowBlindCountdown: Boolean get() = !suppressed
+
+    /**
+     * A departure was confirmed at [nowMs]. [blind]: from an assumed loss with no sighting since
+     * ([ProximityTracker.departureAssumed]). An observed departure clears the suppression.
+     */
+    fun departed(blind: Boolean, nowMs: Long) {
+        if (blind) {
+            blindDepartedAtMs = nowMs
+        } else {
+            blindDepartedAtMs = null
+            suppressed = false
+        }
+    }
+
+    /**
+     * Passive was left by an automatic wake at [nowMs]. @return true iff this bounced a blind
+     * departure (the car never left), which suppresses blind countdowns from now on.
+     */
+    fun woke(nowMs: Long): Boolean {
+        val at = blindDepartedAtMs ?: return false
+        blindDepartedAtMs = null
+        if (nowMs - at > BOUNCE_MS) return false
+        suppressed = true
+        return true
+    }
+
+    /**
+     * Passive was left by a USER wake (tap, app opened, unlock): drop any pending blind departure, so
+     * a later, unrelated automatic wake can't be matched to it. Leaves the suppression as it is.
+     */
+    fun manualWake() {
+        blindDepartedAtMs = null
+    }
+
+    /** Passive was entered because the links really dropped (the car left): clear the suppression. */
+    fun linksDropped() {
+        suppressed = false
+        blindDepartedAtMs = null
+    }
+
+    companion object {
+        /** An automatic wake this soon after a blind departure means the car never left. */
+        const val BOUNCE_MS = 15 * 60_000L
     }
 }
 
