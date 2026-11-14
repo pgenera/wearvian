@@ -343,13 +343,21 @@ class PresenceService : Service() {
      * accepted limitation this restores (the pre-blind-countdown behavior): where the scan can't see
      * the parked car, after one bounce the key stays "Parked nearby" until an observed departure, a
      * tap, or the app is opened.
+     *
+     * While suppressed, the scan is also armed WITHOUT the blind-arm backstop ([ProximityTracker.reset]
+     * with no arming time), so a first sighting more than [STRANDED_LOSS_MS] after arming reads as
+     * "still parked nearby", not a return: suppression already means the scan here doesn't report the
+     * parked car in time, so a late first sighting is no evidence the car left and came back —
+     * otherwise a merely slow scan would loop the same way. Again the pre-R4 behavior in that spot.
      */
     private fun armProximityScan(parkedWindowMs: Long = PARKED_ARM_WINDOW_MS): Boolean {
         val enrollment = EnrollmentStore(this).load() ?: return false
         ProximityWake.stopScan(this, proximityCallback)
         val now = SystemClock.elapsedRealtime()
-        proximity.reset(now) // the new scan re-reports every node in range
-        if (!seenDeparture && blindCountdownAllowed()) {
+        // Parked nearby with blind departures suppressed: no blind countdown and no blind-arm backstop.
+        val blindOk = seenDeparture || blindCountdownAllowed()
+        proximity.reset(if (blindOk) now else null) // the new scan re-reports every node in range
+        if (!seenDeparture && blindOk) {
             proximity.assumeAllLost(now, parkedWindowMs)
             startDepartureCountdown(parkedWindowMs)
         }
@@ -1166,7 +1174,9 @@ class PresenceService : Service() {
             updateNotification(LOCKED_TEXT)
             return
         }
-        if (automatic && blindDeparture.woke(SystemClock.elapsedRealtime())) {
+        if (!automatic) {
+            blindDeparture.manualWake() // a user wake: a pending blind departure can't be bounced by a later one
+        } else if (blindDeparture.woke(SystemClock.elapsedRealtime())) {
             DebugLog.add("presence: blind departure bounced — car never left; not assuming departures blind until one is observed")
         }
         wokeFromPassive = true

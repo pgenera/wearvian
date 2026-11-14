@@ -276,6 +276,15 @@ class ProximityTrackerTest {
         t.reset()
         assertFalse(t.departureAssumed)
     }
+
+    @Test
+    fun armedWithoutTheBlindBackstopALateFirstSightingIsParkedNearby() {
+        // Blind departures suppressed: armProximityScan arms with reset(null).
+        t.reset(nowMs = null)
+        assertEquals(ProximityTracker.Found.PRESENT, t.found("A", strand + 60_000L, departureConfirmed = false))
+        t.reset(nowMs = 0L) // contrast: the backstop armed
+        assertEquals(ProximityTracker.Found.RETURN, t.found("A", strand + 60_000L, departureConfirmed = false))
+    }
 }
 
 class BlindDeparturePolicyTest {
@@ -367,6 +376,77 @@ class BlindDeparturePolicyTest {
             t += 15 * min
         }
         assertEquals(1, bounces)
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aUserWakeDropsAPendingBlindDeparture() {
+        p.departed(blind = true, nowMs = 0L)
+        p.manualWake() // tapped awake: not a bounce
+        assertTrue(p.allowBlindCountdown)
+        assertFalse("a later automatic wake isn't matched to it", p.woke(60_000L))
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aUserWakeKeepsTheSuppression() {
+        p.departed(blind = true, nowMs = 0L)
+        p.woke(1_000L)
+        p.manualWake()
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aSlowAutoConnectWithinFifteenMinutesStillCountsAsABounce() {
+        p.departed(blind = true, nowMs = 0L)
+        assertTrue(p.woke(14 * min))
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    /**
+     * Policy + tracker as [PresenceService] drives them overnight beside the car, with a scan that
+     * reports the car only 4 minutes after each arm (past both the 90 s window and the 3 min blind
+     * backstop): exactly one wake, then "Parked nearby" for the rest of the night.
+     */
+    @Test
+    fun overnightWithASlowScanWakesExactlyOnce() {
+        val tr = ProximityTracker(debounceMs = 30_000L, strandMs = 3 * min)
+        val armWindow = 90_000L
+        val sightingDelay = 4 * min
+        var t = 0L
+        var wakes = 0
+        repeat(30) {
+            // Parked-idle → passive with a link up: seenDeparture = false, armProximityScan.
+            var seenDeparture = false
+            val blindOk = p.allowBlindCountdown
+            tr.reset(if (blindOk) t else null)
+            if (blindOk) tr.assumeAllLost(t, armWindow)
+            val armedAt = t
+            var woke = false
+            // The blind countdown fires first if it runs (the scan is still silent at 90 s).
+            if (blindOk && tr.departureDue(armedAt + armWindow)) {
+                p.departed(blind = tr.departureAssumed, nowMs = armedAt + armWindow)
+                seenDeparture = true
+                // The PK autoConnect, armed by the "departure", completes at once beside the car.
+                woke = true
+                t = armedAt + armWindow + 2_000L
+                p.woke(t)
+            }
+            if (!woke) {
+                t = armedAt + sightingDelay
+                if (tr.found("A", t, seenDeparture) == ProximityTracker.Found.RETURN) {
+                    woke = true
+                    p.woke(t)
+                }
+            }
+            if (woke) {
+                wakes++
+                t += 15 * min // active until the parked-idle drop
+            } else {
+                t += 60 * min // stays parked nearby; next passive stretch (e.g. after a tap) later
+            }
+        }
+        assertEquals(1, wakes)
         assertFalse(p.allowBlindCountdown)
     }
 }

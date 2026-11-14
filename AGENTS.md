@@ -125,8 +125,9 @@ Deep detail lives in `../rivian-re` and `docs/`; the essentials:
   `service/PassivePolicy.kt`): a scan armed while parked nearby assumes every node lost and confirms
   a departure ("blind") if it reports nothing within 90 s, so walking off before the scan sees the
   car still arms the return wake. That bounce happens **at most once**: an automatic wake (PK
-  autoConnect / scan return) within 5 min of a blind departure means the scan can't see the parked
-  car there, and later blind countdowns are skipped until a departure is observed (MATCH_LOST after
+  autoConnect / scan return) within 15 min of a blind departure means the scan can't see the parked
+  car there, and later blind countdowns — and the 3-min blind-arm backstop, so a late first sighting
+  reads as "still parked" — are skipped until a departure is observed (MATCH_LOST after
   a sighting) or the key goes passive with the links down. Accepted limitation (the pre-R4
   behavior): in such a spot, after one bounce the key stays "Parked nearby" until an observed
   departure, a tap, or the app is opened. Without the once-only rule a parked phone key looped

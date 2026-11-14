@@ -174,8 +174,10 @@ class ProximityTracker(private val debounceMs: Long, private val strandMs: Long)
  * ([allowBlindCountdown] = false) until one is observed (a MATCH_LOST after a sighting) or the key
  * goes passive because the links actually dropped. The cost is the pre-blind-countdown limitation:
  * in that spot the key stays "Parked nearby" until an observed departure, a tap, or the app is
- * opened. [BOUNCE_MS] can be generous: the key still wakes on a bounce; the only effect is that
- * later blind countdowns are skipped.
+ * opened. [BOUNCE_MS] is generous (a background autoConnect at marginal signal can take several
+ * minutes): the key still wakes on a bounce; the only effect is that later blind countdowns (and the
+ * blind-arm backstop, see [PresenceService.armProximityScan]) are skipped, and a false bounce clears
+ * the next time the links really drop. A user wake drops a pending blind departure ([manualWake]).
  */
 class BlindDeparturePolicy {
     private var suppressed = false
@@ -210,6 +212,14 @@ class BlindDeparturePolicy {
         return true
     }
 
+    /**
+     * Passive was left by a USER wake (tap, app opened, unlock): drop any pending blind departure, so
+     * a later, unrelated automatic wake can't be matched to it. Leaves the suppression as it is.
+     */
+    fun manualWake() {
+        blindDepartedAtMs = null
+    }
+
     /** Passive was entered because the links really dropped (the car left): clear the suppression. */
     fun linksDropped() {
         suppressed = false
@@ -218,7 +228,7 @@ class BlindDeparturePolicy {
 
     companion object {
         /** An automatic wake this soon after a blind departure means the car never left. */
-        const val BOUNCE_MS = 5 * 60_000L
+        const val BOUNCE_MS = 15 * 60_000L
     }
 }
 
