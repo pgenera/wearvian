@@ -121,6 +121,16 @@ Deep detail lives in `../rivian-re` and `docs/`; the essentials:
   "Parked nearby" = `passive && !seenDeparture` (car in range); "departed" = `passive &&
   seenDeparture`. Long-press the key → passive; an explicit **unlock** (only) from parked-nearby
   reactivates the live key.
+- **Parked-nearby departure** (`armProximityScan`, `ProximityTracker`, `BlindDeparturePolicy` in
+  `service/PassivePolicy.kt`): a scan armed while parked nearby assumes every node lost and confirms
+  a departure ("blind") if it reports nothing within 90 s, so walking off before the scan sees the
+  car still arms the return wake. That bounce happens **at most once**: an automatic wake (PK
+  autoConnect / scan return) within 5 min of a blind departure means the scan can't see the parked
+  car there, and later blind countdowns are skipped until a departure is observed (MATCH_LOST after
+  a sighting) or the key goes passive with the links down. Accepted limitation (the pre-R4
+  behavior): in such a spot, after one bounce the key stays "Parked nearby" until an observed
+  departure, a tap, or the app is opened. Without the once-only rule a parked phone key looped
+  parked-idle → blind departure → wake → 15 min active all night.
 - **BLE connection interval:** the official app runs ~45 ms baseline, relaxing to 90/135 ms — it
   relaxes intervals rather than tearing down. Match that; don't thrash HIGH/teardown.
 - **Passive entry is a continuous authenticated session** (heartbeat `0x1b` + control `0x20` +

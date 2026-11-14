@@ -236,6 +236,139 @@ class ProximityTrackerTest {
         assertTrue(t.departureDue(20_000L + debounce))
         assertEquals(ProximityTracker.Found.RETURN, t.found("A", 20_000L + debounce, departureConfirmed = false))
     }
+
+    @Test
+    fun anAssumedLossWithNoSightingIsABlindDeparture() {
+        t.reset(nowMs = 0L)
+        assertFalse("a fresh arm assumes nothing yet", t.departureAssumed)
+        t.assumeAllLost(0L, 90_000L)
+        assertTrue(t.departureDue(90_000L))
+        assertTrue(t.departureAssumed)
+    }
+
+    @Test
+    fun aSightingAfterTheAssumedLossMakesALaterDepartureObserved() {
+        t.reset(nowMs = 0L)
+        t.assumeAllLost(0L, 90_000L)
+        t.found("A", 10_000L, departureConfirmed = false)
+        assertFalse(t.departureAssumed)
+        assertTrue(t.lost("A", 20_000L))
+        assertTrue(t.departureDue(20_000L + debounce))
+        assertFalse("emptied by a real MATCH_LOST", t.departureAssumed)
+    }
+
+    @Test
+    fun anObservedLossThenAnAssumedOneIsBlindAgain() {
+        // e.g. the scan failed after it had been seeing the car: the new loss is assumed.
+        t.reset(nowMs = 0L)
+        t.found("A", 1_000L, departureConfirmed = false)
+        t.lost("A", 2_000L)
+        t.assumeAllLost(3_000L)
+        assertTrue(t.departureAssumed)
+    }
+
+    @Test
+    fun resetClearsTheAssumedLoss() {
+        t.assumeAllLost(0L, 90_000L)
+        t.reset(nowMs = 1_000L)
+        assertFalse(t.departureAssumed)
+        t.assumeAllLost(1_000L)
+        t.reset()
+        assertFalse(t.departureAssumed)
+    }
+}
+
+class BlindDeparturePolicyTest {
+    private val min = 60_000L
+    private val p = BlindDeparturePolicy()
+
+    @Test
+    fun blindCountdownsAllowedByDefault() {
+        assertTrue(p.allowBlindCountdown)
+        assertFalse("a wake with no departure is no bounce", p.woke(1_000L))
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aQuickWakeAfterABlindDepartureSuppressesLaterOnes() {
+        p.departed(blind = true, nowMs = 0L)
+        assertTrue(p.allowBlindCountdown)
+        assertTrue(p.woke(1_000L)) // the autoConnect completed at once: the car never left
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun theBounceWindowIsInclusive() {
+        p.departed(blind = true, nowMs = 0L)
+        assertTrue(p.woke(BlindDeparturePolicy.BOUNCE_MS))
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aLateWakeIsAGenuineReturn() {
+        p.departed(blind = true, nowMs = 0L)
+        assertFalse(p.woke(BlindDeparturePolicy.BOUNCE_MS + 1))
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aWakeAfterAnObservedDepartureIsNoBounce() {
+        p.departed(blind = false, nowMs = 0L)
+        assertFalse(p.woke(1_000L))
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aBlindDepartureCountsForOneWakeOnly() {
+        p.departed(blind = true, nowMs = 0L)
+        assertFalse(p.woke(BlindDeparturePolicy.BOUNCE_MS + 1))
+        assertFalse("already consumed", p.woke(BlindDeparturePolicy.BOUNCE_MS + 2))
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun anObservedDepartureClearsTheSuppression() {
+        p.departed(blind = true, nowMs = 0L)
+        p.woke(1_000L)
+        assertFalse(p.allowBlindCountdown)
+        p.departed(blind = false, nowMs = 60 * min)
+        assertTrue(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun aLaterBlindDepartureDoesNotClearTheSuppression() {
+        p.departed(blind = true, nowMs = 0L)
+        p.woke(1_000L)
+        p.departed(blind = true, nowMs = 60 * min) // e.g. a scan-failure countdown elsewhere
+        assertFalse(p.allowBlindCountdown)
+    }
+
+    @Test
+    fun linksDroppingClearsTheSuppression() {
+        p.departed(blind = true, nowMs = 0L)
+        p.woke(1_000L)
+        p.linksDropped()
+        assertTrue(p.allowBlindCountdown)
+        assertFalse("nothing pending after a reset", p.woke(2_000L))
+    }
+
+    @Test
+    fun theOvernightLoopBouncesOnce() {
+        // parked-idle → blind departure → autoConnect wake → 15 min active → parked-idle → …
+        var t = 0L
+        var bounces = 0
+        repeat(30) {
+            if (p.allowBlindCountdown) {
+                t += 90_000L
+                p.departed(blind = true, nowMs = t)
+                t += 2_000L
+                if (p.woke(t)) bounces++
+            }
+            t += 15 * min
+        }
+        assertEquals(1, bounces)
+        assertFalse(p.allowBlindCountdown)
+    }
 }
 
 class ScanRetryPolicyTest {
