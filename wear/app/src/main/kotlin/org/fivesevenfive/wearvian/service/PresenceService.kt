@@ -164,8 +164,9 @@ class PresenceService : Service() {
             if (lockJob?.isActive != true) return // not started (or stopping): nothing to sync
             scope.launch {
                 withTimedWakeLock("wearvian:lock-sync", LOCK_SYNC_WAKE_MS) {
-                    checkBedtime() // bedtime turns the screen off: backstop for a missed observer callback
-                    syncLockState()
+                    // Bedtime turns the screen off: backstop for a missed observer callback. If it
+                    // turned the key off, don't let an unlock start BLE on a stopping service.
+                    if (!checkBedtime()) syncLockState()
                 }
             }
         }
@@ -176,6 +177,9 @@ class PresenceService : Service() {
      * Baselined when the service first comes up, so a key the user starts during bedtime stays on.
      */
     @Volatile private var bedtimeState = BedtimeState.UNKNOWN
+
+    /** Latched once [checkBedtime] turned the key off, until [onDestroy] (which sets [stopping]). */
+    @Volatile private var bedtimeStopped = false
 
     /** Bedtime mode's (undocumented) settings changed: re-check on [scope]. */
     private val bedtimeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -740,7 +744,7 @@ class PresenceService : Service() {
     private suspend fun monitorLock() {
         while (true) {
             if (keyguardLocked() != locked) syncLockState()
-            checkBedtime()
+            if (checkBedtime()) return // key turned off: the service is stopping
             delay(LOCK_POLL_MS)
         }
     }
@@ -749,21 +753,25 @@ class PresenceService : Service() {
      * Re-read bedtime mode and, on its rising edge ([BedtimePolicy.shouldTurnKeyOff]), turn the key
      * OFF exactly as [KeyOffReceiver] does: disarm, then stop — [onDestroy] tears BLE down and
      * refreshes the tile, and the UI follows [running] + keyArmed. Not re-armed when bedtime ends.
-     * Runs on [scope]; called from [bedtimeObserver], [lockReceiver] and the [monitorLock] poll.
+     * Runs on [scope]; called from [bedtimeObserver], [lockReceiver], the [monitorLock] poll and
+     * [exitPassiveLocked]. @return true if the key was turned off (now or earlier): the service is
+     * stopping and the caller must not bring anything up.
      */
-    private fun checkBedtime() {
-        if (stopping) return
+    private fun checkBedtime(): Boolean {
+        if (stopping || bedtimeStopped) return true
         val previous = bedtimeState
         val now = BedtimeMode.read(this)
         bedtimeState = now
         if (!BedtimePolicy.shouldTurnKeyOff(previous, now)) {
             if (now != previous) DebugLog.add("presence: bedtime mode ${previous.name} → ${now.name}")
-            return
+            return false
         }
+        bedtimeStopped = true
         DebugLog.add("presence: bedtime mode on — turning key OFF")
         settings.keyArmed = false
         postAlert(R.string.bedtime_key_off_title, R.string.bedtime_key_off_text, NotificationCompat.CATEGORY_STATUS, "bedtime key-off")
         stopSelf()
+        return true
     }
 
     private fun keyguardLocked(): Boolean = keyguard?.isDeviceLocked == true
@@ -1178,6 +1186,11 @@ class PresenceService : Service() {
 
     /** [exitPassive] body; caller holds [transition]. */
     private suspend fun exitPassiveLocked() {
+        // Read bedtime fresh too: while passive (no wake lock, poll stalled, screen already off) a
+        // scheduled bedtime start has only the observer callback to report it. If that was lost or
+        // delayed, a proximity wake would bring the key fully active during bedtime; this catches
+        // the rising edge first. A user wake during bedtime is not a rising edge and still proceeds.
+        if (checkBedtime()) return
         // Read the keyguard fresh first: a watch taken off while passive still has locked == false
         // until the poll runs. If it is locked, the lock transition tears passive down (recording
         // wasPassive) and we stop here instead of taking the wake lock for a session that can't
