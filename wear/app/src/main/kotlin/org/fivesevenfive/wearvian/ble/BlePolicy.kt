@@ -126,6 +126,64 @@ object SensorSeed {
 }
 
 /**
+ * Session bookkeeping for one presence loop (PresenceService.sessionsLoop): which addresses have a
+ * session, which [SessionLabels] are taken, and each sensor session's label + handle (its Job), so
+ * driving-doze can close the sensor links and the loop can reopen them when it ends. Pure (the
+ * handle type is generic) and unit-tested; confined to the service's single-thread scope.
+ */
+class SensorBook<H> {
+    /** Addresses with a session (or one about to be launched) — the PRIMARY's too. */
+    val started = HashSet<String>()
+    /** PresenceStatus labels in use: unique per session. */
+    val labels = HashSet<String>()
+    private val primaryAddresses = HashSet<String>()
+    private val primaryLabels = HashSet<String>()
+    private val sensors = LinkedHashMap<String, Pair<String, H>>() // sensor address → (label, handle)
+    /** The job staggering the saved-sensor sessions, while it may still be launching them. */
+    var seeder: H? = null
+    /** The saved sensor sessions were started ([SensorSeed]); cleared by [closeSensors]. */
+    var seeded = false
+    var rescanMs = RescanSchedule.MIN_MS
+    var lastScanAt = 0L
+
+    /** Record the PRIMARY phone-key session. It is never closed by [closeSensors]. */
+    fun primary(address: String, label: String) {
+        started.add(address); labels.add(label)
+        primaryAddresses.add(address); primaryLabels.add(label)
+    }
+
+    /** Record a launched sensor session ([address] is already in [started], [label] in [labels]). */
+    fun sensor(address: String, label: String, handle: H) {
+        sensors[address] = label to handle
+    }
+
+    val sensorCount: Int get() = sensors.size
+
+    /** What [closeSensors] took out: the PresenceStatus labels to drop and the handles to cancel. */
+    class Closed<H>(val labels: List<String>, val handles: List<H>)
+
+    /**
+     * Driving-doze entry: forget every sensor session (and the seeder, which could still launch
+     * more) so the caller can cancel them, and reset what reopening needs: sensor addresses leave
+     * [started] and their labels leave [labels] (the same "S3" comes back), [seeded] clears so the
+     * saved sensors are started again, and the discovery scan is due at once at the minimum
+     * interval. The PRIMARY's address and label stay, so it can never be opened as a sensor and its
+     * session is untouched.
+     */
+    fun closeSensors(): Closed<H> {
+        val closed = Closed(sensors.values.map { it.first }, listOfNotNull(seeder) + sensors.values.map { it.second })
+        sensors.clear()
+        seeder = null
+        started.retainAll(primaryAddresses)
+        labels.retainAll(primaryLabels)
+        seeded = false
+        rescanMs = RescanSchedule.MIN_MS
+        lastScanAt = 0L
+        return closed
+    }
+}
+
+/**
  * Sensor-discovery cadence for the presence loop. Every scan is a 6 s LOW_LATENCY window, so once
  * nothing new turns up the interval backs off (the sessions already launched reconnect on their
  * own); any new sensor snaps it back to the minimum. A failed scan (null) keeps the interval.

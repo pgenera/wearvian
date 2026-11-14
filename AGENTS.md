@@ -139,6 +139,16 @@ Deep detail lives in `../rivian-re` and `docs/`; the essentials:
   behavior): in such a spot, after one bounce the key stays "Parked nearby" until an observed
   departure, a tap, or the app is opened. Without the once-only rule a parked phone key looped
   parked-idle → blind departure → wake → 15 min active all night.
+- **Driving-doze** (`monitorDriving` / `enterDriving` / `exitDriving` in `service/PresenceService.kt`;
+  phone keys only): once the car is in gear with a live link, the key releases the wake lock, pauses
+  heartbeats (`VehicleSession.heartbeatsPaused`) and **closes every location-sensor session**
+  (`SensorBook.closeSensors` in `ble/BlePolicy.kt` resets `started`/`labels`/`seeded`/rescan; their
+  `PresenceStatus` entries are removed, not left DOWN). Only the PRIMARY (PK) link stays, at
+  LOW_POWER, with 0x1c and the command drain. Back in Park — or the PK link dropping in gear, which
+  latches driving-doze off until Park — reacquires the wake lock and hurries the presence loop, which
+  re-seeds the saved sensors and rescans at once. The parked-idle drop never goes passive in gear
+  (d977a67: a passive key can't see the return to Park). Watch keys keep their own standby
+  (`monitorWatchPresence`) and never close sensors.
 - **BLE connection interval:** the official app runs ~45 ms baseline, relaxing to 90/135 ms — it
   relaxes intervals rather than tearing down. Match that; don't thrash HIGH/teardown.
 - **Passive entry is a continuous authenticated session** (heartbeat `0x1b` + control `0x20` +

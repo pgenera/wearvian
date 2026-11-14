@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -56,6 +57,7 @@ import org.fivesevenfive.wearvian.ble.PassiveAutoConnect
 import org.fivesevenfive.wearvian.ble.PhoneKey
 import org.fivesevenfive.wearvian.ble.ReconnectHurry
 import org.fivesevenfive.wearvian.ble.RescanSchedule
+import org.fivesevenfive.wearvian.ble.SensorBook
 import org.fivesevenfive.wearvian.ble.SensorSeed
 import org.fivesevenfive.wearvian.ble.SessionLabels
 import org.fivesevenfive.wearvian.ble.ProximityWake
@@ -250,6 +252,10 @@ class PresenceService : Service() {
      * pause→drop→reconnect→pause. Cleared on the next Park.
      */
     @Volatile private var drivingDozeDisabled = false
+
+    /** The running presence loop's session bookkeeping (null with no loop); driving-doze closes its
+     *  sensor sessions. Only touched on the single-thread [scope]. */
+    private var sensorBook: SensorBook<Job>? = null
 
     /**
      * True once [onDestroy] has begun. Gates [updateNotification] so a notification observer racing
@@ -980,15 +986,18 @@ class PresenceService : Service() {
 
     /**
      * Driving-doze: when the gear leaves Park the car is started and being driven, so we don't need
-     * to hold presence. Release the wake lock and pause heartbeats, but KEEP the GATT link + 0x1c
-     * subscription — the BT controller still delivers status frames while the CPU dozes, so we catch
-     * the return to Park (which re-arms presence). The watch stays in BLE range the whole drive (it's
-     * on the driver's wrist), so the link doesn't drop from range.
+     * to hold presence. Release the wake lock and pause heartbeats, but KEEP the PRIMARY (phone-key)
+     * GATT link + 0x1c subscription — the BT controller still delivers status frames while the CPU
+     * dozes, so we catch the return to Park (which re-arms presence), and queued commands still drain
+     * on it. The location-sensor links carry nothing but ranging heartbeats, so they are CLOSED for
+     * the drive ([enterDriving]) and reopened the moment driving-doze ends ([exitDriving]). The watch
+     * stays in BLE range the whole drive (it's on the driver's wrist), so the link doesn't drop from
+     * range. Phone keys only: watch keys handle gear in [monitorWatchPresence] and keep their sensors.
      *
      * VALIDATED on-vehicle 2026-06-16 (drive-sleep.log): 0x1c kept streaming through the heartbeat-less
      * window on a single continuous link (no reconnect). If the link ever DOES drop mid-gear
      * (interference / a module hiccup), [drivingDozeDisabled] latches the optimization off for the rest
-     * of the drive and we resume normal presence.
+     * of the drive and we resume normal presence (sensors included).
      */
     private suspend fun monitorDriving() {
         if (watchMode) return // watch mode manages gear/heartbeats in monitorWatchPresence
@@ -1012,25 +1021,56 @@ class PresenceService : Service() {
         }
     }
 
-    /** Enter driving-doze: keep the connection/0x1c, drop the wake lock + heartbeats. */
-    private fun enterDriving(gear: VehicleStatus.Gear) {
-        if (driving) return
+    /**
+     * Enter driving-doze: keep the PRIMARY connection/0x1c, close the sensor links, drop the wake
+     * lock + heartbeats. Under [transition] (the close suspends), re-checking the mode a lock /
+     * passive / Bluetooth-off transition may have changed meanwhile. The sensors are closed BEFORE
+     * the wake lock goes (and under a short timed one): with no wake lock the CPU sleeps and a later
+     * loop tick could be minutes away, leaving the links open.
+     */
+    private suspend fun enterDriving(gear: VehicleStatus.Gear) = transition.withLock {
+        if (driving || locked || passive || btOff) return@withLock
         driving = true
         VehicleSession.heartbeatsPaused = true
+        val closed = withTimedWakeLock("wearvian:driving-close", DRIVING_CLOSE_WAKE_MS) { closeSensorsForDriving() }
         releaseWakeLock()
         updateNotification(DRIVING_TEXT)
-        DebugLog.add("presence: → driving-doze (gear=$gear) — wake lock released, heartbeats paused, link kept for 0x1c")
+        DebugLog.add("presence: driving-doze: closed $closed sensor link(s), keeping phone key")
+        DebugLog.add("presence: → driving-doze (gear=$gear) — wake lock released, heartbeats paused, PK link kept for 0x1c")
         TileRefresher.refresh(this)
     }
 
-    /** Leave driving-doze: resume presence (wake lock + heartbeats). */
-    private fun exitDriving(why: String) {
-        if (!driving) return
+    /**
+     * Cancel the running loop's sensor sessions (and the saved-sensor seeder) and wait for them to
+     * finish — each session's `finally` disconnects + closes its BluetoothGatt — then drop their
+     * PresenceStatus entries so they don't linger as DOWN links. The PRIMARY is untouched.
+     * [SensorBook.closeSensors] resets the bookkeeping so the loop reopens them once unpaused.
+     * @return the number of sensor sessions closed.
+     */
+    private suspend fun closeSensorsForDriving(): Int {
+        val book = sensorBook ?: return 0
+        val closed = book.closeSensors()
+        closed.handles.forEach { it.cancel() }
+        closed.handles.joinAll()
+        closed.labels.forEach { PresenceStatus.remove(it) }
+        return closed.labels.size
+    }
+
+    /**
+     * Leave driving-doze: resume presence (wake lock first, then heartbeats), and hurry the presence
+     * loop so its next pass reopens the sensor sessions (saved ones seeded, discovery scan due) now,
+     * not after [LOOP_TICK_MS]. Under [transition], like [enterDriving]; a lock / passive /
+     * Bluetooth-off transition already cleared [driving] and tore everything down itself.
+     */
+    private suspend fun exitDriving(why: String) = transition.withLock {
+        if (!driving) return@withLock
+        acquireWakeLock()
         driving = false
         VehicleSession.heartbeatsPaused = false
-        acquireWakeLock()
+        ReconnectHurry.hurry()
         updateNotification(PresenceStatus.summary.value)
         DebugLog.add("presence: ← driving-doze ($why) — wake lock reacquired, heartbeats resumed")
+        DebugLog.add("presence: driving-doze ended: restarting sensor sessions")
         TileRefresher.refresh(this)
     }
 
@@ -1268,26 +1308,33 @@ class PresenceService : Service() {
         val sharedSecret = awaitSharedSecret(enrollment)
         // coroutineScope returns only once every session (its children) has finished, so the copy
         // shared by all of them can be zeroed here (loop cancelled on lock / stop).
+        // started / labels / sensor jobs / seeded / rescan schedule — shared with enterDriving,
+        // which closes the sensor sessions (same thread) and resets what reopening them needs.
+        val book = SensorBook<Job>()
+        sensorBook = book
         try {
-            sessionsLoop(enrollment, sharedSecret)
+            sessionsLoop(enrollment, sharedSecret, book)
         } finally {
             sharedSecret.fill(0)
+            if (sensorBook === book) sensorBook = null
         }
     }
 
-    private suspend fun sessionsLoop(enrollment: Enrollment, sharedSecret: ByteArray) = coroutineScope {
+    private suspend fun sessionsLoop(enrollment: Enrollment, sharedSecret: ByteArray, book: SensorBook<Job>) = coroutineScope {
         val bleScope = this
-        val started = HashSet<String>()
-        val labels = HashSet<String>() // PresenceStatus keys: must be unique per session
+        val started = book.started
+        val labels = book.labels // PresenceStatus keys: must be unique per session
         val addresses = VehicleAddressStore(this@PresenceService)
         val svc = RivianBle.vehicleServiceUuid(enrollment.vasVehicleId)
         if (svc == null) DebugLog.add("presence: bad vasVehicleId '${enrollment.vasVehicleId}'; no sensor sessions")
         var pkStarted = false
         var pkMissingLogged = false
-        var rescanMs = RescanSchedule.MIN_MS
-        var lastScanAt = 0L
         var wasPaused = false
-        var seeded = false // sessions for the saved sensor addresses started (once per loop)
+        fun launchSensor(address: String, label: String) {
+            val dev = adapter.getRemoteDevice(address)
+            val job = bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
+            book.sensor(address, label, job)
+        }
 
         while (bleScope.isActive) {
             // PRIMARY phone-key: looked up on every pass, not once — bondedDevices is empty while
@@ -1297,8 +1344,7 @@ class PresenceService : Service() {
                 val pk = PhoneKey.find(this@PresenceService, adapter)
                 if (pk != null) {
                     pkStarted = true
-                    started.add(pk.address)
-                    labels.add(PresenceStatus.PRIMARY_LABEL)
+                    book.primary(pk.address, PresenceStatus.PRIMARY_LABEL)
                     addresses.add(pk.address) // remember for the proximity-wake filters
                     setPhoneKeyMissing(false)
                     bleScope.launch { VehicleSession(this@PresenceService, pk, enrollment, sharedSecret, PresenceStatus.PRIMARY_LABEL, primary = true).runForever(bleScope) }
@@ -1310,7 +1356,9 @@ class PresenceService : Service() {
 
             // Location sensors: scan by the vehicle's VAS id and open a session per new device. Not
             // while heartbeats are paused (driving-doze / watch standby — sensors only carry
-            // heartbeats), and backing off once a scan turns up nothing new.
+            // heartbeats), and backing off once a scan turns up nothing new. Driving-doze also CLOSES
+            // the running sensor sessions ([closeSensorsForDriving]), resetting `seeded` and the scan
+            // schedule, so the first unpaused pass after it (hurried by exitDriving) reopens them.
             val paused = VehicleSession.heartbeatsPaused
             val now = SystemClock.elapsedRealtime()
             val resumed = wasPaused && !paused
@@ -1318,26 +1366,26 @@ class PresenceService : Service() {
             // Sensors already known from earlier sessions: start them now rather than after a 6 s
             // scan re-finds them (the scan below still looks for new ones). Only once the PRIMARY is
             // running, so its address is in `started` and can never be opened as a sensor.
-            if (svc != null && !paused && pkStarted && !seeded) {
-                seeded = true
+            if (svc != null && !paused && pkStarted && !book.seeded) {
+                book.seeded = true
                 val seeds = SensorSeed.toStart(addresses.load(), PhoneKey.storedAddress(this@PresenceService), started)
                 seeds.forEach { started.add(it) }
                 if (seeds.isNotEmpty()) {
                     DebugLog.add("presence: starting ${seeds.size} saved sensor session(s)")
                     // Alongside the discovery scan, staggered as before (one connect at a time).
-                    bleScope.launch {
+                    // Kept as book.seeder: driving-doze cancels it with the sessions.
+                    book.seeder = bleScope.launch {
                         seeds.forEachIndexed { i, address ->
                             if (i > 0) delay(STAGGER_MS)
                             val label = SessionLabels.unique(null, address, labels)
                             DebugLog.ble("·", label, "$address (saved) → session")
-                            val dev = adapter.getRemoteDevice(address)
-                            bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
+                            launchSensor(address, label)
                         }
                     }
                 }
             }
-            if (svc != null && !paused && (resumed || lastScanAt == 0L || now - lastScanAt >= rescanMs)) {
-                lastScanAt = now
+            if (svc != null && !paused && (resumed || book.lastScanAt == 0L || now - book.lastScanAt >= book.rescanMs)) {
+                book.lastScanAt = now
                 val foundNew = runCatching {
                     var launched = 0
                     val hits = SensorScanner(this@PresenceService).discover(svc)
@@ -1347,13 +1395,14 @@ class PresenceService : Service() {
                     hits.sortedByDescending { it.rssi }.forEach { hit ->
                         // The phone key runs as the PRIMARY session above, never as a sensor.
                         if (hit.address.equals(pkAddress, ignoreCase = true) || hit.name == RivianBle.DEVICE_NAME) return@forEach
+                        // Driving-doze began during the 6 s scan: its sensors stay closed until Park.
+                        if (driving) return@forEach
                         if (started.add(hit.address)) {
                             launched++
                             addresses.add(hit.address) // remember for the proximity-wake filters
                             val label = SessionLabels.unique(hit.name, hit.address, labels)
                             DebugLog.ble("·", label, "${hit.name ?: "?"} ${hit.address} rssi=${hit.rssi} → session")
-                            val dev = adapter.getRemoteDevice(hit.address)
-                            bleScope.launch { VehicleSession(this@PresenceService, dev, enrollment, sharedSecret, label, primary = false).runForever(bleScope) }
+                            launchSensor(hit.address, label)
                             // Stagger connects — Android BLE can't reliably do several
                             // concurrent connect/discover attempts at once.
                             delay(STAGGER_MS)
@@ -1365,10 +1414,11 @@ class PresenceService : Service() {
                     DebugLog.add("presence: sensor scan failed — ${it.message}")
                     null
                 }
-                rescanMs = RescanSchedule.next(rescanMs, foundNew)
+                book.rescanMs = RescanSchedule.next(book.rescanMs, foundNew)
             }
-            // A watch-key burst starting (or a tapped command) un-pauses heartbeats: run the next
-            // pass at once instead of after the tick, so sensor sessions come up for the burst.
+            // A watch-key burst starting, driving-doze ending (or a tapped command) un-pauses
+            // heartbeats: run the next pass at once instead of after the tick, so sensor sessions
+            // come up for the burst / the walk away from the parked car.
             ReconnectHurry.delayUnlessHurried(LOOP_TICK_MS)
         }
     }
@@ -1584,6 +1634,8 @@ class PresenceService : Service() {
         /** Presence-loop pass cadence (phone-key lookup retry; sensor rescans run on [RescanSchedule]). */
         private const val LOOP_TICK_MS = 5_000L
         private const val STAGGER_MS = 1_500L
+        /** Bound on the timed wake lock covering driving-doze's sensor-link teardown. */
+        private const val DRIVING_CLOSE_WAKE_MS = 5_000L
         /** No link UP for this long → drop to passive (stay-alive + offloaded proximity watch). This
          *  is now only the BACKSTOP; [departed] usually drops to passive far sooner via [IDLE_PROBE_MS]. */
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L

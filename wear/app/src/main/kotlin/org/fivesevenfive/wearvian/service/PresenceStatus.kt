@@ -46,6 +46,18 @@ object PresenceStatus {
         DebugLog.add("status: $label=$state → \"${_summary.value}\"")
     }
 
+    /**
+     * Forget [label]'s link: a session closed on purpose (driving-doze's sensors), not one that
+     * dropped, so it must not linger as DOWN ("Vehicle disconnected" with the PK down, a stale entry
+     * in [snapshot]). A late DOWN for it is ignored by [set]; a reopened session reports CONNECTING.
+     */
+    fun remove(label: String) {
+        if (links.remove(label) == null) return
+        if (label == PRIMARY_LABEL) _primaryLink.value = null
+        recompute()
+        DebugLog.add("status: $label removed → \"${_summary.value}\"")
+    }
+
     /** Clear all state (presence stopped). */
     fun reset() {
         links.clear()

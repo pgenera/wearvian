@@ -96,4 +96,39 @@ class PresenceStatusTest {
         PresenceStatus.reset()
         assertEquals(null, PresenceStatus.primaryLink.value)
     }
+
+    @Test
+    fun removedSensorDoesNotLingerAsDown() {
+        PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.set("S1", Link.UP)
+        // Driving-doze closes the sensor: its session's finally reports DOWN, then it is removed.
+        PresenceStatus.set("S1", Link.DOWN)
+        PresenceStatus.remove("S1")
+        assertEquals("PK=UP", PresenceStatus.snapshot())
+        assertEquals("1 link · Vehicle connected", PresenceStatus.summary.value)
+        assertTrue(PresenceStatus.connected.value)
+        // With only PK left, a PK drop reads as disconnected — no stale sensor entry behind it.
+        PresenceStatus.set("PK", Link.DOWN)
+        assertEquals("PK=DOWN", PresenceStatus.snapshot())
+        assertFalse(PresenceStatus.connected.value)
+    }
+
+    @Test
+    fun lateDownAfterRemoveIsIgnoredAndAReopenedSessionIsTracked() {
+        PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.set("S1", Link.UP)
+        PresenceStatus.remove("S1")
+        PresenceStatus.set("S1", Link.DOWN)
+        assertEquals("PK=UP", PresenceStatus.snapshot())
+        PresenceStatus.set("S1", Link.CONNECTING)
+        assertEquals("PK=UP S1=CONNECTING", PresenceStatus.snapshot())
+    }
+
+    @Test
+    fun removingAnUnknownLabelIsANoOp() {
+        PresenceStatus.set("PK", Link.UP)
+        PresenceStatus.remove("S9")
+        assertEquals("PK=UP", PresenceStatus.snapshot())
+        assertEquals(Link.UP, PresenceStatus.primaryLink.value)
+    }
 }
