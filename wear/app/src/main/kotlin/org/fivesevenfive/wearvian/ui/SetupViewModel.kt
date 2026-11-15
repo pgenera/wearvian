@@ -34,6 +34,7 @@ import org.fivesevenfive.wearvian.store.TelemetryStore
 import org.fivesevenfive.wearvian.store.VehicleAddressStore
 import org.fivesevenfive.wearvian.tile.TileRefresher
 import org.fivesevenfive.wearvian.store.logPersistentState
+import org.fivesevenfive.wearvian.util.DeviceName
 import org.fivesevenfive.wearvian.util.loge
 import org.fivesevenfive.wearvian.util.logi
 import org.fivesevenfive.wearvian.util.logw
@@ -59,7 +60,7 @@ data class SetupUiState(
     /** Debug-only override that forces [isTruck] on regardless of VIN — for testing the R1T UI. */
     val forceR1t: Boolean = false,
     /** Registered with Rivian as a WATCH key (no passive lock/unlock — manual lock/unlock only) vs a
-     *  phone key (full proximity). Lets the UI reflect the mode; behavior gating lands incrementally. */
+     *  phone key (full proximity). Lets the UI reflect the mode. */
     val asWatch: Boolean = false,
     /** Debug-only TRANSIENT override (Force WaaK): force watch-key behavior regardless of enrollment.
      *  In-memory only ([DebugOverrides]), never persisted. */
@@ -159,7 +160,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 val publicKeyHex = keyManager.ensureKey()
                 logi("startEnrollment: public key ready (len=${publicKeyHex.length}); contacting companion")
-                val result = companion.requestEnrollment(publicKeyHex, deviceName = "Pixel Watch 4")
+                val result = companion.requestEnrollment(publicKeyHex, deviceName = DeviceName.read(getApplication()))
                 if (!result.isOk) error(result.error ?: "Enrollment failed")
                 saveEnrollment(result)
             } catch (t: Throwable) {
@@ -292,8 +293,10 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
         settings.keyArmed = on // arm/disarm intent — survives auto power-save going passive
         // start() on a passive service wakes it to active (PresenceService.onStartCommand); the
         // passive flow collector then clears presencePassive.
-        if (on) PresenceService.start(getApplication()) else PresenceService.stop(getApplication())
-        _state.value = _state.value.copy(presenceRunning = on, keyArmed = on)
+        // A refused start (Bluetooth permission missing, background start blocked) leaves the key armed
+        // but not running — shown as "Key passive", as after a kill — rather than a false "Key active".
+        val started = if (on) PresenceService.start(getApplication()) else { PresenceService.stop(getApplication()); false }
+        _state.value = _state.value.copy(presenceRunning = started, keyArmed = on)
     }
 
     /** True iff the watch has a secure lock (PIN/pattern/password) — required for the

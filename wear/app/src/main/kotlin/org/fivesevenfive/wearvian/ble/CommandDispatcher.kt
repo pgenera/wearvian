@@ -33,6 +33,8 @@ sealed interface CommandOutcome {
  *    peripheral; the bus's TTL bounds the wait instead;
  *  - otherwise (key off, or passive) → one-shot [ActiveCommandManager]. While parked nearby an
  *    UNLOCK also re-activates the key, started only AFTER the one-shot has closed its GATT client.
+ *    (Once the car has departed, passive holds an autoConnect on PK, so ANY one-shot's connection
+ *    completes it and wakes the key: a tap then means the wearer is back at the car.)
  */
 object CommandDispatcher {
 

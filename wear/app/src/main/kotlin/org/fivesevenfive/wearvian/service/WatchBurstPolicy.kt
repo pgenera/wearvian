@@ -15,8 +15,8 @@ package org.fivesevenfive.wearvian.service
  *  - a manual command ([lastManualMs], from [org.fivesevenfive.wearvian.ble.CommandBus]: a live-queue
  *    submit or a successful one-shot).
  *
- * A burst holds for [burstMs] after the last trigger. Manual commands burst unconditionally (a
- * queued command is only drained while heartbeats run); the other triggers only while parked and
+ * A burst holds for [burstMs] after the last trigger. Manual commands burst unconditionally (the
+ * command is sent either way; the presence that follows it needs heartbeats); the other triggers only while parked and
  * awake. Only LIVE state counts, so the stale last-known state kept across passive/lock can neither
  * trigger nor suppress a burst.
  */

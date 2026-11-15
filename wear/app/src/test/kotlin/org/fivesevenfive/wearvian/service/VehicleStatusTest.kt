@@ -163,6 +163,9 @@ class VehicleStatusTest {
         assertEquals(VehicleStatus.ChargeState.FAULT, VehicleStatus.state.value.chargeState) // 0x17 check-charger
         VehicleStatus.update(hex("04000000" + "11ffac0f0030131adc1c005078000000"))
         assertEquals(VehicleStatus.ChargeState.CHARGING, VehicleStatus.state.value.chargeState) // 0x13
+        // Schema value 4 (charging_complete): plugged in, finished — synthetic, not from a capture.
+        VehicleStatus.update(hex("01000000" + "100f0c0f0030141adc00005078000000"))
+        assertEquals(VehicleStatus.ChargeState.PLUGGED_IDLE, VehicleStatus.state.value.chargeState) // 0x14
     }
 
     @Test

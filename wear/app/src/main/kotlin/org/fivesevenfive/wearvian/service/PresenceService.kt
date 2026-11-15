@@ -235,7 +235,7 @@ class PresenceService : Service() {
      * does NO passive lock/unlock for it, so proximity presence on approach/departure is wasted. The
      * gating signal for the watch-mode presence lifecycle (presence only around the drive window).
      * Set on start from the stored enrollment; defaults false (phone, full proximity) for installs
-     * enrolled before the device-type plumbing. Behavior gated on this lands incrementally.
+     * enrolled before the device-type plumbing. See [monitorWatchPresence].
      */
     @Volatile private var watchMode = false
 
@@ -509,7 +509,7 @@ class PresenceService : Service() {
         // Car has actually left → now arm the autoConnect so its RETURN reconnects PK directly. We
         // don't arm it while parked nearby, or it would immediately reconnect and bounce us out.
         passiveLink.arm(this@PresenceService)
-        DebugLog.add("presence: car gone ${DEPART_DEBOUNCE_MS / 1000}s → a return now wakes (scan + PK autoConnect)")
+        DebugLog.add("presence: car gone → a return now wakes (scan + PK autoConnect)")
     }
 
     /**
@@ -635,7 +635,9 @@ class PresenceService : Service() {
                 if (decision.wasPassive) {
                     wasPassive = true
                     // An upgrade restore resumes the persisted sub-state; a manual go-passive has none.
-                    lockedSeenDeparture = if (trigger == StartTrigger.UPGRADE_RESTORE) settings.passiveSeenDeparture else null
+                    // false, not null: no sessions ran, so "no link up" says nothing about where the
+                    // car is (see manualPassive).
+                    lockedSeenDeparture = if (trigger == StartTrigger.UPGRADE_RESTORE) settings.passiveSeenDeparture else false
                 }
                 updateNotification(LOCKED_TEXT)
             }
@@ -836,6 +838,7 @@ class PresenceService : Service() {
                 driving = false; VehicleSession.heartbeatsPaused = false // locked overrides driving-doze
                 bringUpJob?.cancel() // nothing to bring up while locked
                 stopBle()
+                VehicleStatus.clear() // no session confirming state while locked — keep it, mark stale
                 // The ECDH secret must not outlive the lock: the Keystore key itself
                 // (unlockedDeviceRequired) can't be used locked, and neither should a copy.
                 SharedSecretCache.clear()
@@ -1082,8 +1085,8 @@ class PresenceService : Service() {
      *
      * Burst triggers (any, see [WatchBurstPolicy]): a door opens, the vehicle wakes (asleep→awake), the
      * status comes up live with the car awake, parked and open/unlocked (a session that came up late),
-     * or a manual command — live-queue or one-shot (the heartbeat loop won't drain a queued command
-     * while paused, and a one-shot unlock is the usual way back to the car). A burst
+     * or a manual command — live-queue or one-shot (a queued command is still sent while paused, but
+     * drive-enable after it needs heartbeats, and a one-shot unlock is the usual way back to the car). A burst
      * holds for [WATCH_BURST_MS] of inactivity, then drops to doze; it also drops the instant the car
      * reports it went back to sleep, and never runs while actually driving (gear ≠ Park — already
      * validated heartbeat-free via driving-doze). UNVALIDATED on-vehicle: whether the link survives
@@ -1107,9 +1110,9 @@ class PresenceService : Service() {
             val fresh = st.valid && st.live
             val carAsleep = fresh && st.asleep
             val inGear = fresh && ParkedIdlePolicy.inGear(st.gear)
-            // A MANUAL command must burst so the heartbeat loop can drain it — even if the car is asleep
-            // or in gear (else a tapped lock/unlock is queued and never sent: the heartbeat loop won't
-            // drain while paused). Passive triggers (door / wake / status-live) only burst while parked
+            // A MANUAL command bursts even if the car is asleep or in gear: the command itself is sent
+            // on the paused link, but the presence that should follow it (drive-enable after an unlock)
+            // needs heartbeats. Passive triggers (door / wake / status-live) only burst while parked
             // & awake — the drive-enable window — and stop when the car sleeps or you shift into gear.
             val decision = policy.evaluate(
                 fresh = fresh, doorOpen = st.anyDoorOpen, asleep = st.asleep, unlocked = !st.locked,
@@ -1178,7 +1181,7 @@ class PresenceService : Service() {
         // While locked, BLE is already torn down by monitorLock — don't go passive; just keep
         // the (cheap) foreground service alive until the watch is unlocked.
         if (locked) return false
-        DebugLog.add("presence: idle ${IDLE_TIMEOUT_MS / 60_000}m → passive")
+        DebugLog.add("presence: no link and car not in range → passive")
         return enterPassive()
     }
 
@@ -1201,7 +1204,12 @@ class PresenceService : Service() {
             DebugLog.add("presence: manual passive ignored — watch locked, key stays off")
             return@withLock false
         }
-        enterPassiveLocked()
+        // With no sessions running (the service was started straight into passive, or Bluetooth is
+        // off) "no link up" doesn't mean the car has left. Reading it as departed arms the PK
+        // autoConnect, which completes at once beside the car and bounces the key back to active. So
+        // come up "parked nearby": the scan's blind arm window confirms a real absence within
+        // PARKED_ARM_WINDOW_MS and arms the autoConnect then.
+        enterPassiveLocked(restoreSeenDeparture = if (loopJob == null) false else null)
     }
 
     /** [enterPassive] body; caller holds [transition]. */
@@ -1541,9 +1549,9 @@ class PresenceService : Service() {
         val offAction = NotificationCompat.Action.Builder(
             R.drawable.ic_notif_power, "Disable", offIntent,
         ).build()
-        // The MODE in the title (active / passive / paused) matches the app's key-status EXACTLY;
-        // sub-states (driving-doze, watch standby, link count) are detail in the content text, so the
-        // title and the app never contradict each other.
+        // The MODE in the title (active / passive / paused) follows the app's key-status, except that
+        // the app has no locked state and shows "Key active" where this says "paused". Sub-states
+        // (driving-doze, watch standby, link count) are detail in the content text.
         val mode = when {
             locked -> "paused"
             passive -> "passive"

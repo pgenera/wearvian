@@ -11,7 +11,7 @@ enum class StartTrigger {
     /** Manual "go passive" button (`ACTION_GO_PASSIVE`). */
     GO_PASSIVE,
 
-    /** Any other start: fresh app open, OS reboot, bond auto-start. */
+    /** Any other start: app open, tile, OS reboot, pairing, the system's sticky restart. */
     NORMAL,
 }
 

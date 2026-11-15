@@ -25,7 +25,7 @@ data class Enrollment(
     val identityId: String,
     /** Registered with Rivian as a WATCH key (car does no passive lock/unlock) vs a phone key (full
      *  proximity). Defaults false so installs enrolled before this field existed are treated as phone
-     *  keys on upgrade. Stored now; the presence behavior that consumes it lands in a later branch. */
+     *  keys on upgrade. Consumed by PresenceService (watch-key standby / burst presence). */
     val asWatch: Boolean = false,
     val bonded: Boolean = false,
 )

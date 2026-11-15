@@ -126,7 +126,8 @@ class PairingManager(
             withTimeout(GATT_OP_TIMEOUT_MS) { notifications.getValue(nonceChar.uuid).await() }
             logi("pair: vehicle acked pairing frame")
 
-            // Step 3: vehicle is authenticated — trigger OS-level bonding.
+            // Step 3: the vehicle accepted our proof (its reply is not itself verified) — trigger
+            // OS-level bonding.
             onProgress(Progress.Bonding)
             bond(device)
             logi("pair: bonded OK")

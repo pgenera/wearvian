@@ -41,8 +41,9 @@ import java.util.concurrent.ConcurrentHashMap
  * EVERY device — PRIMARY and sensors alike — uses the **identical, in-the-clear** flow.
  * There is NO link-layer pairing/encryption and NO bonding (0 Encryption Change / LTK /
  * Pairing events in the capture); our old createBond attempts caused the HCI 0x05 failures.
- * The app subscribes ONLY 0x12 + 0x15 (handshake) and 0x20 (ranging) — it NEVER subscribes
- * 0x1c; we were subscribing 0x1c first, which broke the sensor sessions.
+ * In that capture the app subscribes only 0x12 + 0x15 (handshake) and 0x20 (ranging). We also
+ * subscribe 0x1c (vehicle status) — on the PRIMARY only and only after authenticating; subscribing
+ * it first, on the sensors, is what broke the sensor sessions.
  *
  * Flow per (re)connection (exact order from the capture):
  *   connect → discover → notify 0x12,0x15 → write PhoneProfile(10 80)→0x20 →
@@ -187,8 +188,8 @@ class VehicleSession(
             val readChar = requireChar(g, RivianBle.CHAR_RIVIAN_READ)
             val msgChar = findChar(g, RivianBle.CHAR_ACTIVE_COMMAND)
             // Subscribe ONLY the handshake chars now (0x12, 0x15) — exactly what the
-            // official app does. NOT 0x1c (the app never subscribes it; doing so broke
-            // our sensor sessions). 0x20 is subscribed after auth, below.
+            // official app does. NOT 0x1c yet (pre-auth it broke our sensor sessions); 0x20
+            // and, on the PRIMARY, 0x1c are subscribed after auth, below.
             val n12 = enableNotify(g, phoneIdChar)
             val n15 = enableNotify(g, nonceChar)
             DebugLog.ble("·", label, "notify 0x12=$n12 0x15=$n15; → PhoneProfile")
@@ -239,17 +240,15 @@ class VehicleSession(
                     .onFailure { e -> DebugLog.ble("·", label, "0x20 SensorInformation write failed: ${e.message}") }
             }
 
-            // EXPERIMENT (branch wearvian-vehicle-status-0x1c): subscribe CHAR_VEHICLE_STATUS
-            // (0x1c) on the PRIMARY link, POST-auth. The decompile (em/f0.e, non-secured branch)
-            // shows the official app subscribes this char for the full vehicle-status stream; we
-            // dropped it long ago because subscribing it PRE-auth on the in-the-clear SENSORS
-            // forced link encryption (HCI status=0x05) and broke them. PRIMARY-only + post-auth
-            // is the safe variant. If rich status arrives here, the "missing subscription"
-            // hypothesis is confirmed. Sensors still never subscribe it.
+            // Subscribe CHAR_VEHICLE_STATUS (0x1c) on the PRIMARY link, POST-auth: the source of
+            // all vehicle state (lock / closures / gear / SoC) for the UI, tile, driving-doze and
+            // parked-idle. The decompile (em/f0.e, non-secured branch) shows the official app
+            // subscribes it too. Never on the sensors and never pre-auth: that forced link
+            // encryption (HCI status=0x05) and broke the sensor sessions.
             if (primary) {
                 findChar(g, RivianBle.CHAR_VEHICLE_STATUS)?.let {
                     val ok = enableNotify(g, it)
-                    DebugLog.ble("·", label, "0x1c VEHICLE_STATUS subscribe=$ok [experiment]")
+                    DebugLog.ble("·", label, "0x1c VEHICLE_STATUS subscribe=$ok")
                 } ?: DebugLog.ble("·", label, "0x1c char not found")
             }
             g.readRemoteRssi()
@@ -534,8 +533,8 @@ class VehicleSession(
     }
 
     /**
-     * EXPERIMENT (branch wearvian-vehicle-status-0x1c): a 0x1c CHAR_VEHICLE_STATUS notification,
-     * from the PRIMARY-only post-auth subscription we re-added. Log on change so closure
+     * A 0x1c CHAR_VEHICLE_STATUS notification, from the PRIMARY-only post-auth subscription.
+     * Log on change so closure
      * transitions stand out. 0x1c is known plaintext (decoded by VehicleStatus), so it is no
      * longer run through the decrypt prober (32 failing AES-GCM attempts per changed frame).
      */

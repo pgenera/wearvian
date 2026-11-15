@@ -355,7 +355,22 @@ The companion's "Enroll as watch key" checkbox (default on) decides the cloud de
 
 ## 12. Discrepancies and ambiguities
 
-Found while writing this spec. None are fixed here. D-numbers continue from Spec 1.
+Found while writing this spec, described as they stood at `b19ab03`. D-numbers continue from
+Spec 1. Status after the follow-up commit on this branch:
+
+| # | Status |
+|---|---|
+| D16 Drain-while-paused comments | Fixed (comments). |
+| D17 "active" vs "paused" | Comment corrected; labels unchanged. |
+| D18 Manual passive enters "departed" | Fixed: with no sessions running, manual passive comes up "parked nearby" and the 90 s blind window decides. Untested on device. |
+| D19 Any link vs PK | Open. |
+| D20 No one-shot fallback | Open, by design. |
+| D21 Silent bedtime key-off | Open. |
+| D22 `setPresence` ignores the start result | Fixed. |
+| D23 "Lands later" comments | Fixed (comments). |
+| D24 Misleading log lines | Fixed for the two log lines and the `StartTrigger` comment. |
+| D25 Companion loose ends | Device name fixed: the watch sends its user-given name, else its model. Rest open. |
+| D26 Implicit state | Open. |
 
 **D16. Comments say a paused heartbeat loop does not drain commands; it does.**
 `CommandBus.lastSubmitMs`, `WatchBurstPolicy` and `monitorWatchPresence` all say a queued command

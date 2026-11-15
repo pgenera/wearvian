@@ -81,7 +81,7 @@ object VehicleStatus {
         UNPLUGGED,    // 0x_1 — schema "charging_ready" (idle baseline; only seen unplugged)
         STARTING,     // 0x_2 — schema "charging_connecting" (negotiating)
         CHARGING,     // 0x_3 — schema "charging_active" (ETA-to-limit counts down in [9..10])
-        PLUGGED_IDLE, // 0x_5 scheduled / 0x_8 user-stopped — cord connected, not charging
+        PLUGGED_IDLE, // 0x_4 complete / 0x_5 scheduled / 0x_8 user-stopped — cord connected, not charging
         FAULT,        // 0x_7 — schema "charging_station_error" ("check charger")
     }
 
@@ -206,6 +206,7 @@ object VehicleStatus {
         0x1 -> ChargeState.UNPLUGGED
         0x2 -> ChargeState.STARTING
         0x3 -> ChargeState.CHARGING
+        0x4 -> ChargeState.PLUGGED_IDLE // schema: charging_complete (plugged, finished)
         0x5 -> ChargeState.PLUGGED_IDLE // schema: charging_scheduled
         0x8 -> ChargeState.PLUGGED_IDLE // schema: charging_user_stopped (plugged, stopped by user)
         0x7 -> ChargeState.FAULT

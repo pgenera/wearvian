@@ -352,7 +352,25 @@ completes the pending autoConnect too (D12).
 
 ## 12. Discrepancies and ambiguities
 
-Found while writing this spec. None are fixed here.
+Found while writing this spec, described as they stood at `b19ab03`. Status after the follow-up
+commit on this branch (which changed nothing that goes over the air):
+
+| # | Status |
+|---|---|
+| D1 MTU | Open. Works on the vehicle; left alone. |
+| D2 Vehicle not authenticated | Open. Pairing comment corrected. |
+| D3, D4 Handshake variants | Open. Left alone: both paths work. |
+| D5 `0x1c` comments | Fixed (comments). |
+| D6 Responses not read | Open. |
+| D7 `csn` after failed write | Open. Left alone. |
+| D8 OPEN_LIFTGATE | Closed: owner-confirmed working on an R1S. Comment updated. |
+| D9 Charge complete | Fixed: value 4 decodes as plugged-idle. Value 6 still unknown. |
+| D10 `asleep` proxy | Open. |
+| D11 Stale `live` | Partly fixed: status is marked stale on lock. Not on a PK drop while active, because that would restart the parked-idle window on every link blip. |
+| D12 One-shot wakes departed key | Accepted as intended; documented in `CommandDispatcher`. |
+| D13 Pairing bonds | Open. Left alone. |
+| D14 Unused code | Open. |
+| D15 HIGH priority | Open. Left alone. |
 
 **D1. MTU is never negotiated by the app, and several payloads exceed the default.**
 No `requestMtu` call or `onMtuChanged` callback exists. `docs/wearvian-overview.md` §9 states the

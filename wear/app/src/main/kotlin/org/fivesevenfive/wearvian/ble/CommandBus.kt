@@ -89,7 +89,7 @@ object CommandBus {
     private val queue = Channel<Command>(Channel.UNLIMITED)
 
     /** elapsedRealtime() of the last submit — a "manual action" signal for watch-mode burst presence
-     *  (the heartbeat loop skips draining while paused, so a tap has to wake the burst to be sent). */
+     *  (the command is sent on the paused link; the burst gives the presence that should follow it). */
     @Volatile var lastSubmitMs = 0L
         private set
 
