@@ -46,7 +46,7 @@ class RivianBleTest {
     fun protocolConstantsAreStable() {
         // Guard the on-the-wire identifiers against accidental edits.
         assertEquals("Rivian Phone Key", RivianBle.DEVICE_NAME)
-        assertEquals("52495356-454e-534f-5253-455256494345", RivianBle.SERVICE_ACTIVE_ENTRY.toString())
+        assertEquals("AA49565A-4D4F-424B-4559-5F5752495445".lowercase(), RivianBle.CHAR_PHONE_ID_VEHICLE_ID.toString())
         assertEquals("5ae32b92-eafb-471b-afe8-e88eec4a4774", RivianBle.CHAR_ACTIVE_COMMAND.toString())
         assertEquals("00002902-0000-1000-8000-00805f9b34fb", RivianBle.CCCD.toString())
     }

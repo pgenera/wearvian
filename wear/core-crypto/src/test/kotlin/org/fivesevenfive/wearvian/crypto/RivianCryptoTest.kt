@@ -22,8 +22,6 @@ class RivianCryptoTest {
         "7b0b49aa5ec28aca8fc58989669fad620099f72a8260705a502a5c2af2fa328c"
     private val expectedPairingHmacHex =
         "c99f12da36b6c1718bd71eb331471e2dd12d171a5859e74b37b83babe4c0f5d4"
-    private val expectedCommandHmacHex =
-        "ebb02d388be9685724840a5c3024c5eccd8c7a3041a2d029e0ffcac81bbd9f31"
 
     private fun sharedSecret(): ByteArray {
         val priv = RivianKeys.decodePrivateKeyPemBase64(phonePrivPemB64)
@@ -41,12 +39,6 @@ class RivianCryptoTest {
     fun pairingHmacMatchesReference() {
         val hmac = RivianCrypto.signNonce(sharedSecret(), RivianCrypto.fromHex(nonceHex))
         assertEquals(expectedPairingHmacHex, RivianCrypto.toHex(hmac))
-    }
-
-    @Test
-    fun commandHmacMatchesReference() {
-        val hmac = RivianCrypto.signCommand(sharedSecret(), "UNLOCK_ALL_CLOSURES", "1700000000")
-        assertEquals(expectedCommandHmacHex, RivianCrypto.toHex(hmac))
     }
 
     @Test

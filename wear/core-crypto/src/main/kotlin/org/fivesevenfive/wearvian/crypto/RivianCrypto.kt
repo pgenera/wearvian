@@ -14,13 +14,13 @@ import javax.crypto.spec.SecretKeySpec
  *   secret_key = HKDF-SHA256(ECDH(phonePriv, vehiclePub), len=32, salt=None, info="")
  *   signature  = HMAC-SHA256(secret_key, message)
  *
- * For BLE pairing the message is the raw 16-byte phone nonce; for active vehicle
- * commands it is `command + timestamp` (ASCII).
+ * For BLE pairing the message is the raw 16-byte phone nonce. (Active commands use the
+ * encrypted frames in `ActiveCommandFrames`, not the reference's ASCII `command + timestamp`.)
  *
  * This class is pure JVM (no Android dependency) so it can be unit-tested against
  * a fixed parity vector. The ECDH step lives in [RivianKeys]; on Android the
  * shared secret is produced by the Keystore-backed key in `KeyManager` and fed to
- * [deriveSecretKey] / [signNonce] / [signCommand] here.
+ * [deriveSecretKey] / [signNonce] here.
  */
 object RivianCrypto {
 
@@ -85,10 +85,6 @@ object RivianCrypto {
     /** Pairing handshake signature over the 16-byte phone nonce. */
     fun signNonce(sharedSecret: ByteArray, phoneNonce: ByteArray): ByteArray =
         hmacSha256(deriveSecretKey(sharedSecret), phoneNonce)
-
-    /** Active-command signature over `command + timestamp` (ASCII). */
-    fun signCommand(sharedSecret: ByteArray, command: String, timestamp: String): ByteArray =
-        hmacSha256(deriveSecretKey(sharedSecret), (command + timestamp).toByteArray(Charsets.UTF_8))
 
     fun toHex(bytes: ByteArray): String =
         bytes.joinToString("") { "%02x".format(it) }

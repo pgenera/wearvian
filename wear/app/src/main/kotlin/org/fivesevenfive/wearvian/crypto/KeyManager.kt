@@ -98,10 +98,6 @@ class KeyManager(private val alias: String = DEFAULT_ALIAS) {
     fun signNonce(vehiclePublicKeyHex: String, nonce: ByteArray): ByteArray =
         RivianCrypto.signNonce(sharedSecret(vehiclePublicKeyHex), nonce)
 
-    /** HMAC over `command + timestamp` for active BLE commands (milestone 2). */
-    fun signCommand(vehiclePublicKeyHex: String, command: String, timestamp: String): ByteArray =
-        RivianCrypto.signCommand(sharedSecret(vehiclePublicKeyHex), command, timestamp)
-
     fun deleteKey() {
         val ks = keyStore()
         if (ks.containsAlias(alias)) ks.deleteEntry(alias)

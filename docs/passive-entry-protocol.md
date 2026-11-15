@@ -366,7 +366,8 @@ this Gen-1 car:
   "Signing Information" (CSRK), unencrypted. **Our HCI 0x05 failures were self-inflicted by our own
   `createBond()` (builds 2g/2h).** Bonding is removed.
 - **No Q-char (0823DA14) / signed-params writes at all** — those belong to the **PRE-CCC** variant
-  this car doesn't use. `SignedParams.kt`/`.proto` stay in-tree but unused for this vehicle.
+  this car doesn't use. `SignedParams.kt` was removed 2026-11 (unused; it is in git history). The recovered schema
+  stays in `docs/signed-params.proto`.
 - **The handshake is identical for the PK and every sensor** (in the clear):
   1. subscribe CCCD on **0x12 + 0x15 only** (NEVER 0x1c — the app never touches it; we were
      subscribing it first, which broke our sensor sessions),

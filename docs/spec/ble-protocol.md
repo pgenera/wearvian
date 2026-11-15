@@ -53,9 +53,7 @@ All UUIDs from `RivianBle`.
 | CCCD | `00002902-0000-1000-8000-00805f9b34fb` | Notification enable (`01 00`) | descriptor write |
 
 Characteristics are found by scanning every discovered service for the UUID; the code does not
-depend on which service owns them. `SERVICE_ACTIVE_ENTRY`
-(`52495356-454e-534f-5253-455256494345`) and `CHAR_ACTIVE_ENTRY`
-(`5249565F-4D4F-424B-4559-5F5752495445`) are defined but never used.
+depend on which service owns them.
 
 All writes are write-with-response except the heartbeat, whose type depends on the characteristic's
 properties ([§6](#6-presence-heartbeat-0x1b)). Indications are never used.
@@ -369,7 +367,7 @@ commit on this branch (which changed nothing that goes over the air):
 | D11 Stale `live` | Partly fixed: status is marked stale on lock. Not on a PK drop while active, because that would restart the parked-idle window on every link blip. |
 | D12 One-shot wakes departed key | Accepted as intended; documented in `CommandDispatcher`. |
 | D13 Pairing bonds | Open. Left alone. |
-| D14 Unused code | Open. |
+| D14 Unused code | Fixed: removed, with its tests. The recovered schema stays in `docs/signed-params.proto`. |
 | D15 HIGH priority | Open. Left alone. |
 
 **D1. MTU is never negotiated by the app, and several payloads exceed the default.**
