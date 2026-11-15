@@ -367,7 +367,7 @@ commit on this branch (which changed nothing that goes over the air):
 | D11 Stale `live` | Partly fixed: status is marked stale on lock. Not on a PK drop while active, because that would restart the parked-idle window on every link blip. |
 | D12 One-shot wakes departed key | Accepted as intended; documented in `CommandDispatcher`. |
 | D13 Pairing bonds | Open. Left alone. |
-| D14 Unused code | Fixed: removed, with its tests. The recovered schema stays in `docs/signed-params.proto`. |
+| D14 Unused code | Fixed: removed, with its tests. The schema guessed from the decompile (never seen on the wire) stays in `docs/signed-params.proto`. |
 | D15 HIGH priority | Open. Left alone. |
 
 **D1. MTU is never negotiated by the app, and several payloads exceed the default.**
