@@ -18,10 +18,13 @@ import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.IBinder
+import android.os.Build
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.wear.ongoing.OngoingActivity
+import androidx.wear.ongoing.Status
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1519,7 +1522,9 @@ class PresenceService : Service() {
 
     private fun startAsForegroundOrThrow() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            // IMPORTANCE_MIN: keep the FGS notification silent and low-profile in the swipe-up tray.
+            // IMPORTANCE_MIN: keep the FGS notification silent and low-profile. With the OngoingActivity
+            // attached (Wear OS 6 and older, see buildNotification) the status shows as a key icon on
+            // the watch face rather than a persistent notification card.
             NotificationChannel(CHANNEL_ID, getString(R.string.presence_channel_name), NotificationManager.IMPORTANCE_MIN),
         )
         startForeground(
@@ -1554,11 +1559,9 @@ class PresenceService : Service() {
             passive -> "passive"
             else -> "active"
         }
-        // Keep this as a plain FGS notification in the swipe-up tray (no Wear OS OngoingActivity):
-        // startForeground + setOngoing(true) is what keeps passive entry and ranging alive in the
-        // background, whereas OngoingActivity projects a wide curved banner onto the watch face on
-        // Wear OS 7+ that overlaps bottom complications.
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        // NotificationCompat (not the platform Notification.Builder) because OngoingActivity.Builder
+        // decorates a NotificationCompat.Builder.
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("${getString(R.string.presence_notification_title)} · $mode")
             .setContentText(state)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
@@ -1568,7 +1571,25 @@ class PresenceService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .addAction(offAction)
-            .build()
+        // Wear OS 6 and older: promote the ongoing status onto the watch face as a key icon (Wear OS
+        // Ongoing Activity). This decorates the FGS notification in place, so the glanceable surface is
+        // the icon, not a persistent card. Tapping it opens the app (same target as the content intent).
+        // CATEGORY_SERVICE ranks the key BELOW active user tasks (call / navigation / workout / media):
+        // the watch face shows the highest-ranked ongoing activity, so with a low category the key
+        // yields that slot when something more important is running and only surfaces when nothing is.
+        // Wear OS 7+ (API 37) gets the plain FGS notification instead: there the OngoingActivity is a wide
+        // curved banner that overlaps bottom complications. startForeground + setOngoing(true) alone keep
+        // passive entry and ranging alive in the background, so key behavior is the same either way.
+        if (OngoingActivityPolicy.shouldDecorate(Build.VERSION.SDK_INT)) {
+            OngoingActivity.Builder(applicationContext, NOTIFICATION_ID, builder)
+                .setStaticIcon(R.drawable.ic_tile_key)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setTouchIntent(contentIntent)
+                .setStatus(Status.Builder().addTemplate("$mode · $state").build())
+                .build()
+                .apply(applicationContext)
+        }
+        return builder.build()
     }
 
     /** Re-post the ongoing notification with the latest connection state. */
