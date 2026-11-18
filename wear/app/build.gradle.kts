@@ -147,10 +147,6 @@ dependencies {
     implementation("androidx.wear.compose:compose-foundation:1.4.0")
     implementation("androidx.wear.compose:compose-navigation:1.4.0")
 
-    // Wear OS Ongoing Activity: surface the presence FGS as a small key icon on the watch
-    // face (instead of a persistent notification card). Decorates the FGS notification.
-    implementation("androidx.wear:wear-ongoing:1.0.0")
-
     // Wear OS ambient (always-on) support: AmbientLifecycleObserver lets us render our own
     // low-fidelity idle screen instead of the system's blur-with-clock fallback.
     implementation("androidx.wear:wear:1.3.0")
