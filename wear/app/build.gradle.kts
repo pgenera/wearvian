@@ -31,7 +31,7 @@ android {
         // Overridable on the CLI so throwaway internal/log-capture builds each take a fresh, higher
         // code without editing this file:  ./gradlew bundleInternal -PvCode=1019
         versionCode = (project.findProperty("vCode") as? String)?.toIntOrNull() ?: 1065
-        versionName = "0.9.12"
+        versionName = "0.9.13"
     }
 
     signingConfigs {
